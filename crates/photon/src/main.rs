@@ -16,6 +16,7 @@ const HELP: &str = "photon: the app
   --check-ui FILE  check a layout file: errors, warnings, values moved onto photon's scales
   --bench-startup  print the time to the first frame showing sessions, then quit
   --bench-motion   run every transition, print frame times and late frames, then quit
+  --bench-term     pour 100 MB through a terminal pane, print throughput and frame times, then quit
 
 keys: ⌘N new session · ⌘J next session that needs you · ⌘↵ allow · ⌘. stop the agent
       ⌥⌘S sidebar · ⌥⌘I inspector · ⇧⌘F focus on this session · ⇧⌘\\ all sessions
@@ -46,6 +47,7 @@ fn main() {
                 std::process::exit(if result.is_ok() { 0 } else { 1 });
             }
             "--bench-motion" => launch.bench_motion = true,
+            "--bench-term" => launch.bench_term = true,
             "--dark" => launch.dark = Some(true),
             "--light" => launch.dark = Some(false),
             "--bench-startup" => launch.bench_from = Some(started),

@@ -554,8 +554,17 @@ impl Hub {
             Request::GitStatus { session } => {
                 return self.in_workdir(client, id, session, |dir| async move { Ok(Response::Git { summary: workspace::git_status(&dir).await }) });
             }
-            Request::GitDiff { session, path, at } => {
-                return self.in_workdir(client, id, session, |dir| async move { workspace::git_diff(&dir, &path, at.as_deref()).await.map(|diff| Response::Diff { diff }) });
+            Request::GitDiff { session, path, at, index } => {
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let diff = match index {
+                        Some(staged) => workspace::git_diff_index(&dir, &path, staged).await,
+                        None => workspace::git_diff(&dir, &path, at.as_deref()).await,
+                    };
+                    diff.map(|diff| Response::Diff { diff })
+                });
+            }
+            Request::FsIndex { session } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::index(&dir).await.map(|(paths, more)| Response::Paths { paths, more }) });
             }
             Request::FsPreview { session, path } => {
                 return self.in_workdir(client, id, session, |dir| async move {
@@ -579,7 +588,7 @@ impl Hub {
                 let (session, paths, what) = match &req {
                     Request::GitStage { session, paths } => (*session, paths.clone(), format!("Stage {}", names(paths))),
                     Request::GitUnstage { session, paths } => (*session, paths.clone(), format!("Unstage {}", names(paths))),
-                    Request::GitStageLines { session, path, start, end, unstage } => {
+                    Request::GitStageLines { session, path, start, end, unstage, .. } => {
                         (*session, vec![path.clone()], format!("{} lines {start}–{end} of {}", if *unstage { "Unstage" } else { "Stage" }, short_name(path)))
                     }
                     _ => unreachable!(),
@@ -589,7 +598,7 @@ impl Hub {
                     match req {
                         Request::GitStage { paths, .. } => workspace::stage(&dir, &paths).await?,
                         Request::GitUnstage { paths, .. } => workspace::unstage(&dir, &paths).await?,
-                        Request::GitStageLines { path, start, end, unstage, .. } => workspace::stage_lines(&dir, &path, start, end, unstage).await?,
+                        Request::GitStageLines { path, start, end, unstage, old, .. } => workspace::stage_lines(&dir, &path, start, end, unstage, old).await?,
                         _ => unreachable!(),
                     }
                     let after = workspace::index_entries(&dir, &paths).await;

@@ -72,6 +72,8 @@ pub struct Launch {
     pub file: Option<String>,
     /// run every transition once, print how the frames went, and quit.
     pub bench_motion: bool,
+    /// pour output through a terminal pane, print how the frames went, and quit.
+    pub bench_term: bool,
     /// measure startup: print how long until the first frame that shows
     /// sessions from the daemon, then quit. counted from this instant.
     pub bench_from: Option<Instant>,
@@ -166,6 +168,7 @@ pub struct Shell {
     /// a terminal pane that takes the keys as soon as its shell is up.
     term_focus: Option<String>,
     git: git::GitView,
+    bench_term: Option<terminal::BenchTerm>,
     /// a theme being tried on: drawn, not written.
     theme_preview: Option<String>,
     /// the preview is the palette's: closing it takes it off.
@@ -478,6 +481,7 @@ impl Shell {
             term_opening: Default::default(),
             term_focus: None,
             git: git::GitView::new(window, cx),
+            bench_term: launch.bench_term.then(terminal::BenchTerm::default),
             theme_preview: None,
             theme_preview_by_palette: false,
             git_clear_message: false,
@@ -704,6 +708,7 @@ impl Shell {
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
+            UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {
@@ -1758,6 +1763,7 @@ impl Render for Shell {
         self.sync_panes();
         self.sync_surfaces_dock(cx);
         self.sync_terminals(window, cx);
+        self.step_bench_term(window, cx);
         self.sync_git_message(window, cx);
         if !self.palette_ui.open && std::mem::take(&mut self.theme_preview_by_palette) {
             self.preview_theme(None, window, cx);

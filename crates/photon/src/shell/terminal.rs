@@ -421,7 +421,9 @@ impl Shell {
     pub(crate) fn term_event(&mut self, ev: UiEvent, cx: &mut Context<Self>) {
         match ev {
             UiEvent::Terms(list) => {
-                let ids: std::collections::HashSet<TermId> = list.iter().map(|t| t.id).collect();
+                // the daemon's terminals, and the bench's own (it has none of the daemon's).
+                let mut ids: std::collections::HashSet<TermId> = list.iter().map(|t| t.id).collect();
+                ids.insert(BENCH_ID);
                 self.terms.retain(|id, _| ids.contains(id));
                 self.pane_terms.retain(|_, id| ids.contains(id));
                 for info in list {
@@ -657,6 +659,7 @@ impl Shell {
                     let TermView { term, screen, .. } = &mut *v;
                     let _ = term.update(screen);
                 }
+
                 // shape the rows that changed since they were last shaped.
                 let n = v.screen.lines.len();
                 v.shaped.resize_with(n, || (u64::MAX, Vec::new()));
@@ -685,6 +688,7 @@ impl Shell {
                         .collect();
                     v.shaped[i] = (version, runs);
                 }
+
             },
             move |bounds, (), window, cx| {
                 if let Some(ime) = &ime {
@@ -835,5 +839,83 @@ mod tests {
                 assert!(crate::theme::contrast(c, bg) >= 3.0, "colour {i} on {bg:?}: {:.2}", crate::theme::contrast(c, bg));
             }
         }
+    }
+}
+
+// ---- --bench-term ----------------------------------------------------------------------
+
+/// a terminal fed from here (no daemon), one chunk a frame, timed.
+#[derive(Default)]
+pub(crate) struct BenchTerm {
+    started: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+    frames: Vec<f32>,
+    fed: usize,
+}
+
+const BENCH_ID: TermId = u64::MAX;
+const BENCH_TOTAL: usize = 100 * 1024 * 1024;
+const BENCH_CHUNK: usize = 2 * 1024 * 1024;
+
+impl Shell {
+    pub(crate) fn step_bench_term(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(b) = self.bench_term.as_mut() else { return };
+        let now = std::time::Instant::now();
+        if b.started.is_none() {
+            b.started = Some(now);
+            let layout = r#"{"root": {"type": "panes", "w": "full", "h": "full", "p": 8, "layout": {"split": "row", "children": [{"module": "conversation", "size": 1}, {"id": "bench", "module": "terminal", "size": 2}]}}}"#;
+            let _ = self.use_ui_text(layout, window, cx);
+            let info = TermInfo { id: BENCH_ID, title: "bench".into(), cwd: "/".into(), cols: 120, rows: 40, session: None, command: vec![], exited: None };
+            self.add_term(info, cx);
+            if let Some(v) = self.terms.get(&BENCH_ID) {
+                v.borrow_mut().attached = true;
+            }
+            let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
+            self.pane_terms.insert(("bench".into(), session), BENCH_ID);
+            window.request_animation_frame();
+            return;
+        }
+        let b = self.bench_term.as_mut().expect("checked");
+        if let Some(last) = b.last {
+            b.frames.push(now.duration_since(last).as_secs_f32() * 1000.0);
+        }
+        b.last = Some(now);
+        if b.fed >= BENCH_TOTAL {
+            let secs = b.started.map_or(0.0, |s| s.elapsed().as_secs_f32());
+            let mut f = b.frames.clone();
+            f.sort_by(f32::total_cmp);
+            let at = |q: f32| f.get(((f.len() as f32 - 1.0) * q) as usize).copied().unwrap_or(0.0);
+            let late = f.iter().filter(|ms| **ms > 16.7).count();
+            println!(
+                "terminal: {} MB in {:.2} s ({:.0} MB/s), {} frames, median {:.1} ms, p99 {:.1} ms, worst {:.1} ms, {} over 16.7 ms",
+                BENCH_TOTAL / (1024 * 1024),
+                secs,
+                (BENCH_TOTAL as f32 / (1024.0 * 1024.0)) / secs.max(0.001),
+                f.len(),
+                at(0.5),
+                at(0.99),
+                f.last().copied().unwrap_or(0.0),
+                late
+            );
+            cx.defer(|cx| cx.quit());
+            return;
+        }
+        // a chunk of coloured lines, as a busy build log would pour out.
+        let line = "\x1b[32m  Compiling\x1b[0m photon-bench v0.1.0 (/tmp/bench) \x1b[2mtarget/debug/deps\x1b[0m 0123456789 abcdefghij\r\n";
+        let chunk: String = line.repeat(BENCH_CHUNK / line.len());
+        let Some(v) = self.terms.get(&BENCH_ID) else {
+            eprintln!("bench: the terminal went away");
+            cx.defer(|cx| cx.quit());
+            return;
+        };
+        {
+            let mut v = v.borrow_mut();
+            v.term.feed(chunk.as_bytes());
+            v.fresh = true;
+        }
+        let b = self.bench_term.as_mut().expect("checked");
+        b.fed += chunk.len();
+        // the next frame comes as soon as the display can take it, nothing else waking it.
+        window.request_animation_frame();
     }
 }

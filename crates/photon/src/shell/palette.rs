@@ -14,10 +14,11 @@ pub(crate) enum Scope {
     All,
     Commands,
     Sessions,
+    Files,
     Look,
 }
 
-const SCOPES: [(Scope, &str); 4] = [(Scope::All, "All"), (Scope::Commands, "Commands"), (Scope::Sessions, "Sessions"), (Scope::Look, "Look")];
+const SCOPES: [(Scope, &str); 5] = [(Scope::All, "All"), (Scope::Commands, "Commands"), (Scope::Sessions, "Sessions"), (Scope::Files, "Files"), (Scope::Look, "Look")];
 
 pub(crate) struct PaletteState {
     pub(crate) open: bool,
@@ -26,17 +27,22 @@ pub(crate) struct PaletteState {
     selected: usize,
     focus_pending: bool,
     focus: FocusHandle,
+    /// the open session's files, for finding by name; asked for when the palette opens.
+    pub(crate) files: std::rc::Rc<Vec<String>>,
+    pub(crate) files_for: Option<SessionId>,
 }
 
 impl PaletteState {
     pub(crate) fn new(window: &mut Window, cx: &mut Context<Shell>) -> Self {
         Self {
             open: false,
-            input: cx.new(|cx| InputState::new(window, cx).placeholder("Search commands, sessions and themes")),
+            input: cx.new(|cx| InputState::new(window, cx).placeholder("Search commands, sessions, files and themes")),
             scope: Scope::All,
             selected: 0,
             focus_pending: false,
             focus: cx.focus_handle(),
+            files: Default::default(),
+            files_for: None,
         }
     }
 }
@@ -54,6 +60,11 @@ pub(crate) struct Item {
 
 impl Shell {
     pub fn open_palette(&mut self, cx: &mut Context<Self>) {
+        // the open session's files: asked for each time, they change.
+        if let Some(session) = self.ws_session {
+            self.palette_ui.files_for = Some(session);
+            self.cmd(Cmd::Ask { tag: "palette.files", req: photon_proto::Request::FsIndex { session } });
+        }
         self.palette_ui.open = true;
         self.palette_ui.focus_pending = true;
         self.palette_ui.selected = 0;
@@ -115,6 +126,46 @@ impl Shell {
         items
     }
 
+    pub(crate) fn palette_answer(&mut self, result: Result<photon_proto::Response, String>, cx: &mut Context<Self>) {
+        if let Ok(photon_proto::Response::Paths { paths, .. }) = result {
+            self.palette_ui.files = std::rc::Rc::new(paths);
+            cx.notify();
+        }
+    }
+
+    /// files that match, best first: by name above by path. only the winners
+    /// become rows; a big repository costs a scan, not thousands of rows.
+    fn file_results(&self, query: &str, limit: usize) -> Vec<(i32, Item)> {
+        let mut best: Vec<(i32, &str)> = Vec::new();
+        for path in self.palette_ui.files.iter() {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            let score = if query.is_empty() {
+                Some(0)
+            } else {
+                crate::commands::score(query, name).map(|s| s + 30).or_else(|| crate::commands::score(query, path))
+            };
+            if let Some(sc) = score {
+                best.push((sc - path.len() as i32 / 8, path.as_str()));
+            }
+        }
+        best.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(b.1)));
+        best.truncate(limit);
+        best.into_iter()
+            .map(|(sc, path)| {
+                let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+                (sc, Item {
+                    title: name.to_owned().into(),
+                    note: (!dir.is_empty()).then(|| dir.to_owned()),
+                    icon: "file",
+                    keys: None,
+                    cmd: "files.open",
+                    args: json!({"path": path}),
+                    scope: Scope::Files,
+                })
+            })
+            .collect()
+    }
+
     /// what the search finds, best first.
     fn palette_results(&self, cx: &App) -> Vec<Item> {
         let query = self.palette_ui.input.read(cx).value().trim().to_string();
@@ -129,6 +180,12 @@ impl Shell {
                 Some((s, i, it))
             })
             .collect();
+        // files: in their own scope, and in All once something is typed.
+        if scope == Scope::Files || (scope == Scope::All && !query.is_empty()) {
+            let base = found.len() + 1_000_000;
+            // a file ranks a little under a command that matches as well.
+            found.extend(self.file_results(&query, 60).into_iter().enumerate().map(|(i, (sc, it))| (sc - 15, base + i, it)));
+        }
         // with nothing typed the order is the natural one; otherwise by score.
         if !query.is_empty() {
             found.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));

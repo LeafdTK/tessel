@@ -252,6 +252,40 @@ pub async fn git_diff(dir: &Path, rel: &str, at: Option<&str>) -> Result<FileDif
     if let Some(sha) = at {
         return diff_at(dir, rel, sha).await;
     }
+    git_diff_base(dir, rel).await
+}
+
+/// one file against the index: what isn't staged yet (index to folder), or
+/// what is (last commit to index). staging lines picks from these.
+pub async fn git_diff_index(dir: &Path, rel: &str, staged: bool) -> Result<FileDiff, RpcError> {
+    let full = resolve(dir, rel)?;
+    let mut diff = FileDiff { path: rel.to_owned(), ..Default::default() };
+    let index = blob(dir, &format!(":{rel}")).await;
+    let (old, new) = if staged {
+        (blob(dir, &format!("HEAD:{rel}")).await, index)
+    } else {
+        (index, read_capped(&full).await.map(|(b, _)| b))
+    };
+    diff.binary = old.as_deref().is_some_and(is_binary) || new.as_deref().is_some_and(is_binary);
+    if diff.binary {
+        return Ok(diff);
+    }
+    diff.old = old.map(|b| text_of(b, false));
+    diff.new = new.map(|b| text_of(b, false));
+    let args: Vec<&str> = if staged { vec!["diff", "--cached", "--no-color", "--no-ext-diff", "--", rel] } else { vec!["diff", "--no-color", "--no-ext-diff", "--", rel] };
+    let out = run("git", dir, &args, QUICK).await.map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
+    let mut unified = String::from_utf8_lossy(&out.stdout).into_owned();
+    // a file git doesn't know yet is all new.
+    if unified.is_empty() && !staged && diff.old.is_none() {
+        if let Ok(o) = run("git", dir, &["diff", "--no-index", "--no-color", "--", "/dev/null", rel], QUICK).await {
+            unified = String::from_utf8_lossy(&o.stdout).into_owned();
+        }
+    }
+    diff.unified = unified;
+    Ok(diff)
+}
+
+async fn git_diff_base(dir: &Path, rel: &str) -> Result<FileDiff, RpcError> {
     let full = resolve(dir, rel)?;
     let (_, base_commit) = base(dir).await;
     let mut diff = FileDiff { path: rel.to_owned(), ..Default::default() };
@@ -903,12 +937,16 @@ pub fn apply_hunks(base: &str, hunks: &[Hunk], mut pick: impl FnMut(&Hunk) -> Op
 /// touches them is taken whole on the old side, and on the new side only its
 /// lines inside the range. the index entry is written directly; nothing in the
 /// folder changes.
-pub async fn stage_lines(dir: &Path, path: &str, start: u32, end: u32, unstage: bool) -> Result<(), RpcError> {
+pub async fn stage_lines(dir: &Path, path: &str, start: u32, end: u32, unstage: bool, old_side: bool) -> Result<(), RpcError> {
     resolve(dir, path)?;
     if start == 0 || end < start {
         return Err(invalid("lines are counted from 1, start to end"));
     }
     let in_range = |h: &Hunk| {
+        if old_side {
+            // removed lines, picked where they were.
+            return h.old_len > 0 && h.old_start <= end && h.old_start + h.old_len - 1 >= start;
+        }
         if h.new_len == 0 {
             // a deletion sits after line `new_start`.
             h.new_start + 1 >= start && h.new_start <= end
@@ -942,6 +980,10 @@ pub async fn stage_lines(dir: &Path, path: &str, start: u32, end: u32, unstage: 
         apply_hunks(&base, &hunks, |h| (!in_range(h)).then(|| h.added.clone()))
     } else {
         apply_hunks(&base, &hunks, |h| {
+            // picked by its removed lines: the whole block goes in.
+            if old_side {
+                return in_range(h).then(|| h.added.clone());
+            }
             in_range(h).then(|| h.added.iter().enumerate().filter(|(i, _)| (start..=end).contains(&(h.new_start + *i as u32))).map(|(_, l)| l.clone()).collect())
         })
     };
@@ -1114,4 +1156,52 @@ pub async fn preview(dir: &Path, rel: &str) -> Result<(String, Vec<u8>, Option<S
 
 fn short(rel: &str) -> &str {
     rel.rsplit('/').next().unwrap_or(rel)
+}
+
+// ---- finding files ---------------------------------------------------------------------
+
+/// the most paths sent for finding by name.
+const MAX_INDEX: usize = 50_000;
+
+/// every file in the folder git doesn't ignore; outside a repository, a walk
+/// that skips the usual heavy folders. relative paths, sorted.
+pub async fn index(dir: &Path) -> Result<(Vec<String>, bool), RpcError> {
+    let listing = git_bytes(dir, &["ls-files", "-z", "--cached", "--others", "--exclude-standard"]).await;
+    let mut paths: Vec<String> = if git(dir, &["rev-parse", "--is-inside-work-tree"]).await.as_deref() == Some("true") {
+        listing.split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect()
+    } else {
+        let root = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || walk(&root)).await.unwrap_or_default()
+    };
+    paths.sort();
+    paths.dedup();
+    let more = paths.len() > MAX_INDEX;
+    paths.truncate(MAX_INDEX);
+    Ok((paths, more))
+}
+
+fn walk(root: &Path) -> Vec<String> {
+    const SKIP: [&str; 8] = [".git", "node_modules", "target", ".venv", "dist", "build", ".next", "__pycache__"];
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(kind) = e.file_type() else { continue };
+            if kind.is_dir() {
+                if !SKIP.contains(&name.as_str()) && !name.starts_with('.') {
+                    stack.push(e.path());
+                }
+            } else if kind.is_file()
+                && let Ok(rel) = e.path().strip_prefix(root)
+            {
+                out.push(rel.to_string_lossy().into_owned());
+                if out.len() > MAX_INDEX {
+                    return out;
+                }
+            }
+        }
+    }
+    out
 }

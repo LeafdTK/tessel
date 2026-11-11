@@ -394,7 +394,7 @@ async fn session(
                         Ok(())
                     }
                     Cmd::Diff { session, path } => {
-                        ask(client, ui, Request::GitDiff { session, path, at: None }, move |r| match r {
+                        ask(client, ui, Request::GitDiff { session, path, at: None, index: None }, move |r| match r {
                             Response::Diff { diff } => Some(UiEvent::Diff { session, diff }),
                             _ => None,
                         });

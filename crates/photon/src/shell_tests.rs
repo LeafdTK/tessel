@@ -1445,6 +1445,11 @@ fn the_git_pane_asks_for_history_and_the_work_tree_stages_and_shows_a_commit(cx:
     rig.settle(cx);
     rig.click(cx, "git-unstaged-src/a.rs-act");
     assert!(ask(&rig.asked(), |r| matches!(r, Request::GitStage { paths, .. } if paths == &["src/a.rs".to_owned()])));
+    // a file of the work tree opens its own diff; lines picked in it are staged alone.
+    rig.click(cx, "git-unstaged-src/a.rs");
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::GitDiff { path, index: Some(false), .. } if path == "src/a.rs")));
+    rig.shell.update(cx, |s, cx| s.git_pick_lines_for_test(3, 4, cx));
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::GitStageLines { path, start: 3, end: 4, unstage: false, old: false, .. } if path == "src/a.rs")));
     rig.click(cx, "commit-a1");
     assert!(ask(&rig.asked(), |r| matches!(r, Request::GitShow { sha, .. } if sha == "a1")));
     // nothing staged: committing says what's missing instead of asking.
@@ -1469,6 +1474,16 @@ fn an_image_is_shown_and_markdown_is_read_as_a_document(cx: &mut TestAppContext)
     rig.feed(cx, vec![UiEvent::File { session: idle.id, file: FileContent { path: "README.md".into(), text: Some("# Hello\n\n- [ ] a task\n".into()), binary: false, truncated: false, size: 22 } }]);
     let state = rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().map(|f| (f.path.clone(), f.rendered, f.preview.is_some(), f.editor.is_some())));
     assert!(rig.exists(cx, "file-document"), "read as a document: {state:?}");
+    // ticking a to-do changes the source and saves it.
+    rig.asked();
+    let at = "# Hello\n\n- [ ] a task\n".find("[ ]").unwrap();
+    let shell = rig.shell.clone();
+    cx.update_window(rig.window, |_, window, cx| shell.update(cx, |s, cx| s.toggle_task(at..at + 3, true, window, cx))).unwrap();
+    rig.settle(cx);
+    assert!(
+        rig.asked().iter().any(|c| matches!(c, Cmd::Write { path, content, .. } if path == "README.md" && content.contains("- [x] a task"))),
+        "saved, ticked"
+    );
     rig.click(cx, "file-render");
     assert!(!rig.exists(cx, "file-document") && rig.exists(cx, "file-save"), "and edited as source");
 }
@@ -1500,4 +1515,21 @@ fn a_terminal_takes_composed_text_and_gives_its_program_the_mouse_when_asked(cx:
     rig.click(cx, "terminal-7");
     let sent = typed(&mut rig);
     assert!(sent.starts_with(b"\x1b[<0;"), "{:?}", String::from_utf8_lossy(&sent));
+}
+
+#[gpui_kit::test]
+fn the_palette_finds_a_file_by_a_bit_of_its_name_and_opens_it(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "files"}
+    ]}}}"#);
+    rig.asked();
+    rig.press(cx, "cmd-k");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: Request::FsIndex { .. }, .. })), "the files are asked for");
+    let paths = vec!["Cargo.toml".to_owned(), "crates/app/src/main.rs".to_owned(), "crates/app/src/maintenance.rs".to_owned(), "docs/readme.md".to_owned()];
+    rig.feed(cx, vec![UiEvent::Answer { tag: "palette.files", result: Ok(Response::Paths { paths, more: false }) }]);
+    rig.typed(cx, "main.rs");
+    rig.press(cx, "enter");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Read { path, .. } if path == "crates/app/src/main.rs")), "the best match opens");
 }

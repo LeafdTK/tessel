@@ -60,7 +60,7 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl git SESSION log [-n 30]         history across branches, newest first
   photonctl git SESSION status              staged and not
   photonctl git SESSION stage|unstage PATH...
-  photonctl git SESSION lines PATH 4-9 [--unstage]
+  photonctl git SESSION lines PATH 4-9 [--unstage] [--old]
                                             stage (or unstage) only those lines
   photonctl git SESSION commit MESSAGE...
   photonctl git SESSION undo                take back the last thing photon did here
@@ -563,13 +563,14 @@ async fn git(client: &Client, args: &mut Args, json: bool) -> anyhow::Result<()>
         "lines" => {
             // photonctl git S lines PATH 4-9 [--unstage]
             let unstage = args.flag("--unstage");
+            let old = args.flag("--old");
             let path = args.next("a file")?;
             let range = args.next("lines, like 4-9")?;
             let (start, end) = match range.split_once('-') {
                 Some((a, b)) => (a.parse()?, b.parse()?),
                 None => (range.parse()?, range.parse()?),
             };
-            tree(client.request(Request::GitStageLines { session, path, start, end, unstage }).await?, json)?;
+            tree(client.request(Request::GitStageLines { session, path, start, end, unstage, old }).await?, json)?;
         }
         "commit" => {
             let message = std::mem::take(&mut args.rest).join(" ");

@@ -770,7 +770,7 @@ impl Shell {
             .child(Button::new("file-close").xsmall().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
         let body: AnyElement = match (&file.preview, &file.editor) {
             (Some((image, note)), _) => self.preview_el(image, note.as_deref()),
-            (None, Some(editor)) if file.rendered => self.document_el(editor.read(cx).value().to_string()),
+            (None, Some(editor)) if file.rendered => self.document_el(editor.read(cx).value().to_string(), cx),
             (None, Some(editor)) => div().size_full().child(Editor::new(editor).h(relative(1.)).bordered(false).readonly(!editable)).into_any_element(),
             (None, None) => div().into_any_element(),
         };

@@ -10,7 +10,7 @@ use super::*;
 use crate::graph::{self, Level};
 use crate::theme::{ButtonKind, z};
 use gpui_kit::component::Icon;
-use gpui_kit::component::diff::{Diff, DiffFile, DiffMode, DiffState};
+use gpui_kit::component::diff::{Diff, DiffFile, DiffLineRange, DiffMode, DiffSide, DiffState};
 use crate::ui::Module;
 use photon_proto::ChangeStatus;
 use gpui_kit::{PathBuilder, UniformListScrollHandle, canvas, fill, point, uniform_list};
@@ -31,6 +31,8 @@ pub(crate) struct GitView {
     loading: bool,
     tree: WorkTree,
     selected: Option<String>,
+    /// a file of the work tree being looked at (to stage lines of it), and whether its staged side.
+    wt: Option<(String, bool)>,
     files: Vec<FileChange>,
     file: Option<String>,
     diff: Option<Entity<DiffState>>,
@@ -50,6 +52,7 @@ impl GitView {
             loading: false,
             tree: WorkTree::default(),
             selected: None,
+            wt: None,
             files: Vec::new(),
             file: None,
             diff: None,
@@ -150,6 +153,16 @@ impl Shell {
                 let changed = tag != "git.tree";
                 self.git.tree = tree;
                 self.git.error = None;
+                // the file being staged by lines: show what's left (or close it when nothing is).
+                if let Some((path, staged)) = self.git.wt.clone() {
+                    let list = if staged { &self.git.tree.staged } else { &self.git.tree.unstaged };
+                    if list.iter().any(|f| f.path == path) {
+                        self.git_open_wt(path, staged);
+                    } else {
+                        self.git.wt = None;
+                        self.git.diff = None;
+                    }
+                }
                 // an undo can take a commit back: the history moves too.
                 if changed {
                     self.refresh_workspace();
@@ -163,7 +176,7 @@ impl Shell {
                     None => self.git.diff = None,
                 }
             }
-            ("git.diff", Response::Diff { diff }) => {
+            ("git.diff" | "git.wtdiff", Response::Diff { diff }) => {
                 let files = if diff.binary { Vec::new() } else { DiffFile::parse(&diff.unified).unwrap_or_default() };
                 if files.is_empty() {
                     self.git.diff = None;
@@ -196,10 +209,35 @@ impl Shell {
     fn git_pick_file(&mut self, path: String) {
         let (Some(session), Some(sha)) = (self.git.session, self.git.selected.clone()) else { return };
         self.git.file = Some(path.clone());
-        self.git_ask("git.diff", Request::GitDiff { session, path, at: Some(sha) });
+        self.git_ask("git.diff", Request::GitDiff { session, path, at: Some(sha), index: None });
+    }
+
+    /// look at a work tree file's diff, to stage (or unstage) lines of it.
+    fn git_open_wt(&mut self, path: String, staged: bool) {
+        let Some(session) = self.git.session else { return };
+        self.git.selected = None;
+        self.git.files.clear();
+        self.git.wt = Some((path.clone(), staged));
+        self.git_ask("git.wtdiff", Request::GitDiff { session, path, at: None, index: Some(staged) });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn git_pick_lines_for_test(&mut self, start: usize, end: usize, cx: &mut Context<Self>) {
+        let path = self.git.wt.clone().map(|(p, _)| p).unwrap_or_default();
+        self.git_stage_range(&DiffLineRange::new(path, DiffSide::Modified, start, end), cx);
+    }
+
+    /// lines picked in a work tree diff: stage them (or, in the staged diff, unstage them).
+    fn git_stage_range(&mut self, range: &DiffLineRange, cx: &mut Context<Self>) {
+        let (Some(session), Some((path, staged))) = (self.git.session, self.git.wt.clone()) else { return };
+        let (a, b) = (range.start().min(range.end()), range.start().max(range.end()));
+        let old = range.side() == DiffSide::Original;
+        self.git_op(Request::GitStageLines { session, path, start: a as u32, end: b as u32, unstage: staged, old });
+        cx.notify();
     }
 
     pub(crate) fn git_select(&mut self, sha: String, cx: &mut Context<Self>) {
+        self.git.wt = None;
         let Some(session) = self.git.session else { return };
         if self.git.selected.as_deref() == Some(sha.as_str()) {
             self.git.selected = None;
@@ -253,6 +291,8 @@ impl Shell {
             None => (String::new(), f.path.clone()),
         };
         let path = f.path.clone();
+        let open = f.path.clone();
+        let on = self.git.wt.as_ref().is_some_and(|(p0, s0)| *p0 == f.path && *s0 == staged);
         let id = SharedString::from(format!("git-{}-{}", if staged { "staged" } else { "unstaged" }, f.path));
         h_flex()
             .id(id.clone())
@@ -262,7 +302,13 @@ impl Shell {
             .px(z(8.))
             .gap(z(8.))
             .rounded(z(theme::R_TILE))
-            .hover(|d| d.bg(p.hover))
+            .cursor_pointer()
+            .when(on, |d| d.bg(p.selection))
+            .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.git_open_wt(open.clone(), staged);
+                cx.notify();
+            }))
             .child(div().w(z(12.)).flex_shrink_0().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(tint).child(letter))
             .child(
                 h_flex()
@@ -290,6 +336,7 @@ impl Shell {
                         .test_support()
                         .aria_label(SharedString::from(format!("{} {}", if staged { "Unstage" } else { "Stage" }, f.path)))
                         .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
                             let Some(session) = this.git.session else { return };
                             let paths = vec![path.clone()];
                             this.git_op(if staged { Request::GitUnstage { session, paths } } else { Request::GitStage { session, paths } });
@@ -516,7 +563,60 @@ impl Shell {
         cx.notify();
     }
 
+    fn git_wt_detail_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let (path, staged) = self.git.wt.clone()?;
+        let p = self.palette.get();
+        let me = cx.entity().downgrade();
+        Some(
+            v_flex()
+                .id("git-wt-detail")
+                .test_support()
+                .h(relative(0.45))
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(p.separator)
+                .child(
+                    h_flex()
+                        .h(z(30.))
+                        .px_3()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(p.separator)
+                        .child(div().flex_1().min_w_0().truncate().set(Type::Code).child(path))
+                        .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(if staged {
+                            "Staged · pick lines with + to unstage them"
+                        } else {
+                            "Pick lines with + to stage just those"
+                        }))
+                        .child(
+                            div()
+                                .id("git-wt-close")
+                                .flex_shrink_0()
+                                .cursor_pointer()
+                                .text_color(p.tertiary)
+                                .hover(|d| d.text_color(p.label))
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.git.wt = None;
+                                    this.git.diff = None;
+                                    cx.notify();
+                                }))
+                                .child(Icon::empty().path("icons/x.svg").size(z(13.))),
+                        ),
+                )
+                .child(div().flex_1().min_h_0().overflow_hidden().children(self.git.diff.as_ref().map(|d| {
+                    let me = me.clone();
+                    Diff::new(d).size_full().border_0().on_add_annotation(move |range, _, cx| {
+                        let _ = me.update(cx, |this, cx| this.git_stage_range(range, cx));
+                    })
+                })))
+                .into_any_element(),
+        )
+    }
+
     fn git_detail_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.git.wt.is_some() {
+            return self.git_wt_detail_el(cx);
+        }
         let sha = self.git.selected.clone()?;
         let p = self.palette.get();
         let commit = self.git.commits.iter().find(|c| c.sha == sha)?;

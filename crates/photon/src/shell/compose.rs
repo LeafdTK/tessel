@@ -165,8 +165,7 @@ impl Shell {
         }
     }
 
-    /// use a layout given as text. for tests.
-    #[cfg(test)]
+    /// use a layout given as text, without writing it anywhere: tests, benches.
     pub(crate) fn use_ui_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> Result<(), String> {
         let ui = crate::ui::parse(text)?;
         self.use_ui(ui, window, cx);

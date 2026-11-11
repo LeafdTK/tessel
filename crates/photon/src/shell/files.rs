@@ -112,7 +112,7 @@ impl Shell {
         if binary || shown_not_edited(&path) {
             self.cmd(Cmd::Ask { tag: "file.preview", req: Request::FsPreview { session, path } });
         } else {
-            self.cmd(Cmd::Ask { tag: "file.marks", req: Request::GitDiff { session, path, at: None } });
+            self.cmd(Cmd::Ask { tag: "file.marks", req: Request::GitDiff { session, path, at: None, index: None } });
         }
     }
 
@@ -171,9 +171,32 @@ impl Shell {
             .into_any_element()
     }
 
-    /// markdown, as a document.
-    pub(crate) fn document_el(&self, text: String) -> AnyElement {
+    /// a to-do ticked in the document: the source's `[ ]` becomes `[x]` (or
+    /// back), and the file is saved, as if it had been typed.
+    pub(crate) fn toggle_task(&mut self, marker: std::ops::Range<usize>, checked: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(editor) = self.ws.file.as_ref().and_then(|f| f.editor.clone()) else { return };
+        let mut text = editor.read(cx).value().to_string();
+        let Some(was) = text.get(marker.clone()) else { return };
+        // the marker as written: "[ ]", "[x]" or "[X]", or just its middle.
+        let mark = if checked { "x" } else { " " };
+        let fixed = match was.len() {
+            3 if was.starts_with('[') && was.ends_with(']') => format!("[{mark}]"),
+            1 => mark.to_owned(),
+            _ => return,
+        };
+        text.replace_range(marker, &fixed);
+        editor.update(cx, |e, cx| e.set_value(text, window, cx));
+        if let Some(f) = self.ws.file.as_mut() {
+            f.dirty = true;
+        }
+        self.save_file(cx);
+        cx.notify();
+    }
+
+    /// markdown, as a document. its to-dos tick.
+    pub(crate) fn document_el(&self, text: String, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
+        let me = cx.entity().downgrade();
         div()
             .id("file-document")
             .test_support()
@@ -187,7 +210,10 @@ impl Shell {
                     .px(theme::z(24.))
                     .py(theme::z(20.))
                     .set(Type::Prose)
-                    .child(TextView::markdown("file-document-text", text).selectable(true).style(theme::prose(&p))),
+                    .child(TextView::markdown("file-document-text", text).selectable(true).style(theme::prose(&p)).on_task_toggle(move |ev, window, cx| {
+                        let (marker, checked) = (ev.marker_range(), ev.checked());
+                        let _ = me.update(cx, |this, cx| this.toggle_task(marker, checked, window, cx));
+                    })),
             )
             .into_any_element()
     }

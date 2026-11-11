@@ -162,6 +162,14 @@ pub enum Request {
         /// the file as one commit changed it, instead of the work so far.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at: Option<String>,
+        /// against the index instead: `false` what isn't staged (index to
+        /// folder), `true` what is (last commit to index).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        index: Option<bool>,
+    },
+    /// every file in the session's folder that isn't ignored, for finding by name.
+    FsIndex {
+        session: SessionId,
     },
     /// something to look at for a file that isn't text: an image as it is,
     /// anything else (pdf, video, audio, documents) as a thumbnail the daemon makes.
@@ -203,6 +211,9 @@ pub enum Request {
         end: u32,
         #[serde(default)]
         unstage: bool,
+        /// the lines are of the old side (removed lines), not the new.
+        #[serde(default)]
+        old: bool,
     },
     GitCommit {
         session: SessionId,
@@ -424,6 +435,12 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    Paths {
+        paths: Vec<String>,
+        /// there were more than were sent.
+        #[serde(default)]
+        more: bool,
     },
     /// an image to show for a file. `data` is base64.
     Preview {
