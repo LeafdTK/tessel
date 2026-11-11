@@ -1387,3 +1387,46 @@ fn a_shell_already_running_for_the_session_is_shown_rather_than_starting_another
     assert!(!asked.iter().any(|c| matches!(c, Cmd::TermOpen { .. })), "{asked:?}");
     assert!(asked.iter().any(|c| matches!(c, Cmd::TermAttach(3))), "its own session's, not another's: {asked:?}");
 }
+
+// ---- git ----------------------------------------------------------------------------
+
+fn commit(sha: &str, parents: &[&str], subject: &str) -> photon_proto::Commit {
+    photon_proto::Commit { sha: sha.into(), parents: parents.iter().map(|p| (*p).to_owned()).collect(), refs: vec![], author: "Seb".into(), time_ms: 0, subject: subject.into() }
+}
+
+#[gpui_kit::test]
+fn the_git_pane_asks_for_history_and_the_work_tree_stages_and_shows_a_commit(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "git"}
+    ]}}}"#);
+    let asked = rig.asked();
+    let ask = |asked: &[Cmd], want: fn(&Request) -> bool| asked.iter().any(|c| matches!(c, Cmd::Ask { req, .. } if want(req)));
+    assert!(ask(&asked, |r| matches!(r, Request::GitWorkTree { .. })), "{asked:?}");
+    assert!(ask(&asked, |r| matches!(r, Request::GitLog { skip: 0, .. })), "{asked:?}");
+
+    let tree = photon_proto::WorkTree {
+        is_repo: true,
+        staged: vec![],
+        unstaged: vec![photon_proto::FileChange { path: "src/a.rs".into(), status: ChangeStatus::Modified, added: 2, removed: 1, binary: false }],
+        undo: None,
+    };
+    let log = photon_proto::GitLog { commits: vec![commit("b2", &["a1"], "second"), commit("a1", &[], "first")], more: false };
+    rig.feed(cx, vec![
+        UiEvent::Answer { tag: "git.tree", result: Ok(Response::WorkTree { tree }) },
+        UiEvent::Answer { tag: "git.log", result: Ok(Response::GitLog { log }) },
+    ]);
+    assert!(rig.exists(cx, "commit-b2") && rig.exists(cx, "commit-a1"));
+
+    // the button shows under the pointer.
+    cx.update_window(rig.window, |_, window, cx| window.hover("git-unstaged-src/a.rs", cx)).unwrap();
+    rig.settle(cx);
+    rig.click(cx, "git-unstaged-src/a.rs-act");
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::GitStage { paths, .. } if paths == &["src/a.rs".to_owned()])));
+    rig.click(cx, "commit-a1");
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::GitShow { sha, .. } if sha == "a1")));
+    // nothing staged: committing says what's missing instead of asking.
+    rig.click(cx, "git-commit");
+    assert!(!ask(&rig.asked(), |r| matches!(r, Request::GitCommit { .. })));
+}

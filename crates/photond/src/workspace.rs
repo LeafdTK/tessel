@@ -8,8 +8,8 @@
 //! - nothing blocks for long: every external command has a time limit.
 
 use photon_proto::{
-    ChangeStatus, Check, CheckState, DirEntry, ErrorCode, FileChange, FileContent, FileDiff, GitSummary, PrStatus,
-    PrSummary, RpcError,
+    ChangeStatus, Check, CheckState, Commit, DirEntry, ErrorCode, FileChange, FileContent, FileDiff, GitLog, GitSummary, PrStatus,
+    PrSummary, RpcError, WorkTree,
 };
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -134,34 +134,7 @@ pub async fn git_status(dir: &Path) -> GitSummary {
     let mut files: Vec<FileChange> = Vec::new();
 
     if let Some(commit) = &base_commit {
-        // -z: paths are NUL separated and never quoted, so any filename survives.
-        let status = git_bytes(dir, &["diff", "--name-status", "--no-renames", "-z", commit]).await;
-        let numstat = git_bytes(dir, &["diff", "--numstat", "--no-renames", "-z", commit]).await;
-        let mut counts = std::collections::HashMap::new();
-        for rec in numstat.split(|b| *b == 0).filter(|r| !r.is_empty()) {
-            let text = String::from_utf8_lossy(rec);
-            let mut parts = text.splitn(3, '\t');
-            if let (Some(a), Some(r), Some(path)) = (parts.next(), parts.next(), parts.next()) {
-                // binary files report "-" for both counts.
-                counts.insert(path.to_owned(), (a.parse::<u32>().ok(), r.parse::<u32>().ok()));
-            }
-        }
-        let fields: Vec<&[u8]> = status.split(|b| *b == 0).collect();
-        for pair in fields.chunks(2) {
-            let [code, path] = pair else { continue };
-            if path.is_empty() {
-                continue;
-            }
-            let path = String::from_utf8_lossy(path).into_owned();
-            let status = match code.first() {
-                Some(b'A') => ChangeStatus::Added,
-                Some(b'D') => ChangeStatus::Deleted,
-                Some(b'M') | Some(b'T') => ChangeStatus::Modified,
-                _ => ChangeStatus::Unknown,
-            };
-            let (added, removed) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
-            files.push(FileChange { path, status, added: added.unwrap_or(0), removed: removed.unwrap_or(0), binary: added.is_none() });
-        }
+        files = changes(dir, &["diff", commit]).await;
     }
 
     // files git has never been told about. in a repository with no commits yet, that is every file.
@@ -169,15 +142,7 @@ pub async fn git_status(dir: &Path) -> GitSummary {
     if base_commit.is_none() {
         listing.extend(git_bytes(dir, &["ls-files", "-z"]).await);
     }
-    for path in listing.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        let path = String::from_utf8_lossy(path).into_owned();
-        if files.iter().any(|f| f.path == path) {
-            continue;
-        }
-        let bytes = read_capped(&dir.join(&path)).await.map(|(b, _)| b).unwrap_or_default();
-        let binary = is_binary(&bytes);
-        files.push(FileChange { path, status: ChangeStatus::Untracked, added: if binary { 0 } else { count_lines(&bytes) }, removed: 0, binary });
-    }
+    untracked(dir, &listing, &mut files).await;
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let ahead = match &base_name {
@@ -192,6 +157,63 @@ pub async fn git_status(dir: &Path) -> GitSummary {
         added: files.iter().map(|f| f.added).sum(),
         removed: files.iter().map(|f| f.removed).sum(),
         files,
+    }
+}
+
+/// what a `git diff`-like command (its arguments in `cmd`) says changed, with
+/// line counts. -z: paths are NUL separated and never quoted, so any name survives.
+async fn changes(dir: &Path, cmd: &[&str]) -> Vec<FileChange> {
+    let with = |extra: &[&'static str]| {
+        let mut a: Vec<&str> = vec![cmd[0]];
+        a.extend_from_slice(extra);
+        a.extend_from_slice(&cmd[1..]);
+        a
+    };
+    let status = git_bytes(dir, &with(&["--name-status", "--no-renames", "-z"])).await;
+    let numstat = git_bytes(dir, &with(&["--numstat", "--no-renames", "-z"])).await;
+    parse_changes(&status, &numstat)
+}
+
+fn parse_changes(status: &[u8], numstat: &[u8]) -> Vec<FileChange> {
+    let mut counts = std::collections::HashMap::new();
+    for rec in numstat.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let text = String::from_utf8_lossy(rec);
+        let mut parts = text.splitn(3, '\t');
+        if let (Some(a), Some(r), Some(path)) = (parts.next(), parts.next(), parts.next()) {
+            // binary files report "-" for both counts.
+            counts.insert(path.trim_start_matches('\n').to_owned(), (a.trim_start_matches('\n').parse::<u32>().ok(), r.parse::<u32>().ok()));
+        }
+    }
+    let mut files = Vec::new();
+    let fields: Vec<&[u8]> = status.split(|b| *b == 0).collect();
+    for pair in fields.chunks(2) {
+        let [code, path] = pair else { continue };
+        if path.is_empty() {
+            continue;
+        }
+        let path = String::from_utf8_lossy(path).into_owned();
+        let status = match code.iter().rev().find(|b| b.is_ascii_alphabetic()) {
+            Some(b'A') => ChangeStatus::Added,
+            Some(b'D') => ChangeStatus::Deleted,
+            Some(b'M') | Some(b'T') => ChangeStatus::Modified,
+            _ => ChangeStatus::Unknown,
+        };
+        let (added, removed) = counts.get(&path).copied().unwrap_or((Some(0), Some(0)));
+        files.push(FileChange { path, status, added: added.unwrap_or(0), removed: removed.unwrap_or(0), binary: added.is_none() });
+    }
+    files
+}
+
+/// add files git doesn't know (a NUL separated listing) as untracked, counted.
+async fn untracked(dir: &Path, listing: &[u8], files: &mut Vec<FileChange>) {
+    for path in listing.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let path = String::from_utf8_lossy(path).into_owned();
+        if files.iter().any(|f| f.path == path) {
+            continue;
+        }
+        let bytes = read_capped(&dir.join(&path)).await.map(|(b, _)| b).unwrap_or_default();
+        let binary = is_binary(&bytes);
+        files.push(FileChange { path, status: ChangeStatus::Untracked, added: if binary { 0 } else { count_lines(&bytes) }, removed: 0, binary });
     }
 }
 
@@ -224,8 +246,12 @@ fn text_of(bytes: Vec<u8>, cut: bool) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// one file as it was where the work started and as it is now.
-pub async fn git_diff(dir: &Path, rel: &str) -> Result<FileDiff, RpcError> {
+/// one file as it was where the work started and as it is now; or, `at` a
+/// commit, as that commit changed it.
+pub async fn git_diff(dir: &Path, rel: &str, at: Option<&str>) -> Result<FileDiff, RpcError> {
+    if let Some(sha) = at {
+        return diff_at(dir, rel, sha).await;
+    }
     let full = resolve(dir, rel)?;
     let (_, base_commit) = base(dir).await;
     let mut diff = FileDiff { path: rel.to_owned(), ..Default::default() };
@@ -490,7 +516,7 @@ mod tests {
         let tmp = repo().await;
         let d = tmp.path();
         std::fs::write(d.join("keep.txt"), "one\n2\nthree\n").unwrap();
-        let diff = git_diff(d, "keep.txt").await.unwrap();
+        let diff = git_diff(d, "keep.txt", None).await.unwrap();
         assert_eq!(diff.old.as_deref(), Some("one\ntwo\nthree\n"));
         assert_eq!(diff.new.as_deref(), Some("one\n2\nthree\n"));
         assert!(diff.unified.contains("-two") && diff.unified.contains("+2"), "{}", diff.unified);
@@ -498,19 +524,19 @@ mod tests {
 
         // a new file has no old side; a deleted one has no new side.
         std::fs::write(d.join("fresh.txt"), "hello\n").unwrap();
-        let fresh = git_diff(d, "fresh.txt").await.unwrap();
+        let fresh = git_diff(d, "fresh.txt", None).await.unwrap();
         assert_eq!((fresh.old, fresh.new.as_deref()), (None, Some("hello\n")));
         assert!(fresh.unified.contains("+hello"), "{}", fresh.unified);
         std::fs::remove_file(d.join("gone.txt")).unwrap();
-        let gone = git_diff(d, "gone.txt").await.unwrap();
+        let gone = git_diff(d, "gone.txt", None).await.unwrap();
         assert_eq!((gone.old.as_deref(), gone.new), (Some("bye\n"), None));
 
         // binary files are flagged, not dumped.
         std::fs::write(d.join("blob.bin"), [1u8, 0, 2]).unwrap();
-        let blob = git_diff(d, "blob.bin").await.unwrap();
+        let blob = git_diff(d, "blob.bin", None).await.unwrap();
         assert!(blob.binary && blob.old.is_none() && blob.new.is_none());
 
-        assert_eq!(git_diff(d, "never-existed.txt").await.unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(git_diff(d, "never-existed.txt", None).await.unwrap_err().code, ErrorCode::NotFound);
     }
 
     #[tokio::test]
@@ -624,5 +650,406 @@ mod tests {
         let status = pr_status(tmp.path()).await;
         assert!(status.pr.is_none());
         assert!(status.note.is_some_and(|n| !n.is_empty()), "there is always a reason to show");
+    }
+}
+
+// ---- history -------------------------------------------------------------------------
+
+fn sha_ok(sha: &str) -> Result<(), RpcError> {
+    if sha.len() >= 4 && sha.len() <= 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) { Ok(()) } else { Err(invalid(format!("{sha} isn't a commit"))) }
+}
+
+async fn blob(dir: &Path, spec: &str) -> Option<Vec<u8>> {
+    match run("git", dir, &["show", spec], QUICK).await {
+        Ok(out) if out.ok => Some(out.stdout),
+        _ => None,
+    }
+}
+
+/// one file as a commit changed it: its first parent's version, and its own.
+async fn diff_at(dir: &Path, rel: &str, sha: &str) -> Result<FileDiff, RpcError> {
+    sha_ok(sha)?;
+    resolve(dir, rel)?;
+    let mut diff = FileDiff { path: rel.to_owned(), ..Default::default() };
+    let old = blob(dir, &format!("{sha}^:{rel}")).await;
+    let new = blob(dir, &format!("{sha}:{rel}")).await;
+    if old.is_none() && new.is_none() {
+        return Err(RpcError::new(ErrorCode::NotFound, format!("{sha} didn't touch {rel}")));
+    }
+    diff.binary = old.as_deref().is_some_and(is_binary) || new.as_deref().is_some_and(is_binary);
+    if diff.binary {
+        return Ok(diff);
+    }
+    let cut = |mut b: Vec<u8>, d: &mut FileDiff| {
+        let c = b.len() > MAX_FILE;
+        b.truncate(MAX_FILE);
+        d.truncated |= c;
+        text_of(b, c)
+    };
+    diff.old = old.map(|b| cut(b, &mut diff));
+    diff.new = new.map(|b| cut(b, &mut diff));
+    if let Ok(out) = run("git", dir, &["show", "--format=", "--no-renames", "--diff-merges=first-parent", sha, "--", rel], QUICK).await
+        && out.ok
+    {
+        diff.unified = cut(out.stdout, &mut diff);
+    }
+    Ok(diff)
+}
+
+/// a page of history across every branch, newest first, children before parents.
+pub async fn git_log(dir: &Path, skip: u32, limit: u32) -> Result<GitLog, RpcError> {
+    if git(dir, &["rev-parse", "--verify", "-q", "HEAD"]).await.is_none() {
+        return Ok(GitLog::default());
+    }
+    let limit = limit.clamp(1, 2000);
+    let (skip_s, n) = (skip.to_string(), (limit + 1).to_string());
+    let out = run(
+        "git",
+        dir,
+        &["log", "--date-order", "--exclude=refs/stash", "--all", "--format=%H%x00%P%x00%D%x00%an%x00%at%x00%s%x1e", "--skip", &skip_s, "-n", &n],
+        QUICK,
+    )
+    .await
+    .map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
+    if !out.ok {
+        return Err(RpcError::new(ErrorCode::Internal, out.stderr));
+    }
+    let mut commits = parse_log(&String::from_utf8_lossy(&out.stdout));
+    let more = commits.len() > limit as usize;
+    commits.truncate(limit as usize);
+    Ok(GitLog { commits, more })
+}
+
+fn parse_log(text: &str) -> Vec<Commit> {
+    text.split('\x1e')
+        .filter_map(|rec| {
+            let rec = rec.trim_start_matches('\n');
+            let f: Vec<&str> = rec.splitn(6, '\0').collect();
+            let [sha, parents, refs, author, time, subject] = f.as_slice() else { return None };
+            Some(Commit {
+                sha: (*sha).to_owned(),
+                parents: parents.split_whitespace().map(str::to_owned).collect(),
+                refs: refs.split(", ").filter(|r| !r.is_empty()).map(str::to_owned).collect(),
+                author: (*author).to_owned(),
+                time_ms: time.parse::<u64>().unwrap_or(0) * 1000,
+                subject: (*subject).to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// the files one commit changed (against its first parent).
+pub async fn git_show(dir: &Path, sha: &str) -> Result<Vec<FileChange>, RpcError> {
+    sha_ok(sha)?;
+    let mut files = changes(dir, &["show", "--format=", "--diff-merges=first-parent", sha]).await;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+// ---- the index -------------------------------------------------------------------------
+
+/// what is staged (index against the last commit) and what isn't (the folder
+/// against the index, and files git doesn't know).
+pub async fn work_tree(dir: &Path) -> WorkTree {
+    if git(dir, &["rev-parse", "--is-inside-work-tree"]).await.as_deref() != Some("true") {
+        return WorkTree::default();
+    }
+    let mut staged = changes(dir, &["diff", "--cached"]).await;
+    let mut unstaged = changes(dir, &["diff"]).await;
+    let listing = git_bytes(dir, &["ls-files", "--others", "--exclude-standard", "-z"]).await;
+    untracked(dir, &listing, &mut unstaged).await;
+    staged.sort_by(|a, b| a.path.cmp(&b.path));
+    unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+    WorkTree { is_repo: true, staged, unstaged, undo: None }
+}
+
+fn checked(dir: &Path, paths: &[String]) -> Result<(), RpcError> {
+    if paths.is_empty() {
+        return Err(invalid("name at least one file"));
+    }
+    for p in paths {
+        // a deleted file can't be resolved on disk, but its name must still stay inside.
+        resolve(dir, p)?;
+    }
+    Ok(())
+}
+
+async fn must(dir: &Path, args: &[&str]) -> Result<Vec<u8>, RpcError> {
+    let out = run("git", dir, args, QUICK).await.map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
+    if out.ok { Ok(out.stdout) } else { Err(RpcError::new(ErrorCode::Conflict, if out.stderr.is_empty() { format!("git {} failed", args[0]) } else { out.stderr })) }
+}
+
+/// how the index holds some paths now: `mode sha path` lines, so it can be put back.
+pub async fn index_entries(dir: &Path, paths: &[String]) -> Vec<(String, Option<(String, String)>)> {
+    let mut args = vec!["ls-files", "-s", "-z", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    let out = git_bytes(dir, &args).await;
+    let mut found = std::collections::HashMap::new();
+    for rec in out.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+        let text = String::from_utf8_lossy(rec);
+        if let Some((meta, path)) = text.split_once('\t') {
+            let mut m = meta.split_whitespace();
+            if let (Some(mode), Some(sha)) = (m.next(), m.next()) {
+                found.insert(path.to_owned(), (mode.to_owned(), sha.to_owned()));
+            }
+        }
+    }
+    paths.iter().map(|p| (p.clone(), found.get(p).cloned())).collect()
+}
+
+/// put index entries back as they were.
+pub async fn restore_entries(dir: &Path, entries: &[(String, Option<(String, String)>)]) -> Result<(), RpcError> {
+    for (path, entry) in entries {
+        match entry {
+            Some((mode, sha)) => {
+                must(dir, &["update-index", "--add", "--cacheinfo", &format!("{mode},{sha},{path}")]).await?;
+            }
+            None => {
+                must(dir, &["rm", "--cached", "-q", "--ignore-unmatch", "--", path]).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn stage(dir: &Path, paths: &[String]) -> Result<(), RpcError> {
+    checked(dir, paths)?;
+    let mut args = vec!["add", "-A", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    must(dir, &args).await.map(drop)
+}
+
+pub async fn unstage(dir: &Path, paths: &[String]) -> Result<(), RpcError> {
+    checked(dir, paths)?;
+    let has_head = git(dir, &["rev-parse", "--verify", "-q", "HEAD"]).await.is_some();
+    let mut args: Vec<&str> = if has_head { vec!["restore", "--staged", "--"] } else { vec!["rm", "--cached", "-q", "-r", "--"] };
+    args.extend(paths.iter().map(String::as_str));
+    must(dir, &args).await.map(drop)
+}
+
+/// one block of changed lines, from a `-U0` diff: what it took out of the
+/// old side (from `old_start`), and what it put in on the new (from `new_start`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Hunk {
+    pub old_start: u32,
+    pub old_len: u32,
+    pub new_start: u32,
+    pub new_len: u32,
+    pub removed: Vec<String>,
+    pub added: Vec<String>,
+}
+
+fn range(spec: &str) -> (u32, u32) {
+    let spec = spec.trim_start_matches(['-', '+']);
+    match spec.split_once(',') {
+        Some((a, b)) => (a.parse().unwrap_or(0), b.parse().unwrap_or(0)),
+        None => (spec.parse().unwrap_or(0), 1),
+    }
+}
+
+/// the blocks of a `-U0` unified diff for one file. lines keep their line
+/// endings; a line marked "no newline at end of file" has none.
+pub fn parse_hunks(unified: &str) -> Vec<Hunk> {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    let mut last_added = true;
+    for line in unified.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix("@@ ") {
+            let mut parts = rest.split_whitespace();
+            let (Some(old), Some(new)) = (parts.next(), parts.next()) else { continue };
+            let ((os, ol), (ns, nl)) = (range(old), range(new));
+            hunks.push(Hunk { old_start: os, old_len: ol, new_start: ns, new_len: nl, removed: Vec::new(), added: Vec::new() });
+        } else if let Some(h) = hunks.last_mut() {
+            if let Some(t) = line.strip_prefix('+') {
+                h.added.push(t.to_owned());
+                last_added = true;
+            } else if let Some(t) = line.strip_prefix('-') {
+                h.removed.push(t.to_owned());
+                last_added = false;
+            } else if line.starts_with('\\') {
+                let v = if last_added { h.added.last_mut() } else { h.removed.last_mut() };
+                if let Some(l) = v
+                    && l.ends_with('\n')
+                {
+                    l.pop();
+                }
+            }
+        }
+    }
+    hunks
+}
+
+/// `base` with some blocks applied. `pick` says, for each block, which of its
+/// added lines go in (`None`: leave the block out, its old lines stay).
+pub fn apply_hunks(base: &str, hunks: &[Hunk], mut pick: impl FnMut(&Hunk) -> Option<Vec<String>>) -> String {
+    let mut lines: Vec<String> = base.split_inclusive('\n').map(str::to_owned).collect();
+    let choices: Vec<Option<Vec<String>>> = hunks.iter().map(&mut pick).collect();
+    // from the bottom up, so earlier positions stay right.
+    for (h, choice) in hunks.iter().zip(choices).rev() {
+        let Some(added) = choice else { continue };
+        // a pure insertion comes after line `old_start`; otherwise it replaces from it.
+        let at = if h.old_len == 0 { h.old_start as usize } else { h.old_start.saturating_sub(1) as usize };
+        let at = at.min(lines.len());
+        let end = (at + h.old_len as usize).min(lines.len());
+        // a line that lost its newline because it was last gets it back when something follows.
+        if at > 0 && at == lines.len() && !added.is_empty() && !lines[at - 1].ends_with('\n') {
+            lines[at - 1].push('\n');
+        }
+        lines.splice(at..end, added);
+    }
+    lines.concat()
+}
+
+/// stage (or unstage) lines `start..=end` of a file: a block of changes that
+/// touches them is taken whole on the old side, and on the new side only its
+/// lines inside the range. the index entry is written directly; nothing in the
+/// folder changes.
+pub async fn stage_lines(dir: &Path, path: &str, start: u32, end: u32, unstage: bool) -> Result<(), RpcError> {
+    resolve(dir, path)?;
+    if start == 0 || end < start {
+        return Err(invalid("lines are counted from 1, start to end"));
+    }
+    let in_range = |h: &Hunk| {
+        if h.new_len == 0 {
+            // a deletion sits after line `new_start`.
+            h.new_start + 1 >= start && h.new_start <= end
+        } else {
+            h.new_start <= end && h.new_start + h.new_len - 1 >= start
+        }
+    };
+    let has_head = git(dir, &["rev-parse", "--verify", "-q", "HEAD"]).await.is_some();
+    let entry = index_entries(dir, &[path.to_owned()]).await.pop().and_then(|(_, e)| e);
+    let (base, unified) = if unstage {
+        // back toward the last commit: the index minus the chosen blocks.
+        let head = if has_head { blob(dir, &format!("HEAD:{path}")).await.unwrap_or_default() } else { Vec::new() };
+        let diff = must(dir, &["diff", "--cached", "-U0", "--no-color", "--no-ext-diff", "--", path]).await?;
+        (head, diff)
+    } else {
+        // a file git doesn't know yet is first marked as one it will.
+        if entry.is_none() {
+            must(dir, &["add", "-N", "--", path]).await?;
+        }
+        let index = blob(dir, &format!(":{path}")).await.unwrap_or_default();
+        let diff = must(dir, &["diff", "-U0", "--no-color", "--no-ext-diff", "--", path]).await?;
+        (index, diff)
+    };
+    let hunks = parse_hunks(&String::from_utf8_lossy(&unified));
+    if !hunks.iter().any(in_range) {
+        return Err(invalid(format!("nothing changed in lines {start}–{end} of {path}")));
+    }
+    let base = String::from_utf8_lossy(&base).into_owned();
+    let content = if unstage {
+        // every block but the chosen ones stays staged.
+        apply_hunks(&base, &hunks, |h| (!in_range(h)).then(|| h.added.clone()))
+    } else {
+        apply_hunks(&base, &hunks, |h| {
+            in_range(h).then(|| h.added.iter().enumerate().filter(|(i, _)| (start..=end).contains(&(h.new_start + *i as u32))).map(|(_, l)| l.clone()).collect())
+        })
+    };
+    let sha = run_input("git", dir, &["hash-object", "-w", "--stdin", "--path", path], content.into_bytes()).await?;
+    let mode = entry.map_or_else(|| "100644".to_owned(), |(m, _)| m);
+    must(dir, &["update-index", "--add", "--cacheinfo", &format!("{mode},{sha},{path}")]).await.map(drop)
+}
+
+/// run with `input` on stdin; its trimmed output.
+async fn run_input(program: &str, dir: &Path, args: &[&str], input: Vec<u8>) -> Result<String, RpcError> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = Command::new(program)
+        .current_dir(dir)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| RpcError::new(ErrorCode::Internal, format!("could not run {program}: {e}")))?;
+    let mut stdin = child.stdin.take().expect("piped");
+    tokio::spawn(async move {
+        let _ = stdin.write_all(&input).await;
+    });
+    let out = tokio::time::timeout(QUICK, child.wait_with_output()).await.map_err(|_| RpcError::new(ErrorCode::Internal, format!("{program} took too long")))?.map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))?;
+    if !out.status.success() {
+        return Err(RpcError::new(ErrorCode::Conflict, String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+pub async fn head(dir: &Path) -> Option<String> {
+    git(dir, &["rev-parse", "--verify", "-q", "HEAD"]).await
+}
+
+/// commit what is staged. hooks run, and get a minute.
+pub async fn commit(dir: &Path, message: &str) -> Result<String, RpcError> {
+    if message.trim().is_empty() {
+        return Err(invalid("a commit needs a message"));
+    }
+    if git_bytes(dir, &["diff", "--cached", "--name-only"]).await.is_empty() {
+        return Err(RpcError::new(ErrorCode::Conflict, "nothing is staged"));
+    }
+    let out = run("git", dir, &["commit", "-q", "-m", message], Duration::from_secs(60)).await.map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
+    if !out.ok {
+        let why = if out.stderr.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_owned() } else { out.stderr };
+        return Err(RpcError::new(ErrorCode::Conflict, why));
+    }
+    head(dir).await.ok_or_else(|| RpcError::new(ErrorCode::Internal, "the commit left no HEAD"))
+}
+
+/// take back a commit photon made: only if it is still where HEAD is. what
+/// it held goes back to being staged.
+pub async fn uncommit(dir: &Path, sha: &str) -> Result<(), RpcError> {
+    if head(dir).await.as_deref() != Some(sha) {
+        return Err(RpcError::new(ErrorCode::Conflict, "the branch has moved since that commit; it can't be taken back safely"));
+    }
+    if git(dir, &["rev-parse", "--verify", "-q", &format!("{sha}^")]).await.is_some() {
+        must(dir, &["reset", "--soft", "-q", "HEAD~1"]).await.map(drop)
+    } else {
+        // the first commit: the branch goes back to having none.
+        let branch = must(dir, &["symbolic-ref", "-q", "HEAD"]).await?;
+        must(dir, &["update-ref", "-d", String::from_utf8_lossy(&branch).trim()]).await.map(drop)
+    }
+}
+
+/// the staged diff, for writing a message about it. capped: a message needs the gist.
+pub async fn staged_diff(dir: &Path) -> Result<String, RpcError> {
+    let diff = must(dir, &["diff", "--cached", "--no-color", "--no-ext-diff", "--stat", "-p"]).await?;
+    if diff.is_empty() {
+        return Err(RpcError::new(ErrorCode::Conflict, "nothing is staged"));
+    }
+    Ok(text_of(diff[..diff.len().min(60_000)].to_vec(), diff.len() > 60_000))
+}
+
+#[cfg(test)]
+mod git_tests {
+    use super::*;
+
+    #[test]
+    fn a_log_record_reads_whole() {
+        let text = "aaa\0bbb ccc\0HEAD -> main, origin/main, tag: v1\0Seb\01700000000\0fix: a thing\x1e\nddd\0\0\0Seb\01600000000\0first\x1e\n";
+        let c = parse_log(text);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].parents, ["bbb", "ccc"]);
+        assert_eq!(c[0].refs, ["HEAD -> main", "origin/main", "tag: v1"]);
+        assert_eq!(c[0].time_ms, 1_700_000_000_000);
+        assert!(c[1].parents.is_empty() && c[1].refs.is_empty());
+    }
+
+    #[test]
+    fn blocks_apply_from_the_bottom_and_only_the_chosen_lines_go_in() {
+        let base = "a\nb\nc\nd\n";
+        // b -> B1,B2 ; insert X after d.
+        let diff = "@@ -2 +2,2 @@\n-b\n+B1\n+B2\n@@ -4,0 +6 @@\n+X\n";
+        let hunks = parse_hunks(diff);
+        assert_eq!((hunks[0].old_start, hunks[0].old_len, hunks[0].new_start, hunks[0].new_len), (2, 1, 2, 2));
+        assert_eq!(apply_hunks(base, &hunks, |h| Some(h.added.clone())), "a\nB1\nB2\nc\nd\nX\n");
+        // only the first new line of the first block; the second block left out.
+        assert_eq!(apply_hunks(base, &hunks, |h| (h.new_start == 2).then(|| vec![h.added[0].clone()])), "a\nB1\nc\nd\n");
+    }
+
+    #[test]
+    fn a_missing_last_newline_is_kept_missing() {
+        let diff = "@@ -1 +1 @@\n-a\n\\ No newline at end of file\n+b\n\\ No newline at end of file\n";
+        let hunks = parse_hunks(diff);
+        assert_eq!(hunks[0].removed, ["a"]);
+        assert_eq!(hunks[0].added, ["b"]);
+        assert_eq!(apply_hunks("a", &hunks, |h| Some(h.added.clone())), "b");
     }
 }

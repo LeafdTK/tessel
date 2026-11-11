@@ -56,6 +56,16 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl surface SESSION remove NAME
   photonctl mcp                             photon as MCP tools, on stdin/stdout (agents get this)
 
+  a session's repository (what the git pane does):
+  photonctl git SESSION log [-n 30]         history across branches, newest first
+  photonctl git SESSION status              staged and not
+  photonctl git SESSION stage|unstage PATH...
+  photonctl git SESSION lines PATH 4-9 [--unstage]
+                                            stage (or unstage) only those lines
+  photonctl git SESSION commit MESSAGE...
+  photonctl git SESSION undo                take back the last thing photon did here
+  photonctl git SESSION suggest             a commit message for what's staged
+
   terminals the daemon runs (ghostty's emulator; they outlive windows):
   photonctl term ls
   photonctl term open [--cwd DIR] [--session S] [--size 120x32] [-- COMMAND...]
@@ -234,6 +244,7 @@ async fn run() -> anyhow::Result<()> {
             client.request(Request::SurfaceOp { session, op }).await?;
         }
         "term" => term(&client, &mut events, &mut args, json).await?,
+        "git" => git(&client, &mut args, json).await?,
         "settings" => {
             let rest: Vec<String> = std::mem::take(&mut args.rest);
             let reply = if rest.is_empty() { client.request(Request::Settings).await? } else { client.request(Request::SetSettings { patch: ui_args(&rest)? }).await? };
@@ -496,6 +507,83 @@ async fn follow_events(events: &mut Events, json: bool) {
         }
     }
     println!("connection closed");
+}
+
+fn tree_lines(t: &photon_proto::WorkTree) {
+    let mark = |s: &ChangeStatus| match s {
+        ChangeStatus::Added => "A",
+        ChangeStatus::Modified => "M",
+        ChangeStatus::Deleted => "D",
+        ChangeStatus::Untracked => "U",
+        ChangeStatus::Unknown => "?",
+    };
+    println!("staged:");
+    for f in &t.staged {
+        println!("  {} {}  +{} -{}", mark(&f.status), f.path, f.added, f.removed);
+    }
+    println!("not staged:");
+    for f in &t.unstaged {
+        println!("  {} {}  +{} -{}", mark(&f.status), f.path, f.added, f.removed);
+    }
+    if let Some(u) = &t.undo {
+        println!("undo would take back: {u}");
+    }
+}
+
+async fn git(client: &Client, args: &mut Args, json: bool) -> anyhow::Result<()> {
+    let session = resolve(client, &args.next("a session")?).await?;
+    let tree = |r: Response, json: bool| -> anyhow::Result<()> {
+        let Response::WorkTree { tree } = r else { bail!("unexpected reply") };
+        if json {
+            println!("{}", serde_json::to_string(&tree)?);
+        } else {
+            tree_lines(&tree);
+        }
+        Ok(())
+    };
+    match args.next("log, status, stage, unstage, lines, commit, undo or suggest")?.as_str() {
+        "log" => {
+            let limit = args.opt("-n")?.map(|n| n.parse()).transpose().context("-n is a number")?.unwrap_or(30);
+            let Response::GitLog { log } = client.request(Request::GitLog { session, skip: 0, limit }).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string(&log)?);
+            } else {
+                for c in &log.commits {
+                    let refs = if c.refs.is_empty() { String::new() } else { format!(" ({})", c.refs.join(", ")) };
+                    println!("{} {}{refs}", &c.sha[..c.sha.len().min(8)], c.subject);
+                }
+            }
+        }
+        "status" => tree(client.request(Request::GitWorkTree { session }).await?, json)?,
+        verb @ ("stage" | "unstage") => {
+            let paths = std::mem::take(&mut args.rest);
+            let req = if verb == "stage" { Request::GitStage { session, paths } } else { Request::GitUnstage { session, paths } };
+            tree(client.request(req).await?, json)?;
+        }
+        "lines" => {
+            // photonctl git S lines PATH 4-9 [--unstage]
+            let unstage = args.flag("--unstage");
+            let path = args.next("a file")?;
+            let range = args.next("lines, like 4-9")?;
+            let (start, end) = match range.split_once('-') {
+                Some((a, b)) => (a.parse()?, b.parse()?),
+                None => (range.parse()?, range.parse()?),
+            };
+            tree(client.request(Request::GitStageLines { session, path, start, end, unstage }).await?, json)?;
+        }
+        "commit" => {
+            let message = std::mem::take(&mut args.rest).join(" ");
+            let Response::Committed { sha } = client.request(Request::GitCommit { session, message }).await? else { bail!("unexpected reply") };
+            println!("{sha}");
+        }
+        "undo" => tree(client.request(Request::GitUndo { session }).await?, json)?,
+        "suggest" => {
+            let Response::Suggested { message } = client.request(Request::GitSuggestMessage { session }).await? else { bail!("unexpected reply") };
+            println!("{message}");
+        }
+        other => bail!("unknown git command {other}: use log, status, stage, unstage, lines, commit, undo or suggest"),
+    }
+    Ok(())
 }
 
 fn term_line(t: &photon_proto::term::TermInfo) -> String {

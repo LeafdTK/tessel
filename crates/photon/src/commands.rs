@@ -70,6 +70,7 @@ pub static COMMANDS: &[Spec] = &[
     c("pane.show", "Show Info here", "info", None, r#"{"module":"info"}"#, ""),
     c("pane.show", "Show Surfaces here", "layout-dashboard", None, r#"{"module":"surfaces"}"#, ""),
     c("pane.show", "Show Terminal here", "square-terminal", None, r#"{"module":"terminal"}"#, ""),
+    c("pane.show", "Show Git here", "git-graph", None, r#"{"module":"git"}"#, ""),
     c("terminal.new", "New terminal", "square-terminal", Some("⌃ `"), "{}", "opens a shell below the focused pane; answers with its pane"),
     q("pane.focus", "Focus a pane", "pane"),
     q("pane.toggle", "Show or hide a pane", "pane"),

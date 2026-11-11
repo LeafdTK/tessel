@@ -71,6 +71,45 @@ pub struct FileDiff {
     pub truncated: bool,
 }
 
+/// one commit in the history.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Commit {
+    pub sha: String,
+    /// its parents' shas: none for the first commit, two or more for a merge.
+    #[serde(default)]
+    pub parents: Vec<String>,
+    /// branches and tags pointing at it, as git decorates them (`HEAD -> main`, `origin/main`, `tag: v1`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
+    pub author: String,
+    /// when it was made, in ms since the epoch.
+    pub time_ms: u64,
+    pub subject: String,
+}
+
+/// a page of history, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitLog {
+    pub commits: Vec<Commit>,
+    /// there are older commits past this page.
+    #[serde(default)]
+    pub more: bool,
+}
+
+/// what is staged for the next commit, and what isn't yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkTree {
+    pub is_repo: bool,
+    #[serde(default)]
+    pub staged: Vec<FileChange>,
+    /// changed since staged, and files git doesn't know yet.
+    #[serde(default)]
+    pub unstaged: Vec<FileChange>,
+    /// something photon did here that `GitUndo` would take back, said plainly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirEntry {
     pub name: String,

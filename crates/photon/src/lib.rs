@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod commands;
+pub mod graph;
 pub mod model;
 pub mod motion;
 pub mod rich;

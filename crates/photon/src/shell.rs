@@ -12,6 +12,7 @@ mod ask;
 mod compose;
 mod composer;
 mod exec;
+mod git;
 mod palette;
 mod panel;
 mod panes;
@@ -162,6 +163,11 @@ pub struct Shell {
     term_opening: std::collections::HashSet<(String, Option<SessionId>)>,
     /// a terminal pane that takes the keys as soon as its shell is up.
     term_focus: Option<String>,
+    git: git::GitView,
+    /// the commit went in: the message box empties (it needs a window to).
+    git_clear_message: bool,
+    /// a message written for what's staged, for the message box.
+    git_suggestion: Option<String>,
     pub(crate) palette_ui: palette::PaletteState,
     /// the pointer is over the transcript's message rail.
     rail_open: bool,
@@ -465,6 +471,9 @@ impl Shell {
             pane_terms: HashMap::new(),
             term_opening: Default::default(),
             term_focus: None,
+            git: git::GitView::new(window, cx),
+            git_clear_message: false,
+            git_suggestion: None,
             palette_ui,
             rail_open: false,
             ask_open: false,
@@ -685,6 +694,8 @@ impl Shell {
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
             UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
+            UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
+            UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {
                 self.show_new = false;
@@ -1738,6 +1749,7 @@ impl Render for Shell {
         self.sync_panes();
         self.sync_surfaces_dock(cx);
         self.sync_terminals(window, cx);
+        self.sync_git_message(window, cx);
         // the panel follows the open session, and a file that has arrived gets its editor.
         self.switch_workspace();
         self.materialize_file(window, cx);

@@ -187,6 +187,31 @@ pub fn parse_models(line: &str, request_id: &str) -> Option<Vec<ModelInfo>> {
 impl Backend for ClaudeBackend {
     /// start a throwaway agent, ask it what it can run as, and stop it. no
     /// message is sent, so nothing is spent.
+    fn one_shot(&self, prompt: String, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
+        let mut cmd = tokio::process::Command::new(&self.program);
+        // the question goes on stdin: a diff can be longer than an argument may be.
+        cmd.args(["-p", "--model", model, "--output-format", "text", "--tools", ""])
+            .current_dir(std::env::temp_dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(env) = &self.env {
+            cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        }
+        Box::pin(async move {
+            let mut child = cmd.spawn().context("could not start the agent")?;
+            let mut stdin = child.stdin.take().context("no stdin")?;
+            stdin.write_all(prompt.as_bytes()).await?;
+            drop(stdin);
+            let out = tokio::time::timeout(std::time::Duration::from_secs(90), child.wait_with_output()).await.context("the agent took too long")??;
+            if !out.status.success() {
+                anyhow::bail!("the agent failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+            }
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+        })
+    }
+
     fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<ModelInfo>>> + Send>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])

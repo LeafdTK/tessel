@@ -628,6 +628,7 @@ impl Shell {
             Module::Info => div().size_full().child(self.info_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Surfaces => self.surfaces_pane(cx),
             Module::Terminal => self.terminal_el(pane.map_or("", |p| p.id.as_str()), cx),
+            Module::Git => self.git_el(cx),
         }
     }
 

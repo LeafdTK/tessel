@@ -93,6 +93,7 @@ Modules:
 | `artifacts`    | plans and files the agent made                                        |
 | `info`         | the session: model, cost, tool servers, linked folders                |
 | `terminal`     | a shell in the session's folder, run by the daemon on Ghostty's core: it outlives the window, and scripts can read and drive it (`photonctl term`) |
+| `git`          | every branch's history as a graph; stage and unstage files (or lines, from a diff), commit with a message you write or one written for you, undo what photon did |
 | `surfaces`     | live views the agent drew for a pane (`photon_surface`, region `pane`). while one is open those leave the chat |
 
 Panes are tiles on the frame: 8 points apart, each a sheet with orchard's panel corner.

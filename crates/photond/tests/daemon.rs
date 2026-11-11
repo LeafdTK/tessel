@@ -616,7 +616,7 @@ async fn a_client_can_see_what_changed_and_read_and_save_files_through_the_daemo
     let Response::Git { summary } = c.request(Request::GitStatus { session: s.id }).await.unwrap() else { panic!() };
     assert_eq!(summary.files.len(), 1);
     assert_eq!((summary.files[0].path.as_str(), summary.files[0].status, summary.added, summary.removed), ("src/lib.rs", ChangeStatus::Modified, 1, 0));
-    let Response::Diff { diff } = c.request(Request::GitDiff { session: s.id, path: "src/lib.rs".into() }).await.unwrap() else { panic!() };
+    let Response::Diff { diff } = c.request(Request::GitDiff { session: s.id, path: "src/lib.rs".into(), at: None }).await.unwrap() else { panic!() };
     assert!(diff.unified.contains("+fn b() {}"));
     assert_eq!(diff.old.as_deref(), Some("fn a() {}\n"));
 
@@ -627,7 +627,7 @@ async fn a_client_can_see_what_changed_and_read_and_save_files_through_the_daemo
     };
     assert_eq!(code(c.request(Request::FsRead { session: s.id, path: "../state.json".into() }).await), ErrorCode::Invalid);
     assert_eq!(code(c.request(Request::FsWrite { cmd_id: Uuid::new_v4(), session: s.id, path: "/tmp/photon-escape".into(), content: "x".into() }).await), ErrorCode::Invalid);
-    assert_eq!(code(c.request(Request::GitDiff { session: s.id, path: "../../etc/passwd".into() }).await), ErrorCode::Invalid);
+    assert_eq!(code(c.request(Request::GitDiff { session: s.id, path: "../../etc/passwd".into(), at: None }).await), ErrorCode::Invalid);
     assert!(!std::path::Path::new("/tmp/photon-escape").exists());
     // and a session that doesn't exist is said so.
     assert_eq!(code(c.request(Request::GitStatus { session: SessionId::new() }).await), ErrorCode::NotFound);
@@ -1006,4 +1006,80 @@ async fn closing_a_running_terminal_hangs_it_up() {
     c.request(Request::TermClose { term: info.id }).await.unwrap();
     events_until(&mut ev, "hung up and forgotten", |e| matches!(e, Event::TermRemoved { term } if *term == info.id)).await;
     d.stop().await;
+}
+
+#[tokio::test]
+async fn history_staging_by_lines_commits_and_undo_all_go_through_the_daemon() {
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("graph");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"]] {
+        git(&repo, args);
+    }
+    std::fs::write(repo.join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "first"]);
+    let (c, _) = d.client().await;
+    let s = create(&c, repo.to_str().unwrap(), None).await;
+    let tree = |r: Response| match r {
+        Response::WorkTree { tree } => tree,
+        other => panic!("{other:?}"),
+    };
+    let index_of = |path: &str| String::from_utf8(std::process::Command::new("git").arg("-C").arg(&repo).args(["show", &format!(":{path}")]).output().unwrap().stdout).unwrap();
+
+    // two separate changes in one file; stage only the second, by its lines.
+    std::fs::write(repo.join("a.txt"), "ONE\ntwo\nthree\nFOUR\nfive\n").unwrap();
+    std::fs::write(repo.join("new.txt"), "fresh\n").unwrap();
+    let t = tree(c.request(Request::GitWorkTree { session: s.id }).await.unwrap());
+    assert!(t.staged.is_empty());
+    assert_eq!(t.unstaged.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["a.txt", "new.txt"]);
+    let t = tree(c.request(Request::GitStageLines { session: s.id, path: "a.txt".into(), start: 4, end: 5, unstage: false }).await.unwrap());
+    assert_eq!(index_of("a.txt"), "one\ntwo\nthree\nFOUR\nfive\n", "only the lines asked for");
+    assert_eq!(t.undo.as_deref(), Some("Stage lines 4–5 of a.txt"));
+    assert!(t.staged.iter().any(|f| f.path == "a.txt") && t.unstaged.iter().any(|f| f.path == "a.txt"), "partly staged: in both lists");
+
+    // and a whole file, then take that back.
+    tree(c.request(Request::GitStage { session: s.id, paths: vec!["new.txt".into()] }).await.unwrap());
+    let t = tree(c.request(Request::GitUndo { session: s.id }).await.unwrap());
+    assert!(!t.staged.iter().any(|f| f.path == "new.txt"), "undone");
+    assert_eq!(t.undo.as_deref(), Some("Stage lines 4–5 of a.txt"), "the one before is next");
+
+    // a message for what's staged, from a small model, over the staged diff.
+    let Response::Suggested { message } = c.request(Request::GitSuggestMessage { session: s.id }).await.unwrap() else { panic!() };
+    assert!(!message.is_empty());
+    let asked = d.backend.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].1, "haiku");
+    assert!(asked[0].0.contains("+FOUR") && !asked[0].0.contains("+ONE"), "the staged diff, not the rest");
+
+    let Response::Committed { sha } = c.request(Request::GitCommit { session: s.id, message: "second".into() }).await.unwrap() else { panic!() };
+    let Response::GitLog { log } = c.request(Request::GitLog { session: s.id, skip: 0, limit: 10 }).await.unwrap() else { panic!() };
+    assert_eq!(log.commits.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(), ["second", "first"]);
+    assert_eq!(log.commits[0].sha, sha);
+    assert_eq!(log.commits[0].parents, [log.commits[1].sha.clone()]);
+    assert!(log.commits[0].refs.iter().any(|r| r == "HEAD -> main"), "{:?}", log.commits[0].refs);
+    assert!(!log.more);
+    let Response::Changed { files } = c.request(Request::GitShow { session: s.id, sha: sha.clone() }).await.unwrap() else { panic!() };
+    assert_eq!(files.iter().map(|f| (f.path.as_str(), f.added, f.removed)).collect::<Vec<_>>(), [("a.txt", 2, 1)]);
+    let Response::Diff { diff } = c.request(Request::GitDiff { session: s.id, path: "a.txt".into(), at: Some(sha.clone()) }).await.unwrap() else { panic!() };
+    assert_eq!(diff.old.as_deref(), Some("one\ntwo\nthree\nfour\n"));
+    assert_eq!(diff.new.as_deref(), Some("one\ntwo\nthree\nFOUR\nfive\n"));
+
+    // undoing the commit puts its changes back to staged; then the line staging.
+    let t = tree(c.request(Request::GitUndo { session: s.id }).await.unwrap());
+    assert!(t.staged.iter().any(|f| f.path == "a.txt"));
+    let Response::GitLog { log } = c.request(Request::GitLog { session: s.id, skip: 0, limit: 10 }).await.unwrap() else { panic!() };
+    assert_eq!(log.commits.len(), 1);
+    tree(c.request(Request::GitUndo { session: s.id }).await.unwrap());
+    assert_eq!(index_of("a.txt"), "one\ntwo\nthree\nfour\n");
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "ONE\ntwo\nthree\nFOUR\nfive\n", "the folder was never touched");
+
+    // nothing left: undo says so. something moved behind photon's back: undo refuses.
+    assert!(c.request(Request::GitUndo { session: s.id }).await.is_err());
+    tree(c.request(Request::GitStage { session: s.id, paths: vec!["new.txt".into()] }).await.unwrap());
+    std::fs::write(repo.join("new.txt"), "changed\n").unwrap();
+    git(&repo, &["add", "new.txt"]);
+    let err = c.request(Request::GitUndo { session: s.id }).await.unwrap_err();
+    assert!(err.to_string().contains("staged differently since"), "{err}");
+    assert!(c.request(Request::GitStage { session: s.id, paths: vec!["../escape".into()] }).await.is_err(), "paths stay inside");
 }

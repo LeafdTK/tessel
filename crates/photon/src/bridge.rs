@@ -58,6 +58,9 @@ pub enum Cmd {
     TermInput(TermId, Vec<u8>),
     TermResize(TermId, u16, u16),
     TermClose(TermId),
+    /// any request, answered as `UiEvent::Answer` with the same tag: for
+    /// modules that just ask and show (the git graph).
+    Ask { tag: &'static str, req: Request },
 }
 
 #[derive(Debug)]
@@ -93,6 +96,7 @@ pub enum UiEvent {
     TermOutput(TermId, Vec<u8>),
     TermUpdated(TermInfo),
     TermRemoved(TermId),
+    Answer { tag: &'static str, result: Result<Response, String> },
     /// a session started aside exists, with this id.
     Aside(SessionId),
     /// something the user did failed. shown, not fatal.
@@ -335,6 +339,18 @@ async fn session(
                         });
                         Ok(())
                     }
+                    Cmd::Ask { tag, req } => {
+                        let (client, ui) = (client.clone(), ui.clone());
+                        tokio::spawn(async move {
+                            let result = match client.request(req).await {
+                                Ok(r) => Ok(r),
+                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            let _ = ui.send(UiEvent::Answer { tag, result });
+                        });
+                        Ok(())
+                    }
                     Cmd::TermAttach(term) => {
                         ask(client, ui, Request::TermAttach { term }, |_| None);
                         Ok(())
@@ -378,7 +394,7 @@ async fn session(
                         Ok(())
                     }
                     Cmd::Diff { session, path } => {
-                        ask(client, ui, Request::GitDiff { session, path }, move |r| match r {
+                        ask(client, ui, Request::GitDiff { session, path, at: None }, move |r| match r {
                             Response::Diff { diff } => Some(UiEvent::Diff { session, diff }),
                             _ => None,
                         });

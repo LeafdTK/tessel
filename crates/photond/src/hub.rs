@@ -138,6 +138,43 @@ pub struct Hub {
     settings: photon_proto::DaemonSettings,
     terms: std::collections::BTreeMap<TermId, crate::term::Handle>,
     next_term: TermId,
+    /// what photon did to each session's repository, newest last: what undo takes back.
+    git_undo: GitUndoStacks,
+}
+
+type GitUndoStacks = Arc<std::sync::Mutex<HashMap<SessionId, Vec<GitUndo>>>>;
+
+/// something photon did to a repository, and how to take it back.
+enum GitUndo {
+    /// index entries as they were before, and as the change left them.
+    Index { what: String, before: Vec<(String, Option<(String, String)>)>, after: Vec<(String, Option<(String, String)>)> },
+    Commit { what: String, sha: String },
+}
+
+impl GitUndo {
+    fn what(&self) -> &str {
+        match self {
+            GitUndo::Index { what, .. } | GitUndo::Commit { what, .. } => what,
+        }
+    }
+}
+
+/// the work tree, with what undo would take back.
+async fn tree_with_undo(dir: &Path, undo: &GitUndoStacks, session: SessionId) -> photon_proto::WorkTree {
+    let mut tree = workspace::work_tree(dir).await;
+    tree.undo = undo.lock().unwrap().get(&session).and_then(|s| s.last()).map(|u| u.what().to_owned());
+    tree
+}
+
+fn short_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn names(paths: &[String]) -> String {
+    match paths {
+        [one] => short_name(one).to_owned(),
+        many => format!("{} files", many.len()),
+    }
 }
 
 pub fn now_ms() -> Millis {
@@ -167,6 +204,7 @@ impl Hub {
             settings: photon_proto::DaemonSettings::default(),
             terms: Default::default(),
             next_term: 1,
+            git_undo: Default::default(),
         };
         hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
@@ -516,8 +554,89 @@ impl Hub {
             Request::GitStatus { session } => {
                 return self.in_workdir(client, id, session, |dir| async move { Ok(Response::Git { summary: workspace::git_status(&dir).await }) });
             }
-            Request::GitDiff { session, path } => {
-                return self.in_workdir(client, id, session, |dir| async move { workspace::git_diff(&dir, &path).await.map(|diff| Response::Diff { diff }) });
+            Request::GitDiff { session, path, at } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::git_diff(&dir, &path, at.as_deref()).await.map(|diff| Response::Diff { diff }) });
+            }
+            Request::GitLog { session, skip, limit } => {
+                return self.in_workdir(client, id, session, move |dir| async move { workspace::git_log(&dir, skip, limit).await.map(|log| Response::GitLog { log }) });
+            }
+            Request::GitShow { session, sha } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::git_show(&dir, &sha).await.map(|files| Response::Changed { files }) });
+            }
+            Request::GitWorkTree { session } => {
+                let undo = self.git_undo.clone();
+                return self.in_workdir(client, id, session, move |dir| async move { Ok(Response::WorkTree { tree: tree_with_undo(&dir, &undo, session).await }) });
+            }
+            req @ (Request::GitStage { .. } | Request::GitUnstage { .. } | Request::GitStageLines { .. }) => {
+                let undo = self.git_undo.clone();
+                let (session, paths, what) = match &req {
+                    Request::GitStage { session, paths } => (*session, paths.clone(), format!("Stage {}", names(paths))),
+                    Request::GitUnstage { session, paths } => (*session, paths.clone(), format!("Unstage {}", names(paths))),
+                    Request::GitStageLines { session, path, start, end, unstage } => {
+                        (*session, vec![path.clone()], format!("{} lines {start}–{end} of {}", if *unstage { "Unstage" } else { "Stage" }, short_name(path)))
+                    }
+                    _ => unreachable!(),
+                };
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let before = workspace::index_entries(&dir, &paths).await;
+                    match req {
+                        Request::GitStage { paths, .. } => workspace::stage(&dir, &paths).await?,
+                        Request::GitUnstage { paths, .. } => workspace::unstage(&dir, &paths).await?,
+                        Request::GitStageLines { path, start, end, unstage, .. } => workspace::stage_lines(&dir, &path, start, end, unstage).await?,
+                        _ => unreachable!(),
+                    }
+                    let after = workspace::index_entries(&dir, &paths).await;
+                    if before != after {
+                        undo.lock().unwrap().entry(session).or_default().push(GitUndo::Index { what, before, after });
+                    }
+                    Ok(Response::WorkTree { tree: tree_with_undo(&dir, &undo, session).await })
+                });
+            }
+            Request::GitCommit { session, message } => {
+                let undo = self.git_undo.clone();
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let sha = workspace::commit(&dir, &message).await?;
+                    let subject = message.lines().next().unwrap_or("").chars().take(40).collect::<String>();
+                    undo.lock().unwrap().entry(session).or_default().push(GitUndo::Commit { sha: sha.clone(), what: format!("Commit “{subject}”") });
+                    Ok(Response::Committed { sha })
+                });
+            }
+            Request::GitUndo { session } => {
+                let undo = self.git_undo.clone();
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let Some(last) = undo.lock().unwrap().get_mut(&session).and_then(Vec::pop) else {
+                        return Err(RpcError::new(ErrorCode::Conflict, "there's nothing photon did here to take back"));
+                    };
+                    let result = match &last {
+                        GitUndo::Index { before, after, .. } => {
+                            let paths: Vec<String> = after.iter().map(|(p, _)| p.clone()).collect();
+                            if workspace::index_entries(&dir, &paths).await != *after {
+                                Err(RpcError::new(ErrorCode::Conflict, "those files were staged differently since; nothing was undone"))
+                            } else {
+                                workspace::restore_entries(&dir, before).await
+                            }
+                        }
+                        GitUndo::Commit { sha, .. } => workspace::uncommit(&dir, sha).await,
+                    };
+                    if let Err(e) = result {
+                        // what couldn't be undone stays undoable no more: something else moved.
+                        return Err(e);
+                    }
+                    Ok(Response::WorkTree { tree: tree_with_undo(&dir, &undo, session).await })
+                });
+            }
+            Request::GitSuggestMessage { session } => {
+                let backend = self.backend.clone();
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let diff = workspace::staged_diff(&dir).await?;
+                    let prompt = format!(
+                        "Write the commit message for this staged change. Reply with the message only: one line, imperative, \
+lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characters, no quotes, no trailing period.\n\n{diff}"
+                    );
+                    let message = backend.one_shot(prompt, "haiku").await.map_err(|e| RpcError::new(ErrorCode::Internal, format!("couldn't write a message: {e:#}")))?;
+                    let message = message.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().trim_matches(['"', '`', '\'']).to_owned();
+                    Ok(Response::Suggested { message })
+                });
             }
             Request::FsList { session, path } => {
                 return self.in_workdir(client, id, session, |dir| async move { workspace::list(&dir, &path).await.map(|entries| Response::Dir { entries }) });

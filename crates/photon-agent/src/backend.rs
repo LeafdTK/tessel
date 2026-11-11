@@ -67,4 +67,10 @@ pub trait Backend: Send + Sync + 'static {
     fn spawn(&self, opts: SpawnOpts) -> anyhow::Result<Spawned>;
     /// the models this agent can run as. asked rarely; may take a second.
     fn models(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ModelInfo>>> + Send>>;
+    /// one question, one answer, no session: for small jobs like a commit
+    /// message. `model` is an alias (`haiku`) or an id.
+    fn one_shot(&self, prompt: String, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>> {
+        let _ = (prompt, model);
+        Box::pin(async { anyhow::bail!("this agent can't answer one-off questions") })
+    }
 }

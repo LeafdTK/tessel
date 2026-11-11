@@ -25,6 +25,8 @@ pub struct ReplayBackend {
     /// everything written to any spawned agent, for tests to inspect.
     pub written: Arc<Mutex<Vec<String>>>,
     pub spawned: Arc<Mutex<Vec<SpawnOpts>>>,
+    /// every one-off question asked, and the model it was asked of.
+    pub asked: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl ReplayBackend {
@@ -36,6 +38,7 @@ impl ReplayBackend {
             max_gap: Duration::ZERO,
             written: Default::default(),
             spawned: Default::default(),
+            asked: Default::default(),
         }
     }
 
@@ -47,6 +50,11 @@ impl ReplayBackend {
 }
 
 impl Backend for ReplayBackend {
+    fn one_shot(&self, prompt: String, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
+        self.asked.lock().unwrap().push((prompt, model.to_owned()));
+        Box::pin(async { Ok("fix: what the replay agent would say".to_owned()) })
+    }
+
     fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<photon_proto::ModelInfo>>> + Send>> {
         let model = |value: &str, id: &str, name: &str, description: &str| photon_proto::ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: description.into() };
         let models = vec![

@@ -232,6 +232,7 @@ impl Shell {
 
     /// ask the daemon for what the visible tabs show. nothing visible asks for nothing.
     pub(crate) fn refresh_workspace(&mut self) {
+        self.refresh_git();
         let Some(session) = self.ws_session else { return };
         let tabs = self.visible_tabs();
         if tabs.is_empty() {

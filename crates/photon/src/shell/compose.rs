@@ -138,7 +138,7 @@ impl Shell {
             let n = self.model.open.as_ref().map_or(0, |o| o.len());
             self.scroller.update(cx, |s, cx| s.remeasure_items(0..n, cx));
         }
-        if self.panel_visible() {
+        if self.panel_visible() || self.git_visible() {
             self.refresh_workspace();
         }
         cx.notify();

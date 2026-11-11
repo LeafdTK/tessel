@@ -159,6 +159,57 @@ pub enum Request {
     GitDiff {
         session: SessionId,
         path: String,
+        /// the file as one commit changed it, instead of the work so far.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<String>,
+    },
+    /// a page of history, newest first.
+    GitLog {
+        session: SessionId,
+        #[serde(default)]
+        skip: u32,
+        #[serde(default = "default_log_page")]
+        limit: u32,
+    },
+    /// the files one commit changed.
+    GitShow {
+        session: SessionId,
+        sha: String,
+    },
+    /// what is staged, and what isn't.
+    GitWorkTree {
+        session: SessionId,
+    },
+    GitStage {
+        session: SessionId,
+        paths: Vec<String>,
+    },
+    GitUnstage {
+        session: SessionId,
+        paths: Vec<String>,
+    },
+    /// stage (or unstage) only some lines of a file: lines `start..=end`
+    /// of the file as it is now (as staged, for unstaging), 1-based.
+    GitStageLines {
+        session: SessionId,
+        path: String,
+        start: u32,
+        end: u32,
+        #[serde(default)]
+        unstage: bool,
+    },
+    GitCommit {
+        session: SessionId,
+        message: String,
+    },
+    /// take back the last thing photon did to the repository (a stage, an
+    /// unstage, a commit), if nothing has moved since.
+    GitUndo {
+        session: SessionId,
+    },
+    /// a commit message for what is staged, written by a small fast model.
+    GitSuggestMessage {
+        session: SessionId,
     },
     /// the entries of a directory (`""` for the top).
     FsList {
@@ -308,6 +359,10 @@ impl Default for DaemonSettings {
     }
 }
 
+fn default_log_page() -> u32 {
+    200
+}
+
 fn default_wait_ms() -> u64 {
     30_000
 }
@@ -360,6 +415,22 @@ pub enum Response {
     },
     Diff {
         diff: crate::FileDiff,
+    },
+    GitLog {
+        log: crate::GitLog,
+    },
+    /// the files a commit changed.
+    Changed {
+        files: Vec<crate::FileChange>,
+    },
+    WorkTree {
+        tree: crate::WorkTree,
+    },
+    Committed {
+        sha: String,
+    },
+    Suggested {
+        message: String,
     },
     Dir {
         entries: Vec<crate::DirEntry>,
