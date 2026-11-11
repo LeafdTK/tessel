@@ -64,6 +64,11 @@ pub fn set_model(request_id: &str, model: &str) -> Value {
     json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "set_model", "model": model}})
 }
 
+/// change settings of a running agent: effort, fast mode.
+pub fn apply_flag_settings(request_id: &str, settings: &Value) -> Value {
+    json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "apply_flag_settings", "settings": settings}})
+}
+
 pub fn mcp_status(request_id: &str) -> Value {
     json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "mcp_status"}})
 }

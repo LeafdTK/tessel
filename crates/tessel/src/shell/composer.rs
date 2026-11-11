@@ -197,126 +197,125 @@ impl Shell {
         cx.notify();
     }
 
-    /// the files that will go with the next message, each removable. nothing when there are none.
+    /// a picture's thumbnail, decoded the first time it's drawn.
+    fn thumb(&self, a: &Attachment) -> Option<Arc<Image>> {
+        let format = match a.media_type.as_str() {
+            "image/png" => ImageFormat::Png,
+            "image/jpeg" => ImageFormat::Jpeg,
+            "image/gif" => ImageFormat::Gif,
+            "image/webp" => ImageFormat::Webp,
+            _ => return None,
+        };
+        let key = (a.data.as_ptr() as usize, a.data.len());
+        let mut thumbs = self.thumbs.borrow_mut();
+        if let Some(t) = thumbs.get(&key) {
+            return Some(t.clone());
+        }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&a.data).ok()?;
+        let image = Arc::new(Image::from_bytes(format, bytes));
+        thumbs.insert(key, image.clone());
+        Some(image)
+    }
+
+    /// the files that will go with the next message, each removable: pictures
+    /// as themselves, anything else as its name. nothing when there are none.
     pub(crate) fn attachment_chips(&self, cx: &mut Context<Self>) -> Option<Div> {
+        // forget the pictures that are no longer going.
+        let live: HashSet<(usize, usize)> = self.attachments.iter().map(|a| (a.data.as_ptr() as usize, a.data.len())).collect();
+        self.thumbs.borrow_mut().retain(|k, _| live.contains(k));
         if self.attachments.is_empty() {
             return None;
         }
         let p = self.palette.get();
-        let mut chips = h_flex().flex_wrap().gap_1();
+        let mut chips = h_flex().flex_wrap().gap(theme::z(8.));
         for (ix, a) in self.attachments.iter().enumerate() {
-            chips = chips.child(
-                h_flex()
-                    .pl_2()
-                    .gap_1()
-                    .rounded(px(theme::R_TILE))
+            let remove = div()
+                .id(("detach", ix))
+                .test_support()
+                .aria_label(SharedString::from(format!("Remove {}", a.name)))
+                .absolute()
+                .top(theme::z(-6.))
+                .right(theme::z(-6.))
+                .size(theme::z(18.))
+                .rounded_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(p.raised)
+                .border_1()
+                .border_color(p.separator)
+                .shadow_sm()
+                .cursor_pointer()
+                .hover(|d| d.bg(p.hover))
+                .on_click(cx.listener(move |this, _, _, cx| this.detach(ix, cx)))
+                .child(Icon::empty().path("icons/x.svg").size(theme::z(10.)).text_color(p.secondary));
+            let chip = match self.thumb(a) {
+                Some(image) => div()
+                    .size(theme::z(56.))
+                    .rounded(theme::z(theme::R_TILE))
+                    .border_1()
+                    .border_color(p.separator)
+                    .overflow_hidden()
+                    .child(img(image).size_full().object_fit(ObjectFit::Cover)),
+                None => h_flex()
+                    .h(theme::z(40.))
+                    .pl(theme::z(8.))
+                    .pr(theme::z(12.))
+                    .gap(theme::z(8.))
+                    .rounded(theme::z(theme::R_TILE))
+                    .border_1()
+                    .border_color(p.separator)
                     .bg(p.fill)
-                    .set(Type::Subheadline)
-                    .text_color(p.label)
-                    .child(a.name.clone())
-                    .child(Button::new(("detach", ix)).xsmall().ghost().label("×").tooltip("Remove").on_click(cx.listener(move |this, _, _, cx| this.detach(ix, cx)))),
-            );
+                    .child(
+                        div()
+                            .size(theme::z(26.))
+                            .rounded(theme::z(6.))
+                            .bg(p.raised)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(Icon::empty().path("icons/file.svg").size(theme::z(14.)).text_color(p.secondary)),
+                    )
+                    .child(
+                        v_flex()
+                            .child(div().max_w(theme::z(180.)).truncate().set(Type::Callout).text_color(p.label).child(a.name.clone()))
+                            .child(div().set(Type::Subheadline).text_color(p.tertiary).child(kind_of(&a.media_type, &a.name))),
+                    ),
+            };
+            chips = chips.child(div().relative().child(chip).child(remove));
         }
         Some(chips)
     }
 
     /// where the message is typed. `bare` leaves off its own border and fill,
     /// for when what is around it is the box.
-    pub(crate) fn input_el(&self, bare: bool, cx: &mut Context<Self>) -> Input {
+    pub(crate) fn input_el(&self, bare: bool, cx: &mut Context<Self>) -> AnyElement {
         let paste = cx.entity().downgrade();
-        Input::new(&self.composer)
+        div()
             .id("composer")
-            .when(bare, |i| i.appearance(false))
-            .on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false))
-    }
-
-    /// which model answers: a popover above the button, with search.
-    pub(crate) fn model_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let me = cx.entity().downgrade();
-        let current = self.model.open_summary().and_then(|s| s.model.clone());
-        let label = current.as_deref().map(|m| self.model_name(m)).unwrap_or_else(|| "Model".to_owned());
-        let search = self.model_search.clone();
-        let clear = self.model_search.clone();
-        Popover::new("model-popover")
-            .p_0()
-            .anchor(Anchor::BottomLeft)
-            .on_open_change(move |open, window, cx| {
-                if *open {
-                    clear.update(cx, |s, cx| {
-                        s.set_value("", window, cx);
-                        s.focus(window, cx);
-                    });
-                }
-            })
-            .trigger(Button::new("model-menu").xsmall().ghost().label(label).dropdown_caret(true).tooltip("Change Model"))
-            .content(move |_, _, cx| {
-                let popover = cx.entity();
-                let Some(shell) = me.upgrade() else { return div().into_any_element() };
-                let this = shell.read(cx);
-                let p = this.palette.get();
-                let query = search.read(cx).value().trim().to_lowercase();
-                let current = this.model.open_summary().and_then(|s| s.model.clone());
-                // "default" is another entry under a second name: each model once.
-                let models: Vec<ModelInfo> = this
-                    .models
-                    .iter()
-                    .filter(|m| m.value != "default")
-                    .filter(|m| query.is_empty() || m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect();
-                let (latest, older): (Vec<_>, Vec<_>) = models.into_iter().partition(|m| !m.value.starts_with("claude-"));
-                let row = |m: &ModelInfo| {
-                    let on = current.as_deref().is_some_and(|c| c == m.value || c == m.id);
-                    let (me, popover, value) = (me.clone(), popover.clone(), m.value.clone());
-                    theme::float_item(&p, SharedString::from(format!("model-{}", m.value)), None, m.name.clone(), Some(m.description.as_str()).filter(|d| !d.is_empty()), on)
-                        .test_support()
-                        .aria_label(SharedString::from(format!("{}{}", m.name, if on { ", current" } else { "" })))
-                        .on_click(move |_, window, cx| {
-                            let _ = me.update(cx, |this, cx| this.set_model(value.clone(), cx));
-                            popover.update(cx, |st, cx| st.dismiss(window, cx));
-                        })
-                };
-                let mut list = theme::float_list(&p).id("model-list").test_support().max_h(px(360.)).overflow_y_scroll();
-                if this.models.is_empty() {
-                    list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child("Asking the agent which models it has…"));
-                } else if latest.is_empty() && older.is_empty() {
-                    list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child("No model matches."));
-                }
-                for m in &latest {
-                    list = list.child(row(m));
-                }
-                if !older.is_empty() {
-                    list = list.child(theme::float_label(&p, "Other versions"));
-                    for m in &older {
-                        list = list.child(row(m));
-                    }
-                }
-                v_flex()
-                    .w(px(320.))
-                    .child(
-                        h_flex()
-                            .h(px(40.))
-                            .px(px(16.))
-                            .gap_2()
-                            .border_b_1()
-                            .border_color(p.separator)
-                            .child(div().text_color(p.secondary).child(Icon::empty().path("icons/search.svg").small()))
-                            .child(div().flex_1().child(Input::new(&search).id("model-search").appearance(false).small())),
-                    )
-                    .child(list)
-                    .into_any_element()
-            })
+            .test_support()
+            .aria_label("Message")
+            .w_full()
+            .child(
+                gpui_kit::component::input::Textarea::new(&self.composer)
+                    .when(bare, |i| i.appearance(false))
+                    .on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)),
+            )
+            .into_any_element()
     }
 
     /// how much it may do unasked: a popover of the four modes.
     pub(crate) fn mode_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
         let current = self.model.open_summary().and_then(|s| s.permission_mode.clone());
-        let trigger = Button::new("mode-menu").xsmall().ghost().label(mode_name(current.as_deref())).dropdown_caret(true).tooltip("How Much It May Do Unasked");
-        let trigger = match current.as_deref().and_then(mode_icon) {
-            Some(icon) => trigger.icon(Icon::empty().path(icon)),
-            None => trigger,
-        };
+        let p = self.palette.get();
+        let trigger = tool_button("mode-menu").tooltip("How much it may do unasked").child(
+            h_flex()
+                .gap(theme::z(6.))
+                .children(current.as_deref().and_then(mode_icon).map(|icon| Icon::empty().path(icon).size(theme::z(15.)).text_color(p.secondary)))
+                .child(div().set(Type::Callout).text_color(p.label).child(mode_name(current.as_deref())))
+                .child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(12.)).text_color(p.tertiary)),
+        );
         Popover::new("mode-popover").p_0().anchor(Anchor::BottomLeft).trigger(trigger).content(move |_, _, cx| {
             let popover = cx.entity();
             let Some(shell) = me.upgrade() else { return div().into_any_element() };
@@ -357,15 +356,18 @@ impl Shell {
             (Some(pct), Some(window)) => format!("Context {pct}% full, {} of {} tokens", panel::thousands(used), panel::thousands(window)).into(),
             _ => format!("Context: {} tokens so far", panel::thousands(used)).into(),
         };
-        let trigger = Button::new("context").ghost().xsmall().label(match pct {
+        let text = match pct {
             Some(pct) => format!("{pct}%"),
             None => format!("{}k", used.div_ceil(1000)),
-        });
-        let trigger = match pct {
-            Some(pct) => trigger.icon(ProgressCircle::new("context-ring").xsmall().value(pct as f32).color(color).accessibility_label(label.clone())),
-            None => trigger,
-        }
-        .tooltip(label);
+        };
+        let trigger = tool_button("context")
+            .child(
+                h_flex()
+                    .gap(theme::z(6.))
+                    .children(pct.map(|pct| ProgressCircle::new("context-ring").size(theme::z(15.)).value(pct as f32).color(color).accessibility_label(label.clone())))
+                    .child(div().set(Type::Callout).text_color(p.secondary).child(text)),
+            )
+            .tooltip(label);
         let me = cx.entity().downgrade();
         Some(
             Popover::new("context-popover")
@@ -406,10 +408,11 @@ impl Shell {
     /// what else can go with a message, and how much the agent may do.
     pub(crate) fn plus_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
+        let p_plus = self.palette.get();
         Popover::new("plus-popover")
             .p_0()
             .anchor(Anchor::BottomLeft)
-            .trigger(Button::new("composer-plus").ghost().xsmall().icon(Icon::empty().path("icons/plus.svg")).tooltip("Add"))
+            .trigger(tool_button("composer-plus").w(theme::z(theme::CONTROL_H)).px_0().justify_center().tooltip("Add").child(Icon::empty().path("icons/plus.svg").size(theme::z(16.)).text_color(p_plus.secondary)))
             .content(move |_, _, cx| {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };
@@ -441,13 +444,15 @@ impl Shell {
         let servers = self.model.open_summary().map(|s| s.mcp.clone()).unwrap_or_default();
         let broken = servers.iter().filter(|m| matches!(m.status.as_str(), "failed" | "needs-auth")).count();
         let me = cx.entity().downgrade();
-        let trigger = Button::new("mcp-menu")
-            .ghost()
-            .xsmall()
-            .icon(Icon::empty().path("icons/plug.svg"))
-            .when(!servers.is_empty(), |b| b.label(servers.len().to_string()))
+        let trigger = tool_button("mcp-menu")
+            .when(servers.is_empty(), |b| b.w(theme::z(theme::CONTROL_H)).px_0().justify_center())
+            .child(
+                h_flex()
+                    .gap(theme::z(5.))
+                    .child(Icon::empty().path("icons/plug.svg").size(theme::z(15.)).text_color(if broken > 0 { p.blocked } else { p.secondary }))
+                    .when(!servers.is_empty(), |d| d.child(div().set(Type::Callout).text_color(p.secondary).child(servers.len().to_string()))),
+            )
             .tooltip(if broken > 0 { format!("{broken} tool server{} need{} attention", if broken == 1 { "" } else { "s" }, if broken == 1 { "s" } else { "" }) } else { "Tool Servers".into() });
-        let _ = p;
         Popover::new("mcp-popover").p_0().anchor(Anchor::BottomRight).trigger(trigger).content(move |_, _, cx| {
             let Some(shell) = me.upgrade() else { return div().into_any_element() };
             let this = shell.read(cx);
@@ -501,6 +506,12 @@ impl Shell {
             list.child(rows).into_any_element()
         })
     }
+}
+
+/// a button in the composer's toolbar: as tall as every other control, with
+/// room around what it holds.
+pub(crate) fn tool_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).ghost().h(theme::z(theme::CONTROL_H)).px(theme::z(8.)).rounded(theme::z(theme::R_CONTROL))
 }
 
 #[cfg(test)]
@@ -566,4 +577,12 @@ mod tests {
         assert_eq!(mode_name(Some("bypassPermissions")), "Custom Mode");
         assert_eq!(mode_name(None), "Mode");
     }
+}
+
+/// what kind of file, in a word: "PDF", "TXT".
+fn kind_of(media: &str, name: &str) -> String {
+    if media == "application/pdf" {
+        return "PDF".into();
+    }
+    name.rsplit_once('.').map_or_else(|| "File".into(), |(_, ext)| ext.to_uppercase())
 }

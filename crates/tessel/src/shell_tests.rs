@@ -45,6 +45,8 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
         background_tasks: 0,
         model: None,
         permission_mode: None,
+        effort: None,
+        fast: false,
         context_used: None,
         context_window: None,
         tasks: vec![], mcp: vec![], linked_dirs: vec![],
@@ -782,9 +784,9 @@ fn the_model_and_mode_are_chosen_from_the_message_box(cx: &mut TestAppContext) {
     let mut rig = Rig::new(cx);
     rig.feed(cx, vec![UiEvent::Connected]);
     assert!(matches!(rig.asked().as_slice(), [Cmd::Models]), "the models on offer are asked for, not assumed");
-    let model = |value: &str, id: &str, name: &str| ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: String::new() };
+    let model = |value: &str, id: &str, name: &str| ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: String::new(), ..ModelInfo::default() };
     let models = vec![model("default", "claude-opus-5-5", "Default (recommended)"), model("opus", "claude-opus-5-5", "Opus 5.5"), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5")];
-    rig.feed(cx, vec![UiEvent::Models(models), UiEvent::Sessions(vec![idle.clone()])]);
+    rig.feed(cx, vec![UiEvent::Models(models, vec![]), UiEvent::Sessions(vec![idle.clone()])]);
     rig.click(cx, idle.id.0);
     rig.feed(cx, vec![snapshot(idle.clone(), vec![])]);
     rig.asked();
@@ -1088,24 +1090,124 @@ fn the_new_session_form_picks_in_place_or_a_worktree(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestAppContext) {
+    use tessel_proto::FavoriteModel;
     let mut idle = session(1, "Fix login", RunState::Idle, None);
     idle.model = Some("claude-sonnet-5-5".into());
     idle.permission_mode = Some("default".into());
-    let model = |value: &str, id: &str, name: &str| ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: "x".into() };
-    let mut rig = Rig::with_sessions(cx, idle, vec![]);
-    rig.feed(cx, vec![UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5"), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5"), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7")])]);
+    let efforts: Vec<String> = ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec();
+    let model = |value: &str, id: &str, name: &str, fast: bool| ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: "x".into(), efforts: efforts.clone(), fast };
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    rig.feed(
+        cx,
+        vec![
+            UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings {
+                agent_tools: true,
+                models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
+            }),
+        ],
+    );
     rig.click(cx, "model-menu");
     assert!(rig.exists(cx, "model-search"), "the picker opens with its search");
     let (menu, trigger) = cx.update_window(rig.window, |_, window, _| (window.find("model-list").bounds(), window.find("model-menu").bounds())).unwrap();
     assert!(menu.origin.y + menu.size.height <= trigger.origin.y + gpui_kit::px(1.), "it opens above the button: {menu:?} {trigger:?}");
+    assert!(rig.exists(cx, "favorite-0") && rig.exists(cx, "favorite-1") && !rig.exists(cx, "favorite-2"), "the loadout, and only it");
+    assert!(!rig.exists(cx, "model-claude-opus-4-7"), "the rest wait for a search");
     rig.asked();
-    rig.click(cx, "model-opus");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::SetModel { model, .. }] if model == "opus"));
+
+    // a favourite brings its effort and its speed with it.
+    rig.click(cx, "favorite-0");
+    match rig.asked().as_slice() {
+        [Cmd::SetModel { model, .. }, Cmd::SetEffort { effort, .. }, Cmd::SetFast { fast, .. }] => assert_eq!((model.as_str(), effort.as_deref(), *fast), ("opus", Some("max"), true)),
+        other => panic!("{other:?}"),
+    }
     assert!(!rig.exists(cx, "model-search"), "picking closes it");
+
+    // a search finds every model.
+    rig.click(cx, "model-menu");
+    rig.typed(cx, "4.7");
+    assert!(rig.exists(cx, "model-claude-opus-4-7") && !rig.exists(cx, "favorite-0"));
+    rig.click(cx, "model-claude-opus-4-7");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::SetModel { model, .. }] if model == "claude-opus-4-7"));
+
+    // the session's effort, from the picker's tray.
+    rig.click(cx, "model-menu");
+    rig.click(cx, "effort-high");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::SetEffort { effort: Some(e), .. }] if e == "high"));
+    assert!(!rig.exists(cx, "model-fast"), "sonnet has no fast mode, so no switch");
+
+    // the keys: a favourite by its place, the next effort up, fast on and off.
+    rig.press(cx, "escape");
+    rig.press(cx, "ctrl-cmd-2");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::SetModel { model, .. }, Cmd::SetEffort { effort: Some(e), .. }, Cmd::SetFast { fast: false, .. }] if model == "sonnet" && e == "low"));
+    let mut medium = idle.clone();
+    medium.effort = Some("medium".into());
+    rig.feed(cx, vec![UiEvent::Sessions(vec![medium])]);
+    rig.press(cx, "shift-cmd-e");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::SetEffort { effort: Some(e), .. }] if e == "high"), "medium goes up to high");
+    let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("model.fast", &serde_json::json!({}), window, cx))).unwrap();
+    assert!(r.is_err(), "sonnet can't run fast: {r:?}");
+    let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("model.favorite", &serde_json::json!({"n": 3}), window, cx))).unwrap();
+    assert!(r.is_err(), "there is no third favourite");
 
     rig.click(cx, "mode-menu");
     rig.click(cx, "mode-plan");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::SetMode { mode, .. }] if mode == "plan"));
+    assert!(matches!(rig.asked().as_slice(), [.., Cmd::SetMode { mode, .. }] if mode == "plan"));
+}
+
+#[gpui_kit::test]
+fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
+    use tessel_proto::FavoriteModel;
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let efforts: Vec<String> = ["low", "medium", "high"].map(String::from).to_vec();
+    let model = |value: &str, name: &str, fast: bool| ModelInfo { value: value.into(), id: value.into(), name: name.into(), description: "x".into(), efforts: efforts.clone(), fast };
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.feed(
+        cx,
+        vec![
+            UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+        ],
+    );
+    rig.shell.update(cx, |s, cx| {
+        s.settings_section = "models";
+        s.open_settings(cx);
+    });
+    rig.settle(cx);
+    rig.asked();
+    rig.click(cx, "models-opus-low");
+    let saved = |rig: &mut Rig| {
+        rig.asked().into_iter().find_map(|c| match c {
+            Cmd::SetSettings(v) => serde_json::from_value::<Vec<FavoriteModel>>(v["models"].clone()).ok(),
+            _ => None,
+        })
+    };
+    assert_eq!(saved(&mut rig).unwrap()[0].effort.as_deref(), Some("low"), "a favourite's effort is kept by the daemon");
+    rig.click(cx, "models-opus-fast");
+    assert!(saved(&mut rig).unwrap()[0].fast);
+    rig.click(cx, "models-haiku-star");
+    let favs = saved(&mut rig).unwrap();
+    assert_eq!(favs.iter().map(|f| f.model.as_str()).collect::<Vec<_>>(), ["opus", "haiku"], "a star adds it at the end");
+}
+
+#[gpui_kit::test]
+fn slash_opens_the_agents_commands_and_return_takes_one(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    let cmd = |name: &str, description: &str| tessel_proto::SlashCommand { name: name.into(), description: description.into(), hint: String::new() };
+    rig.feed(cx, vec![UiEvent::Models(vec![], vec![cmd("review", "Review a pull request"), cmd("compact", "Summarise the history")])]);
+    rig.click(cx, "composer");
+    rig.typed(cx, "/rev");
+    assert!(rig.exists(cx, "mention-0") && !rig.exists(cx, "mention-1"), "only what matches");
+    rig.asked();
+    rig.press(cx, "enter");
+    assert!(rig.asked().is_empty(), "return takes the command; it doesn't send");
+    assert_eq!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)), "/review ");
+    assert!(!rig.exists(cx, "mention-0"), "and the menu closes");
+    rig.typed(cx, "42");
+    rig.press(cx, "enter");
+    let asked = rig.asked();
+    assert!(matches!(asked.as_slice(), [Cmd::Send { text, .. }] if text == "/review 42"), "{asked:?}");
 }
 
 // ---- panes ----------------------------------------------------------------------
@@ -1355,7 +1457,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { agent_tools: true })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }

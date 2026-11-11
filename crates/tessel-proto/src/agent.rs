@@ -169,7 +169,7 @@ pub struct McpServer {
 }
 
 /// a model the agent can run as.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelInfo {
     /// what to ask for: an alias like `sonnet`, or a full id.
     pub value: String,
@@ -179,7 +179,35 @@ pub struct ModelInfo {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// the effort levels it takes (`low` .. `max`); none if effort isn't adjustable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<String>,
+    /// it can run in fast mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
 }
+
+/// a slash command the agent knows: its own, a skill's, or the person's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlashCommand {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// what goes after it, if anything (`<file>`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+}
+
+/// what an agent offers: its models, and its slash commands.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Catalog {
+    pub models: Vec<ModelInfo>,
+    #[serde(default)]
+    pub commands: Vec<SlashCommand>,
+}
+
+/// every effort level, lowest first.
+pub const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
 /// a file sent along with a message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

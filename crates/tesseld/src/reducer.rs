@@ -40,6 +40,8 @@ pub enum Input {
     /// the user picked a model or mode while no agent was running. it takes
     /// effect when the next one starts.
     SetModel { model: String },
+    SetEffort { effort: Option<String> },
+    SetFast { fast: bool },
     SetMode { mode: String },
     LinkDir { path: String },
     UnlinkDir { path: String },
@@ -128,6 +130,8 @@ pub struct SessionState {
     pub attention: Option<Attention>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    pub effort: Option<String>,
+    pub fast: bool,
     context_used: Option<u64>,
     context_window: Option<u64>,
     mcp: Vec<McpServer>,
@@ -148,6 +152,8 @@ pub struct Persisted {
     pub attention: Option<Attention>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
+    pub effort: Option<String>,
+    pub fast: bool,
     pub context_used: Option<u64>,
     pub context_window: Option<u64>,
     pub agent_session_id: Option<String>,
@@ -182,6 +188,8 @@ impl SessionState {
             attention: None,
             model: None,
             permission_mode: None,
+            effort: None,
+            fast: false,
             context_used: None,
             context_window: None,
             mcp: Vec::new(),
@@ -201,6 +209,8 @@ impl SessionState {
         s.attention = p.attention;
         s.model = p.model;
         s.permission_mode = p.permission_mode;
+        s.effort = p.effort;
+        s.fast = p.fast;
         s.context_used = p.context_used;
         s.context_window = p.context_window;
         s.agent_session_id = p.agent_session_id;
@@ -225,6 +235,8 @@ impl SessionState {
             attention: self.attention.clone(),
             model: self.model.clone(),
             permission_mode: self.permission_mode.clone(),
+            effort: self.effort.clone(),
+            fast: self.fast,
             context_used: self.context_used,
             context_window: self.context_window,
             agent_session_id: self.agent_session_id.clone(),
@@ -390,6 +402,8 @@ impl SessionState {
             background_tasks: self.tasks.iter().filter(|t| t.background).count() as u32,
             model: self.model.clone(),
             permission_mode: self.permission_mode.clone(),
+            effort: self.effort.clone(),
+            fast: self.fast,
             context_used: self.context_used,
             context_window: self.context_window,
             mcp: self.mcp.clone(),
@@ -439,6 +453,18 @@ impl SessionState {
             Input::SetModel { model } => {
                 if self.model.as_deref() != Some(&model) {
                     self.model = Some(model);
+                    fx.summary_changed = true;
+                }
+            }
+            Input::SetEffort { effort } => {
+                if self.effort != effort {
+                    self.effort = effort;
+                    fx.summary_changed = true;
+                }
+            }
+            Input::SetFast { fast } => {
+                if self.fast != fast {
+                    self.fast = fast;
                     fx.summary_changed = true;
                 }
             }

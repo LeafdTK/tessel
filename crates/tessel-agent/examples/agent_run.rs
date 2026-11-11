@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
         agent_session_id: uuid::Uuid::new_v4().to_string(),
         resume: false,
         model,
-        permission_mode: None, add_dirs: vec![],
+        permission_mode: None, effort: None, fast: false, add_dirs: vec![],
         raw_log: None,
         tools: None,
     })?;

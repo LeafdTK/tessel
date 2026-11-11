@@ -25,6 +25,8 @@ pub enum Cmd {
     CreateAside { cwd: String, goal: String, prompt: String, mode: String },
     Send { session: SessionId, text: String, attachments: Vec<Attachment> },
     SetModel { session: SessionId, model: String },
+    SetEffort { session: SessionId, effort: Option<String> },
+    SetFast { session: SessionId, fast: bool },
     SetMode { session: SessionId, mode: String },
     Models,
     RefreshMcp(SessionId),
@@ -74,7 +76,8 @@ pub enum UiEvent {
     Item { session: SessionId, item: Item },
     Delta { session: SessionId, item_id: ItemId, offset: u64, text: String },
     Pending { session: SessionId, pending: Vec<PermissionRequest> },
-    Models(Vec<ModelInfo>),
+    /// the models the agent offers, and its slash commands.
+    Models(Vec<ModelInfo>, Vec<tessel_proto::SlashCommand>),
     Git { session: SessionId, summary: GitSummary },
     Diff { session: SessionId, diff: FileDiff },
     Dir { session: SessionId, path: String, entries: Vec<DirEntry> },
@@ -314,6 +317,8 @@ async fn session(
                     }
                     Cmd::Send { session, text, attachments } => client.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session, text, attachments }).await.map(drop),
                     Cmd::SetModel { session, model } => client.request(Request::SessionSetModel { cmd_id: Uuid::new_v4(), session, model }).await.map(drop),
+                    Cmd::SetEffort { session, effort } => client.request(Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session, effort }).await.map(drop),
+                    Cmd::SetFast { session, fast } => client.request(Request::SessionSetFast { cmd_id: Uuid::new_v4(), session, fast }).await.map(drop),
                     Cmd::UiAnswer { call, result } => {
                         let (ok, err) = match result {
                             Ok(v) => (Some(v), None),
@@ -381,7 +386,7 @@ async fn session(
                     Cmd::UnlinkDir { session, path } => client.request(Request::SessionUnlinkDir { cmd_id: Uuid::new_v4(), session, path }).await.map(drop),
                     Cmd::Models => {
                         ask(client, ui, Request::ModelList, |r| match r {
-                            Response::Models { models } => Some(UiEvent::Models(models)),
+                            Response::Models { models, commands } => Some(UiEvent::Models(models, commands)),
                             _ => None,
                         });
                         Ok(())

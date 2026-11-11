@@ -645,25 +645,64 @@ impl Shell {
         let t = self.transcript_opts;
         let _ = pane;
         let column = || div().w_full().max_w(px(t.width)).px(px(t.gutter));
+        // the message box: where most of the time goes, so it's the most
+        // comfortable thing in the window. text at reading size, three lines to
+        // start; controls at full size below; menus for / and @ above.
+        let busy = self.model.open_summary().is_some_and(|s| s.run_state.is_busy());
+        let send = if busy {
+            theme::button(&p, "stop", "Stop", Some("square"), theme::ButtonKind::Secondary)
+                .test_support()
+                .aria_label("Stop")
+                .on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx)))
+                .into_any_element()
+        } else {
+            theme::button(&p, "send", "", Some("arrow-up"), theme::ButtonKind::Primary)
+                .w(theme::z(theme::CONTROL_H + 4.))
+                .h(theme::z(theme::CONTROL_H + 4.))
+                .px_0()
+                .rounded_full()
+                .test_support()
+                .aria_label("Send")
+                .on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))
+                .into_any_element()
+        };
         let composer = v_flex()
-            .p_3()
-            .gap_2()
-            .rounded(px(theme::R_CARD))
+            .id("composer-box")
+            .relative()
+            .px(theme::z(14.))
+            .pt(theme::z(12.))
+            .pb(theme::z(10.))
+            .gap(theme::z(10.))
+            .rounded(theme::z(theme::R_CARD + 4.))
             .border_1()
             .border_color(p.separator)
             .bg(p.raised)
             .shadow_md()
+            // while a menu is up, its keys are its own.
+            .children(self.mention_menu(cx))
             .children(self.attachment_chips(cx))
-            .child(self.input_el(true, cx))
+            .child(div().text_size(theme::z(14.)).line_height(theme::z(21.)).child(self.input_el(true, cx)))
             .child(
                 h_flex()
-                    .gap_1()
+                    .gap(theme::z(2.))
+                    .items_center()
                     // in a narrow pane the pickers give way; send never does.
-                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap_1().child(self.plus_menu(cx)).child(self.model_menu(cx)).child(self.mode_menu(cx)))
+                    .child(h_flex().flex_1().min_w_0().overflow_hidden().gap(theme::z(2.)).child(self.plus_menu(cx)).child(self.model_chip(cx)).child(self.mode_menu(cx)))
                     .child(self.mcp_menu(cx))
                     .children(self.context_meter_el(cx))
-                    .child(Button::new("send").small().primary().icon(Icon::empty().path("icons/arrow-up.svg")).tooltip("Send").on_click(cx.listener(|this, _, window, cx| this.send(window, cx)))),
+                    .child(div().pl(theme::z(4.)).child(send)),
             );
+        let hints = h_flex()
+            .px(theme::z(12.))
+            .pt(theme::z(6.))
+            .gap(theme::z(14.))
+            .set(Type::Subheadline)
+            .text_color(p.tertiary)
+            .child("⏎ send")
+            .child("⇧⏎ new line")
+            .child("/ commands")
+            .child("@ files");
+        let composer = v_flex().child(composer).child(hints);
         v_flex()
             .size_full()
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))

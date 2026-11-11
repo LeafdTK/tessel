@@ -100,6 +100,12 @@ pub struct SessionSummary {
     /// the agent's permission mode, when it has told us (`default`, `plan`, `acceptEdits`, ...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
+    /// how hard it thinks (one of `EFFORTS`); none: the model's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// fast mode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
     /// tokens the conversation occupies, and how many the model can hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_used: Option<u64>,

@@ -58,6 +58,11 @@ impl Agent for ClaudeAgent {
         self.write(wire::set_permission_mode(&format!("tessel-mode-{n}"), mode));
     }
 
+    fn apply_settings(&self, settings: &serde_json::Value) {
+        let n = self.next_request.fetch_add(1, Ordering::Relaxed);
+        self.write(wire::apply_flag_settings(&format!("tessel-flags-{n}"), settings));
+    }
+
     fn mcp_status(&self) {
         let n = self.next_request.fetch_add(1, Ordering::Relaxed);
         self.write(wire::mcp_status(&format!("tessel-mcp-{n}")));
@@ -143,6 +148,12 @@ impl ClaudeBackend {
         if let Some(model) = &opts.model {
             args.extend(["--model".to_owned(), model.clone()]);
         }
+        if let Some(effort) = &opts.effort {
+            args.extend(["--effort".to_owned(), effort.clone()]);
+        }
+        if opts.fast {
+            args.extend(["--settings".to_owned(), serde_json::json!({"fastMode": true}).to_string()]);
+        }
         if let Some(mode) = &opts.permission_mode {
             args.extend(["--permission-mode".to_owned(), mode.clone()]);
         }
@@ -168,20 +179,48 @@ impl ClaudeBackend {
 
 /// pick the model list out of the answer to `initialize`.
 pub fn parse_models(line: &str, request_id: &str) -> Option<Vec<ModelInfo>> {
+    parse_catalog(line, request_id).map(|c| c.models)
+}
+
+/// the models (with their effort levels and fast mode) and slash commands an
+/// `initialize` answer lists.
+pub fn parse_catalog(line: &str, request_id: &str) -> Option<tessel_proto::Catalog> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let r = v.get("response").filter(|_| v.get("type").and_then(|t| t.as_str()) == Some("control_response"))?;
     if r.get("request_id").and_then(|i| i.as_str()) != Some(request_id) {
         return None;
     }
     let text = |m: &serde_json::Value, k: &str| m.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_owned();
-    let models = r.get("response")?.get("models")?.as_array()?;
-    Some(
-        models
-            .iter()
-            .filter(|m| m.get("value").and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
-            .map(|m| ModelInfo { value: text(m, "value"), id: text(m, "resolvedModel"), name: text(m, "displayName"), description: text(m, "description") })
-            .collect(),
-    )
+    let answer = r.get("response")?;
+    let models = answer
+        .get("models")?
+        .as_array()?
+        .iter()
+        .filter(|m| m.get("value").and_then(|x| x.as_str()).is_some_and(|x| !x.is_empty()))
+        .map(|m| ModelInfo {
+            value: text(m, "value"),
+            id: text(m, "resolvedModel"),
+            name: text(m, "displayName"),
+            description: text(m, "description"),
+            efforts: if m.get("supportsEffort").and_then(|x| x.as_bool()) == Some(true) {
+                m.get("supportedEffortLevels").and_then(|x| x.as_array()).into_iter().flatten().filter_map(|x| x.as_str().map(str::to_owned)).collect()
+            } else {
+                Vec::new()
+            },
+            fast: m.get("supportsFastMode").and_then(|x| x.as_bool()) == Some(true),
+        })
+        .collect();
+    let commands = answer
+        .get("commands")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            let name = text(c, "name");
+            (!name.is_empty()).then(|| tessel_proto::SlashCommand { name, description: text(c, "description"), hint: text(c, "argumentHint") })
+        })
+        .collect();
+    Some(tessel_proto::Catalog { models, commands })
 }
 
 impl Backend for ClaudeBackend {
@@ -212,7 +251,7 @@ impl Backend for ClaudeBackend {
         })
     }
 
-    fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<ModelInfo>>> + Send>> {
+    fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<tessel_proto::Catalog>> + Send>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])
             .current_dir(std::env::temp_dir())
@@ -233,7 +272,7 @@ impl Backend for ClaudeBackend {
             let read = async {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
-                    if let Some(models) = parse_models(&line, "tessel-models") {
+                    if let Some(models) = parse_catalog(&line, "tessel-models") {
                         return Some(models);
                     }
                 }
@@ -356,9 +395,33 @@ mod tests {
     }
 
     #[test]
+    fn effort_and_fast_mode_are_asked_for_at_start() {
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, add_dirs: vec![], raw_log: None, tools: None };
+        let args = ClaudeBackend::args(&opts);
+        assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
+        let at = args.iter().position(|a| a == "--settings").expect("fast mode is a setting");
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap(), serde_json::json!({"fastMode": true}));
+        let plain = ClaudeBackend::args(&SpawnOpts { effort: None, fast: false, ..opts });
+        assert!(!plain.iter().any(|a| a == "--effort" || a == "--settings"));
+    }
+
+    #[test]
+    fn the_catalog_keeps_each_model_s_effort_levels_fast_mode_and_the_slash_commands() {
+        let line = r#"{"type":"control_response","response":{"subtype":"success","request_id":"q","response":{"models":[
+            {"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5","description":"d","supportsEffort":true,"supportedEffortLevels":["low","high","max"],"supportsFastMode":true},
+            {"value":"claude-haiku-4-5","resolvedModel":"claude-haiku-4-5","displayName":"Haiku 4.5","description":"d"}],
+            "commands":[{"name":"review","description":"Review it","argumentHint":"<pr>"}]}}}"#;
+        let c = parse_catalog(line, "q").unwrap();
+        assert_eq!(c.models[0].efforts, ["low", "high", "max"]);
+        assert!(c.models[0].fast && !c.models[1].fast);
+        assert!(c.models[1].efforts.is_empty(), "no effort without supportsEffort");
+        assert_eq!((c.commands[0].name.as_str(), c.commands[0].hint.as_str()), ("review", "<pr>"));
+    }
+
+    #[test]
     fn an_agent_given_tessels_tools_gets_them_scoped_to_its_session_and_is_told_why() {
         let tools = crate::backend::AgentTools { command: "/opt/tessel/tesselctl".into(), env: vec![("TESSEL_SESSION".into(), "s-1".into())] };
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, add_dirs: vec![], raw_log: None, tools: Some(tools) };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: Some(tools) };
         let args = ClaudeBackend::args(&opts);
         let at = args.iter().position(|a| a == "--mcp-config").expect("the tools are passed");
         let config: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
@@ -374,7 +437,7 @@ mod tests {
 
     #[test]
     fn first_spawn_names_the_session_and_later_ones_resume_it() {
-        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, add_dirs: vec![], raw_log: None, tools: None };
+        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: None };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--session-id", "abc"]));
         assert!(!args.iter().any(|a| a == "--resume"));

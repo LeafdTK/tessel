@@ -1,6 +1,6 @@
 //! the seam between the daemon and any agent.
 
-use tessel_proto::{AgentEvent, Attachment, ModelInfo, PermissionDecision, PermissionRequest};
+use tessel_proto::{AgentEvent, Attachment, PermissionDecision, PermissionRequest};
 use std::future::Future;
 use std::pin::Pin;
 use std::path::PathBuf;
@@ -16,6 +16,10 @@ pub struct SpawnOpts {
     pub model: Option<String>,
     /// start in this permission mode instead of the user's default.
     pub permission_mode: Option<String>,
+    /// how hard it thinks; none: the model's default.
+    pub effort: Option<String>,
+    /// fast mode.
+    pub fast: bool,
     /// other folders the agent may work in besides `cwd`.
     pub add_dirs: Vec<PathBuf>,
     /// append every line the agent writes here, verbatim. this is the record
@@ -48,6 +52,9 @@ pub trait Agent: Send {
     fn send_user(&self, text: &str, attachments: &[Attachment]);
     fn set_model(&self, model: &str);
     fn set_mode(&self, mode: &str);
+    /// change settings of the running agent (effort, fast mode), as claude's
+    /// `apply_flag_settings` takes them: `{"effortLevel": "high", "fastMode": true}`.
+    fn apply_settings(&self, settings: &serde_json::Value);
     /// ask for the state of the agent's tool servers. answered with `AgentEvent::McpServers`.
     fn mcp_status(&self);
     fn answer(&self, request: &PermissionRequest, decision: &PermissionDecision);
@@ -66,7 +73,7 @@ pub struct Spawned {
 pub trait Backend: Send + Sync + 'static {
     fn spawn(&self, opts: SpawnOpts) -> anyhow::Result<Spawned>;
     /// the models this agent can run as. asked rarely; may take a second.
-    fn models(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<Vec<ModelInfo>>> + Send>>;
+    fn models(&self) -> Pin<Box<dyn Future<Output = anyhow::Result<tessel_proto::Catalog>> + Send>>;
     /// one question, one answer, no session: for small jobs like a commit
     /// message. `model` is an alias (`haiku`) or an id.
     fn one_shot(&self, prompt: String, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>> {

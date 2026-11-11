@@ -33,6 +33,8 @@ fn summary() -> SessionSummary {
         warm: true,
         background_tasks: 0,
         model: None,
+        effort: None,
+        fast: false,
         permission_mode: None,
         context_used: None,
         context_window: None,

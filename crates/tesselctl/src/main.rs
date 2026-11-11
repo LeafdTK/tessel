@@ -32,6 +32,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl goal SESSION text...
   tesselctl model SESSION MODEL             switch model (an alias like sonnet, or a full id)
   tesselctl mode SESSION MODE               default, acceptEdits, auto or plan
+  tesselctl effort SESSION LEVEL            low, medium, high, xhigh, max or default
+  tesselctl fast SESSION on|off             fast mode, where the model has it
   tesselctl link SESSION DIR                let the agent work in another folder too
   tesselctl models                          the models the agent offers
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
@@ -335,14 +337,30 @@ async fn run() -> anyhow::Result<()> {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionSetMode { cmd_id: Uuid::new_v4(), session, mode: args.next("a mode")? }).await?;
         }
+        "effort" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let level = args.next("an effort level")?;
+            let effort = (level != "default").then_some(level);
+            client.request(Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session, effort }).await?;
+        }
+        "fast" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let fast = match args.next("on or off")?.as_str() {
+                "on" | "true" => true,
+                "off" | "false" => false,
+                other => bail!("fast is on or off, not {other}"),
+            };
+            client.request(Request::SessionSetFast { cmd_id: Uuid::new_v4(), session, fast }).await?;
+        }
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionLinkDir { cmd_id: Uuid::new_v4(), session, path: args.next("a folder")? }).await?;
         }
         "models" => match client.request(Request::ModelList).await? {
-            Response::Models { models } => {
+            Response::Models { models, .. } => {
                 for m in models {
-                    println!("{:<28} {}  {}", m.value, m.name, m.description);
+                    let fast = if m.fast { "  fast" } else { "" };
+                    println!("{:<28} {}  {}  [{}]{fast}", m.value, m.name, m.description, m.efforts.join(" "));
                 }
             }
             other => bail!("unexpected reply: {other:?}"),

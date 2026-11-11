@@ -353,7 +353,7 @@ impl Shell {
             Kind::Prompts => self.styled(self.prompts_el(cx)?, s).into_any_element(),
             Kind::Attachments => self.styled(self.attachment_chips(cx)?, s).into_any_element(),
             Kind::Input => self.styled(div().w_full().child(self.input_el(n.props.bare, cx)), s).into_any_element(),
-            Kind::ModelPicker => self.styled(div().child(self.model_menu(cx)), s).into_any_element(),
+            Kind::ModelPicker => self.styled(div().child(self.model_chip(cx)), s).into_any_element(),
             Kind::ModePicker => self.styled(div().child(self.mode_menu(cx)), s).into_any_element(),
             Kind::Context => self.styled(div().child(self.context_meter_el(cx)?), s).into_any_element(),
             Kind::Panes => {

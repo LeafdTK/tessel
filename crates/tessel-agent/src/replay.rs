@@ -55,15 +55,28 @@ impl Backend for ReplayBackend {
         Box::pin(async { Ok("fix: what the replay agent would say".to_owned()) })
     }
 
-    fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Vec<tessel_proto::ModelInfo>>> + Send>> {
-        let model = |value: &str, id: &str, name: &str, description: &str| tessel_proto::ModelInfo { value: value.into(), id: id.into(), name: name.into(), description: description.into() };
+    fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<tessel_proto::Catalog>> + Send>> {
+        let all: Vec<String> = tessel_proto::EFFORTS.iter().map(|e| (*e).to_owned()).collect();
+        let model = |value: &str, id: &str, name: &str, description: &str, fast: bool| tessel_proto::ModelInfo {
+            value: value.into(),
+            id: id.into(),
+            name: name.into(),
+            description: description.into(),
+            efforts: all.clone(),
+            fast,
+        };
         let models = vec![
-            model("default", "claude-opus-5-5", "Default (recommended)", "Opus 5.5 · Best for everyday, complex tasks"),
-            model("opus", "claude-opus-5-5", "Opus 5.5", "For complex work and everyday tasks"),
-            model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", "Most efficient for simpler tasks"),
-            model("haiku", "claude-haiku-5-5", "Haiku 5.5", "Fastest for quick answers"),
+            model("default", "claude-opus-5-5", "Default (recommended)", "Opus 5.5 · Best for everyday, complex tasks", true),
+            model("opus", "claude-opus-5-5", "Opus 5.5", "For complex work and everyday tasks", true),
+            model("claude-fable-5-2", "claude-fable-5-2", "Fable 5.2", "For your toughest challenges", false),
+            model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", "Most efficient for simpler tasks", false),
+            model("haiku", "claude-haiku-5-5", "Haiku 5.5", "Fastest for quick answers", false),
         ];
-        Box::pin(async move { Ok(models) })
+        let commands = vec![
+            tessel_proto::SlashCommand { name: "review".into(), description: "Review the changes on this branch".into(), hint: String::new() },
+            tessel_proto::SlashCommand { name: "compact".into(), description: "Summarise the conversation so far to free up context".into(), hint: "<instructions>".into() },
+        ];
+        Box::pin(async move { Ok(tessel_proto::Catalog { models, commands }) })
     }
 
     fn spawn(&self, opts: SpawnOpts) -> anyhow::Result<Spawned> {

@@ -81,6 +81,19 @@ pub enum Request {
         session: SessionId,
         model: String,
     },
+    /// how hard the agent thinks: one of `EFFORTS`, or none for the model's own default.
+    SessionSetEffort {
+        cmd_id: Uuid,
+        session: SessionId,
+        #[serde(default)]
+        effort: Option<String>,
+    },
+    /// fast mode on or off (for models that have it).
+    SessionSetFast {
+        cmd_id: Uuid,
+        session: SessionId,
+        fast: bool,
+    },
     /// switch the permission mode: `default`, `plan`, `acceptEdits`, `auto`.
     SessionSetMode {
         cmd_id: Uuid,
@@ -368,11 +381,29 @@ pub struct DaemonSettings {
     /// agents tessel starts get tessel's tools: arranging the window and
     /// drawing surfaces. takes effect as each agent next starts.
     pub agent_tools: bool,
+    /// the models offered first, in order (at most five), each with how it
+    /// runs when picked. the rest are a search away.
+    pub models: Vec<FavoriteModel>,
 }
+
+/// a model in the loadout, and how it runs when picked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FavoriteModel {
+    /// what to ask for: an alias like `opus`, or a full id.
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fast: bool,
+}
+
+/// the most models in the loadout.
+pub const MAX_FAVORITES: usize = 5;
 
 impl Default for DaemonSettings {
     fn default() -> Self {
-        Self { agent_tools: true }
+        let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")] }
     }
 }
 
@@ -474,6 +505,9 @@ pub enum Response {
     },
     Models {
         models: Vec<crate::ModelInfo>,
+        /// slash commands the agent knows, for a `/` menu.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        commands: Vec<crate::SlashCommand>,
     },
     /// what a window command answered.
     UiResult {

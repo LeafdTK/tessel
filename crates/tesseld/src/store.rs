@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 enum Job {
     Save { session: Box<Persisted>, items: Vec<Item> },
@@ -125,6 +125,15 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 3 {
+        conn.execute_batch(
+            "BEGIN;
+             ALTER TABLE sessions ADD COLUMN effort TEXT;
+             ALTER TABLE sessions ADD COLUMN fast INTEGER NOT NULL DEFAULT 0;
+             PRAGMA user_version = 3;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -165,15 +174,16 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
     tx.execute(
         "INSERT INTO sessions (id, goal, cwd, worktree_repo, worktree_branch, parent, created_ms, updated_ms, seq,
                                attention_reason, attention_since, attention_seq, model, agent_session_id, cost_usd, turn_open,
-                               permission_mode, context_used, context_window, linked_dirs)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                               permission_mode, context_used, context_window, linked_dirs, effort, fast)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
          ON CONFLICT(id) DO UPDATE SET
              goal = excluded.goal, cwd = excluded.cwd, worktree_repo = excluded.worktree_repo,
              worktree_branch = excluded.worktree_branch, parent = excluded.parent, updated_ms = excluded.updated_ms,
              seq = excluded.seq, attention_reason = excluded.attention_reason, attention_since = excluded.attention_since,
              attention_seq = excluded.attention_seq, model = excluded.model, agent_session_id = excluded.agent_session_id,
              cost_usd = excluded.cost_usd, turn_open = excluded.turn_open, permission_mode = excluded.permission_mode,
-             context_used = excluded.context_used, context_window = excluded.context_window, linked_dirs = excluded.linked_dirs",
+             context_used = excluded.context_used, context_window = excluded.context_window, linked_dirs = excluded.linked_dirs,
+             effort = excluded.effort, fast = excluded.fast",
         params![
             p.meta.id.to_string(),
             p.meta.goal,
@@ -195,6 +205,8 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
             p.context_used.map(|n| n as i64),
             p.context_window.map(|n| n as i64),
             (!p.meta.linked_dirs.is_empty()).then(|| serde_json::to_string(&p.meta.linked_dirs)).transpose()?,
+            p.effort,
+            p.fast,
         ],
     )?;
     {
@@ -215,7 +227,7 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
     let mut stmt = conn.prepare(
         "SELECT id, goal, cwd, worktree_repo, worktree_branch, parent, created_ms, updated_ms, seq,
                 attention_reason, attention_since, attention_seq, model, agent_session_id, cost_usd, turn_open,
-                permission_mode, context_used, context_window, linked_dirs
+                permission_mode, context_used, context_window, linked_dirs, effort, fast
          FROM sessions ORDER BY created_ms",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -240,11 +252,13 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
             r.get::<_, Option<i64>>(17)?,
             r.get::<_, Option<i64>>(18)?,
             r.get::<_, Option<String>>(19)?,
+            r.get::<_, Option<String>>(20)?,
+            r.get::<_, bool>(21)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, goal, cwd, wt_repo, wt_branch, parent, created, updated, seq, reason, since, aseq, model, agent_sid, cost, turn_open, mode, used, window, linked) = row?;
+        let (id, goal, cwd, wt_repo, wt_branch, parent, created, updated, seq, reason, since, aseq, model, agent_sid, cost, turn_open, mode, used, window, linked, effort, fast) = row?;
         // a row we can't make sense of is skipped, not fatal: one bad session must not take the rest down.
         let Ok(id) = id.parse::<SessionId>() else {
             eprintln!("tesseld: store: skipping session with unreadable id {id:?}");
@@ -275,6 +289,8 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
             attention,
             model,
             permission_mode: mode,
+            effort,
+            fast,
             context_used: used.map(|n| n as u64),
             context_window: window.map(|n| n as u64),
             agent_session_id: agent_sid,
@@ -328,6 +344,8 @@ mod tests {
             attention: Some(Attention { reason: AttentionReason::Finished, since_ms: 99, seq: 6 }),
             model: Some("m".into()),
             permission_mode: Some("plan".into()),
+            effort: Some("xhigh".into()),
+            fast: true,
             context_used: Some(41_000),
             context_window: Some(1_000_000),
             agent_session_id: Some("agent-1".into()),

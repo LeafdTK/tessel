@@ -429,6 +429,28 @@ impl Hub {
                     None => self.apply(session, Input::SetModel { model }).map(|_| Response::Ack),
                 },
             },
+            Request::SessionSetEffort { session, effort, .. } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(_) if effort.as_deref().is_some_and(|e| !tessel_proto::EFFORTS.contains(&e)) => {
+                    Err(RpcError::new(ErrorCode::Invalid, format!("effort is one of {}", tessel_proto::EFFORTS.join(", "))))
+                }
+                Some(live) => {
+                    // a running agent changes now; either way it's kept for the next start.
+                    if let Some(agent) = &live.agent {
+                        agent.apply_settings(&serde_json::json!({"effortLevel": effort}));
+                    }
+                    self.apply(session, Input::SetEffort { effort }).map(|_| Response::Ack)
+                }
+            },
+            Request::SessionSetFast { session, fast, .. } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(live) => {
+                    if let Some(agent) = &live.agent {
+                        agent.apply_settings(&serde_json::json!({"fastMode": fast}));
+                    }
+                    self.apply(session, Input::SetFast { fast }).map(|_| Response::Ack)
+                }
+            },
             Request::SessionSetMode { session, mode, .. } => match self.sessions.get(&session) {
                 None => Err(not_found(session)),
                 Some(_) if mode.trim().is_empty() => Err(RpcError::new(ErrorCode::Invalid, "no mode given")),
@@ -476,7 +498,7 @@ impl Hub {
             Request::ModelList => {
                 let (models, tx) = (self.backend.models(), self.tx.clone());
                 tokio::spawn(async move {
-                    let result = models.await.map(|models| Response::Models { models }).map_err(|e| RpcError::new(ErrorCode::Internal, format!("{e:#}")));
+                    let result = models.await.map(|c| Response::Models { models: c.models, commands: c.commands }).map_err(|e| RpcError::new(ErrorCode::Internal, format!("{e:#}")));
                     let _ = tx.send(HubMsg::Reply { client, id, result });
                 });
                 return None;
@@ -784,6 +806,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     Ok(n) => n,
                     Err(e) => return Some(Err(RpcError::new(ErrorCode::Invalid, format!("that isn't a setting's value: {e}")))),
                 };
+                if next.models.len() > tessel_proto::MAX_FAVORITES {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("at most {} models are favourites", tessel_proto::MAX_FAVORITES))));
+                }
+                if let Some(bad) = next.models.iter().filter_map(|m| m.effort.as_deref()).find(|e| !tessel_proto::EFFORTS.contains(e)) {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("\"{bad}\" isn't an effort: {}", tessel_proto::EFFORTS.join(", ")))));
+                }
                 if next != self.settings {
                     if let Err(e) = save_settings(&self.cfg.paths.settings(), &next) {
                         return Some(Err(RpcError::new(ErrorCode::Internal, format!("couldn't save the settings: {e}"))));
@@ -1008,6 +1036,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             agent_session_id: known.unwrap_or_else(|| session.to_string()),
             model: live.state.model.clone(),
             permission_mode: live.state.permission_mode.clone(),
+            effort: live.state.effort.clone(),
+            fast: live.state.fast,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             raw_log: Some(self.cfg.paths.raw_log(&session)),
             tools: self.cfg.tools_bin.as_ref().filter(|_| self.settings.agent_tools).map(|bin| tessel_agent::backend::AgentTools {

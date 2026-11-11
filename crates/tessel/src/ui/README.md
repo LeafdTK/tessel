@@ -384,6 +384,11 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `session.rename` | Rename a session |  | name, session? |
 | `session.delete` | Delete a session |  | session |
 | `session.model` | Change the model |  | model, session? |
+| `model.favorite` | Use favourite model 1 | ⌃ ⌘ 1 | n: 1-5, the favourite's place; session? |
+| `model.effort` | Think harder | ⇧ ⌘ E | effort?: low|medium|high|xhigh|max|default; without one, the next level up; session? |
+| `model.fast` | Fast mode on or off | ⌥ ⌘ F | fast?: true|false; without it, flips; session? |
+| `model.list` | The models and the favourites |  |  |
+| `model.favorites` | Replace the favourites |  | models: [{model, effort?, fast?}], at most 5 |
 | `session.mode` | Mode: Ask first |  | mode: default|acceptEdits|auto|plan, session? |
 | `pane.split` | Split right | ⌘ D | dir: right|down, pane? |
 | `pane.zoom` | Maximize or restore pane | ⇧ ⌘ ↩ | pane? |

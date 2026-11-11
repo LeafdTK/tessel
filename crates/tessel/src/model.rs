@@ -480,6 +480,8 @@ mod tests {
             background_tasks: 0,
             model: None,
             permission_mode: None,
+            effort: None,
+            fast: false,
             context_used: None,
             context_window: None,
             tasks: vec![], mcp: vec![], linked_dirs: vec![],

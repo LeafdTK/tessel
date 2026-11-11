@@ -106,6 +106,47 @@ impl Shell {
                 self.cmd(Cmd::SetModel { session: id, model: need(args, "model", cmd)?.to_owned() });
                 done
             }
+            "model.favorite" => {
+                let id = self.session_arg(args)?;
+                let favs = self.favorites();
+                let n = args.get("n").and_then(Value::as_u64).ok_or("say which favourite: n, from 1")? as usize;
+                let fav = favs.get(n.wrapping_sub(1)).cloned().ok_or_else(|| format!("there are {} favourites", favs.len()))?;
+                self.pick_favorite(id, &fav, cx);
+                Ok(serde_json::to_value(&fav).unwrap_or_default())
+            }
+            "model.effort" => {
+                let id = self.session_arg(args)?;
+                let effort = match arg(args, "effort") {
+                    Some("default") => None,
+                    Some(e) if tessel_proto::EFFORTS.contains(&e) => Some(e.to_owned()),
+                    Some(e) => return Err(format!("\"{e}\" isn't an effort. efforts: {}, default", tessel_proto::EFFORTS.join(", "))),
+                    None => self.next_effort(id),
+                };
+                self.set_effort(id, effort.clone(), cx);
+                Ok(serde_json::json!({ "effort": effort }))
+            }
+            "model.fast" => {
+                let id = self.session_arg(args)?;
+                let want = args.get("fast").and_then(Value::as_bool).unwrap_or(!self.session_fast(id));
+                let on = self.set_fast(id, want, cx);
+                if want && !on {
+                    return Err("this model has no fast mode".into());
+                }
+                Ok(serde_json::json!({ "fast": on }))
+            }
+            "model.list" => Ok(serde_json::json!({
+                "models": self.models,
+                "favorites": self.favorites(),
+            })),
+            "model.favorites" => {
+                let favs: Vec<tessel_proto::FavoriteModel> =
+                    serde_json::from_value(args.get("models").cloned().ok_or("give the favourites: models")?).map_err(|e| e.to_string())?;
+                if favs.len() > tessel_proto::MAX_FAVORITES {
+                    return Err(format!("at most {} favourites", tessel_proto::MAX_FAVORITES));
+                }
+                self.save_favorites(favs, cx);
+                done
+            }
             "session.mode" => {
                 let id = self.session_arg(args)?;
                 let mode = need(args, "mode", cmd)?;
@@ -361,6 +402,14 @@ impl Shell {
             "sessions": self.model.sessions.len(),
             "layout_error": self.ui_error,
         })
+    }
+
+    /// a command from a key: what goes wrong shows as the window's error.
+    pub(crate) fn run_key(&mut self, cmd: &str, args: Value, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(e) = self.exec(cmd, &args, window, cx) {
+            self.error = Some(e);
+            cx.notify();
+        }
     }
 
     /// the open session, or the one named in `args.session`.

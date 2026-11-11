@@ -755,7 +755,7 @@ async fn the_models_on_offer_come_from_the_agent_not_a_list_we_made_up() {
     let d = Daemon::start(&["plain"]).await;
     let (c, _ev) = d.client().await;
     match c.request(Request::ModelList).await.unwrap() {
-        Response::Models { models } => {
+        Response::Models { models, .. } => {
             assert!(models.iter().any(|m| m.value == "sonnet" && m.name == "Sonnet 5.5"), "{models:?}");
         }
         other => panic!("{other:?}"),
@@ -1157,4 +1157,45 @@ async fn removed_lines_are_staged_by_where_they_were() {
     c.request(Request::GitStageLines { session: s.id, path: "f.txt".into(), start: 4, end: 4, unstage: false, old: true }).await.unwrap();
     let index = git(&repo, &["show", ":f.txt"]);
     assert_eq!(index, "a\nb\nc\ne", "only d's removal is staged");
+}
+
+#[tokio::test]
+async fn effort_and_fast_mode_are_kept_reach_the_agent_and_survive_a_restart() {
+    let mut d = Daemon::start(&["plain", "plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    let set_effort = |e: Option<&str>| Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session: s.id, effort: e.map(str::to_owned) };
+
+    // before the agent starts: kept, and it starts with them.
+    c.request(set_effort(Some("xhigh"))).await.unwrap();
+    c.request(Request::SessionSetFast { cmd_id: Uuid::new_v4(), session: s.id, fast: true }).await.unwrap();
+    assert!(c.request(set_effort(Some("extreme"))).await.unwrap_err().to_string().contains("effort is one of"));
+    let summary = until(&c, s.id, "the summary says so", |s| s.effort.as_deref() == Some("xhigh") && s.fast).await;
+    assert!(summary.fast);
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "hi".into(), attachments: vec![] }).await.unwrap();
+    until(&c, s.id, "the turn to end", |s| s.run_state == RunState::Idle && s.last_seq > 1).await;
+    let opts = d.backend.spawned.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((opts.effort.as_deref(), opts.fast), (Some("xhigh"), true));
+
+    // with it running: told at once.
+    c.request(set_effort(Some("low"))).await.unwrap();
+    let told = d.written().iter().any(|w| w["request"]["subtype"] == "apply_flag_settings" && w["request"]["settings"]["effortLevel"] == "low");
+    assert!(told, "{:?}", d.written());
+
+    // the model list says what each takes, with the slash commands.
+    let Response::Models { models, commands } = c.request(Request::ModelList).await.unwrap() else { panic!() };
+    assert!(models.iter().any(|m| m.value == "opus" && m.fast && m.efforts.len() == 5));
+    assert!(commands.iter().any(|c| c.name == "review"));
+
+    // a loadout of six is refused.
+    let six: Vec<serde_json::Value> = (0..6).map(|i| serde_json::json!({"model": format!("m{i}")})).collect();
+    assert!(c.request(Request::SetSettings { patch: serde_json::json!({"models": six}) }).await.unwrap_err().to_string().contains("at most 5"));
+
+    drop(c);
+    d.stop().await;
+    d.boot(&["plain"]).await;
+    let (c, _) = d.client().await;
+    let back = list(&c).await.into_iter().find(|x| x.id == s.id).unwrap();
+    assert_eq!((back.effort.as_deref(), back.fast), (Some("low"), true));
+    d.stop().await;
 }

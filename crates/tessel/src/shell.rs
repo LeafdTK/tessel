@@ -12,6 +12,8 @@ mod ask;
 mod compose;
 mod composer;
 mod exec;
+mod mentions;
+mod models;
 mod looks;
 mod files;
 mod git;
@@ -103,7 +105,7 @@ pub struct Shell {
     /// the fill of the node being drawn, resolved before its inks were swapped.
     bg_now: std::cell::Cell<Option<Hsla>>,
     scroller: Entity<MessageScrollerState>,
-    composer: Entity<InputState>,
+    composer: Entity<gpui_kit::component::input::TextareaState>,
     new_cwd: Entity<InputState>,
     new_prompt: Entity<InputState>,
     new_worktree: bool,
@@ -127,7 +129,7 @@ pub struct Shell {
     // the settings page.
     settings_open: bool,
     /// which page of settings is showing.
-    settings_section: &'static str,
+    pub(crate) settings_section: &'static str,
     focus_settings: bool,
     settings_focus: FocusHandle,
     confirm_reset: bool,
@@ -211,10 +213,18 @@ pub struct Shell {
 
     /// files that will go with the next message.
     pub(crate) attachments: Vec<Attachment>,
+    /// pasted and attached pictures, decoded once: by where their bytes live.
+    pub(crate) thumbs: std::cell::RefCell<HashMap<(usize, usize), Arc<Image>>>,
     /// how many images have been pasted, to name the next one.
     pasted: u32,
     /// the models the agent offers. asked for once connected.
     pub(crate) models: Vec<ModelInfo>,
+    /// the agent's slash commands, for the composer's `/` menu.
+    pub(crate) slash_commands: Vec<tessel_proto::SlashCommand>,
+    /// the row chosen in the composer's `/` or `@` menu.
+    pub(crate) mention_sel: usize,
+    /// escape closed the menu for exactly this text; typing opens it again.
+    pub(crate) mention_dismissed: Option<String>,
     /// finished thoughts the user has opened to read in full.
     thoughts_open: HashSet<ItemId>,
     /// diagrams and formulas already drawn, by appearance and source. drawing
@@ -306,7 +316,8 @@ impl Shell {
         };
         let palette = theme::apply(forced, &ui.theme, window, cx);
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
-        let composer = cx.new(|cx| InputState::new(window, cx).placeholder("Message the agent…"));
+        // three lines to start, growing with what's written; return sends, shift-return is a new line.
+        let composer = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(3, 12).submit_on_enter(true).placeholder("Ask, or tell the agent what to do…"));
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
         let start_dir = std::env::var("TESSEL_DEFAULT_CWD").unwrap_or(home);
         let new_cwd = cx.new(|cx| InputState::new(window, cx).placeholder("Folder to work in").default_value(start_dir));
@@ -323,7 +334,22 @@ impl Shell {
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
 
+        // the `/` and `@` menus get their keys before the message box does:
+        // here bindings (return sends, arrows move) run ahead of key listeners.
+        let menu_keys = {
+            let (me, composer) = (cx.entity().downgrade(), composer.clone());
+            cx.intercept_keystrokes(move |ev, window, cx| {
+                if ev.keystroke.modifiers.modified() || !composer.focus_handle(cx).is_focused(window) {
+                    return;
+                }
+                let key = ev.keystroke.key.clone();
+                if me.update(cx, |this, cx| this.mention_key(&key, window, cx)).unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+            })
+        };
         let subscriptions = vec![
+            menu_keys,
             cx.subscribe_in(&composer, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = ev {
                     this.send(window, cx);
@@ -510,8 +536,12 @@ impl Shell {
             ws_session: None,
             ws_parked: HashMap::new(),
             attachments: Vec::new(),
+            thumbs: Default::default(),
             pasted: 0,
             models: Vec::new(),
+            slash_commands: Vec::new(),
+            mention_sel: 0,
+            mention_dismissed: None,
             thoughts_open: HashSet::new(),
             #[cfg(feature = "rich")]
             drawn: RefCell::new(HashMap::new()),
@@ -599,7 +629,10 @@ impl Shell {
                     self.cmd(Cmd::Models);
                 }
             }
-            UiEvent::Models(models) => self.models = models,
+            UiEvent::Models(models, commands) => {
+                self.models = models;
+                self.slash_commands = commands;
+            }
             UiEvent::Git { session, summary } => self.apply_git(session, summary),
             UiEvent::Diff { session, diff } => self.apply_diff(session, diff, cx),
             UiEvent::Dir { session, path, entries } => self.apply_dir(session, path, entries),
@@ -1808,6 +1841,10 @@ impl Render for Shell {
         self.sync_terminals(window, cx);
         self.step_bench_term(window, cx);
         self.sync_git_message(window, cx);
+        // an `@` wants the session's files.
+        if mentions::mention_at_end(&self.composer.read(cx).value()).is_some_and(|(k, ..)| k == mentions::Mention::File) {
+            self.want_files();
+        }
         if !self.palette_ui.open && std::mem::take(&mut self.theme_preview_by_palette) {
             self.preview_theme(None, window, cx);
         }
@@ -1899,6 +1936,13 @@ impl Render for Shell {
                 }
             }))
             .on_action(cx.listener(|this, _: &crate::ClosePane, window, cx| this.close_focused(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Favorite1, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 1}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Favorite2, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 2}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Favorite3, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 3}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Favorite4, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 4}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Favorite5, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 5}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::NextEffort, window, cx| this.run_key("model.effort", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::ToggleFast, window, cx| this.run_key("model.fast", serde_json::json!({}), window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_end(cx);
                 this.pane_drag_end(window, cx);
