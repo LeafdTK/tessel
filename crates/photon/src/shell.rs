@@ -1826,11 +1826,13 @@ impl Render for Shell {
         let root = self.node(&ui.root, false, now, cx);
         let font = ui.theme.font.clone();
 
+        // glass: nothing opaque under the frame, so the blurred desktop shows through it.
+        let glass = self.ui.theme.glass.unwrap_or(false);
         div()
             .id("shell")
             .relative()
             .size_full()
-            .bg(p.window)
+            .when(!glass, |d| d.bg(p.window))
             .text_color(p.label)
             .set(Type::Body)
             .when_some(font, |d, f| d.font_family(f))
