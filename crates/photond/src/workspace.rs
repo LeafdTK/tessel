@@ -1053,3 +1053,65 @@ mod git_tests {
         assert_eq!(apply_hunks("a", &hunks, |h| Some(h.added.clone())), "b");
     }
 }
+
+// ---- previews ------------------------------------------------------------------------
+
+/// the most of an image sent whole.
+const MAX_PREVIEW: usize = 20 * 1024 * 1024;
+
+fn image_mime(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "tif" | "tiff" => "image/tiff",
+        _ => return None,
+    })
+}
+
+fn thumbnail_note(path: &str) -> &'static str {
+    match path.rsplit('.').next().map(str::to_ascii_lowercase).as_deref() {
+        Some("pdf" | "key" | "pages" | "docx" | "doc" | "pptx" | "xlsx" | "numbers") => "The first page",
+        Some("mov" | "mp4" | "m4v" | "webm" | "mkv" | "avi") => "A frame from the video",
+        Some("mp3" | "m4a" | "wav" | "aiff" | "flac" | "ogg") => "Audio",
+        _ => "A preview",
+    }
+}
+
+/// an image for a file: images as they are; anything else Quick Look can
+/// draw, as a thumbnail made here, on the daemon's machine.
+pub async fn preview(dir: &Path, rel: &str) -> Result<(String, Vec<u8>, Option<String>), RpcError> {
+    let full = resolve(dir, rel)?;
+    let meta = tokio::fs::metadata(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't open {rel}: {e}")))?;
+    if let Some(mime) = image_mime(rel)
+        && meta.len() as usize <= MAX_PREVIEW
+    {
+        let bytes = tokio::fs::read(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't read {rel}: {e}")))?;
+        return Ok((mime.to_owned(), bytes, None));
+    }
+    let out_dir = std::env::temp_dir().join(format!("photon-preview-{}", std::process::id()));
+    tokio::fs::create_dir_all(&out_dir).await.map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))?;
+    let full_s = full.to_string_lossy().into_owned();
+    let out_s = out_dir.to_string_lossy().into_owned();
+    let made = run("qlmanage", dir, &["-t", "-s", "1600", "-o", &out_s, &full_s], Duration::from_secs(20)).await;
+    let name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let png = out_dir.join(format!("{name}.png"));
+    let bytes = match made {
+        Ok(_) => tokio::fs::read(&png).await.ok(),
+        Err(_) => None,
+    };
+    let _ = tokio::fs::remove_file(&png).await;
+    match bytes {
+        Some(b) if !b.is_empty() => Ok(("image/png".to_owned(), b, Some(thumbnail_note(rel).to_owned()))),
+        _ => Err(RpcError::new(ErrorCode::NotFound, format!("there's no preview for {}", short(rel)))),
+    }
+}
+
+fn short(rel: &str) -> &str {
+    rel.rsplit('/').next().unwrap_or(rel)
+}

@@ -389,6 +389,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.zoom` | Maximize or restore pane | ⇧ ⌘ ↩ | pane? |
 | `pane.close` | Close pane | ⌘ W | pane? |
 | `pane.show` | Show Conversation here |  | module, pane? |
+| `files.open` | Open a file |  | path: relative to the session's folder |
 | `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |
 | `pane.focus` | Focus a pane |  | pane |
 | `pane.toggle` | Show or hide a pane |  | pane |

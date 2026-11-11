@@ -117,6 +117,14 @@ impl Shell {
                 done
             }
 
+            "files.open" => {
+                let path = arg(args, "path").ok_or("say which file: path, relative to the session's folder")?.trim_start_matches("./").to_owned();
+                if self.ws_session.is_none() {
+                    return Err("open a session first: files are in its folder".into());
+                }
+                self.open_file(path.clone(), cx);
+                Ok(json!({"opening": path}))
+            }
             "terminal.new" => {
                 let pane = self.new_terminal(window, cx).ok_or("there's no pane to put a terminal beside")?;
                 Ok(json!({"pane": pane}))

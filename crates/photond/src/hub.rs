@@ -557,6 +557,13 @@ impl Hub {
             Request::GitDiff { session, path, at } => {
                 return self.in_workdir(client, id, session, |dir| async move { workspace::git_diff(&dir, &path, at.as_deref()).await.map(|diff| Response::Diff { diff }) });
             }
+            Request::FsPreview { session, path } => {
+                return self.in_workdir(client, id, session, |dir| async move {
+                    use base64::Engine as _;
+                    let (mime, bytes, note) = workspace::preview(&dir, &path).await?;
+                    Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
+                });
+            }
             Request::GitLog { session, skip, limit } => {
                 return self.in_workdir(client, id, session, move |dir| async move { workspace::git_log(&dir, skip, limit).await.map(|log| Response::GitLog { log }) });
             }

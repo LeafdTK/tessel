@@ -632,6 +632,10 @@ fn files_can_be_browsed_edited_and_saved_and_unsaved_edits_are_never_dropped(cx:
     let file = FileContent { path: "src/main.rs".into(), text: Some("fn main() {}\n".into()), binary: false, truncated: false, size: 13 };
     rig.feed(cx, vec![UiEvent::File { session: idle.id, file }]);
     assert!(rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().is_some_and(|f| f.editor.is_some() && f.note.is_none())), "the file has an editor");
+    assert!(
+        rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "file.marks", req: Request::GitDiff { path, .. } } if path == "src/main.rs")),
+        "and asks what changed in it, for the gutter"
+    );
     assert!(rig.exists(cx, "file-editor"), "editor on screen");
     assert!(rig.exists(cx, "file-close"), "close on screen");
     assert!(rig.exists(cx, "file-save"), "save on screen");
@@ -1429,4 +1433,27 @@ fn the_git_pane_asks_for_history_and_the_work_tree_stages_and_shows_a_commit(cx:
     // nothing staged: committing says what's missing instead of asking.
     rig.click(cx, "git-commit");
     assert!(!ask(&rig.asked(), |r| matches!(r, Request::GitCommit { .. })));
+}
+
+#[gpui_kit::test]
+fn an_image_is_shown_and_markdown_is_read_as_a_document(cx: &mut TestAppContext) {
+    use base64::Engine as _;
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "files"}
+    ]}}}"#);
+    rig.feed(cx, vec![UiEvent::Dir { session: idle.id, path: String::new(), entries: vec![DirEntry { name: "logo.png".into(), is_dir: false, size: 70 }, DirEntry { name: "README.md".into(), is_dir: false, size: 22 }] }]);
+    rig.feed(cx, vec![UiEvent::File { session: idle.id, file: FileContent { path: "logo.png".into(), text: None, binary: true, truncated: false, size: 70 } }]);
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "file.preview", .. })), "a picture is asked for");
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    rig.feed(cx, vec![UiEvent::Answer { tag: "file.preview", result: Ok(Response::Preview { mime: "image/png".into(), data: png.into(), note: None }) }]);
+    assert!(rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().is_some_and(|f| f.preview.is_some() && f.note.is_none())));
+    let _ = base64::engine::general_purpose::STANDARD;
+
+    rig.feed(cx, vec![UiEvent::File { session: idle.id, file: FileContent { path: "README.md".into(), text: Some("# Hello\n\n- [ ] a task\n".into()), binary: false, truncated: false, size: 22 } }]);
+    let state = rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().map(|f| (f.path.clone(), f.rendered, f.preview.is_some(), f.editor.is_some())));
+    assert!(rig.exists(cx, "file-document"), "read as a document: {state:?}");
+    rig.click(cx, "file-render");
+    assert!(!rig.exists(cx, "file-document") && rig.exists(cx, "file-save"), "and edited as source");
 }

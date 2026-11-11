@@ -12,6 +12,7 @@ mod ask;
 mod compose;
 mod composer;
 mod exec;
+mod files;
 mod git;
 mod palette;
 mod panel;
@@ -695,6 +696,7 @@ impl Shell {
             UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
+            UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {

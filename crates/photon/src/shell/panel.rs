@@ -60,6 +60,12 @@ pub(crate) struct OpenFile {
     /// what was sent to be saved and has not been confirmed yet.
     saving: Option<String>,
     _watch: Option<Subscription>,
+    /// for a file that is looked at, not edited: the image, and what it is.
+    pub(crate) preview: Option<(std::sync::Arc<gpui_kit::Image>, Option<String>)>,
+    /// what changed, marked in the gutter.
+    pub(crate) marks: Option<gpui_kit::component::input::GutterDecorationCollection>,
+    /// markdown read as a document rather than edited as source.
+    pub(crate) rendered: bool,
 }
 
 /// everything the panel shows for one session. kept per session, so going
@@ -352,6 +358,8 @@ impl Shell {
         }
         // whatever was typed while the save was on its way still counts as unsaved.
         self.ws.stale = true;
+        // what changed is different now.
+        self.file_opened(false);
     }
 
     pub(crate) fn apply_pr(&mut self, session: SessionId, status: PrStatus) {
@@ -391,7 +399,10 @@ impl Shell {
             });
             (Some(editor), Some(watch))
         };
-        self.ws.file = Some(OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch });
+        let rendered = super::files::is_markdown(&f.path) && editor.is_some();
+        let note = if f.binary { Some("Looking at it…".to_owned()) } else { note };
+        self.ws.file = Some(OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch, preview: None, marks: None, rendered });
+        self.file_opened(f.binary);
     }
 
     pub(crate) fn select_change(&mut self, path: String, cx: &mut Context<Self>) {
@@ -737,13 +748,31 @@ impl Shell {
                 d.child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).child("Edited"))
                     .child(Button::new("file-revert").xsmall().ghost().label("Revert").on_click(cx.listener(|this, _, window, cx| this.revert_file(window, cx))))
             })
-            .when(editable, |d| {
+            .when(super::files::is_markdown(&file.path) && file.editor.is_some(), |d| {
+                let rendered = file.rendered;
+                d.child(
+                    Button::new("file-render")
+                        .xsmall()
+                        .ghost()
+                        .icon(gpui_kit::component::Icon::empty().path(if rendered { "icons/pencil.svg" } else { "icons/book-open.svg" }))
+                        .label(if rendered { "Edit" } else { "Read" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(f) = this.ws.file.as_mut() {
+                                f.rendered = !f.rendered;
+                            }
+                            cx.notify();
+                        })),
+                )
+            })
+            .when(editable && !file.rendered, |d| {
                 d.child(Button::new("file-save").xsmall().when(file.dirty, |b| b.primary()).when(!file.dirty, |b| b.outline()).disabled(!file.dirty).label("Save").on_click(cx.listener(|this, _, _, cx| this.save_file(cx))))
             })
             .child(Button::new("file-close").xsmall().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
-        let body: AnyElement = match &file.editor {
-            Some(editor) => div().size_full().child(Editor::new(editor).h(relative(1.)).bordered(false).readonly(!editable)).into_any_element(),
-            None => div().into_any_element(),
+        let body: AnyElement = match (&file.preview, &file.editor) {
+            (Some((image, note)), _) => self.preview_el(image, note.as_deref()),
+            (None, Some(editor)) if file.rendered => self.document_el(editor.read(cx).value().to_string()),
+            (None, Some(editor)) => div().size_full().child(Editor::new(editor).h(relative(1.)).bordered(false).readonly(!editable)).into_any_element(),
+            (None, None) => div().into_any_element(),
         };
         col.child(tree)
             .child(header)

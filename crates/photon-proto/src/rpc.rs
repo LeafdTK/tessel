@@ -163,6 +163,12 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         at: Option<String>,
     },
+    /// something to look at for a file that isn't text: an image as it is,
+    /// anything else (pdf, video, audio, documents) as a thumbnail the daemon makes.
+    FsPreview {
+        session: SessionId,
+        path: String,
+    },
     /// a page of history, newest first.
     GitLog {
         session: SessionId,
@@ -418,6 +424,14 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    /// an image to show for a file. `data` is base64.
+    Preview {
+        mime: String,
+        data: String,
+        /// what it is when the image isn't the file itself ("first page", "a frame").
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// the files a commit changed.
     Changed {

@@ -1083,3 +1083,30 @@ async fn history_staging_by_lines_commits_and_undo_all_go_through_the_daemon() {
     assert!(err.to_string().contains("staged differently since"), "{err}");
     assert!(c.request(Request::GitStage { session: s.id, paths: vec!["../escape".into()] }).await.is_err(), "paths stay inside");
 }
+
+#[tokio::test]
+async fn a_file_that_isnt_text_gets_something_to_look_at() {
+    use base64::Engine as _;
+    let d = Daemon::start(&["plain"]).await;
+    let dir = d.cfg.paths.home.join("media");
+    std::fs::create_dir_all(&dir).unwrap();
+    // the smallest valid png: one transparent pixel.
+    let png = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==").unwrap();
+    std::fs::write(dir.join("dot.png"), &png).unwrap();
+    std::fs::write(dir.join("notes.txt"), "hello from a text file\n".repeat(20)).unwrap();
+    let (c, _) = d.client().await;
+    let s = create(&c, dir.to_str().unwrap(), None).await;
+
+    let Response::Preview { mime, data, note } = c.request(Request::FsPreview { session: s.id, path: "dot.png".into() }).await.unwrap() else { panic!() };
+    assert_eq!(mime, "image/png");
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(data).unwrap(), png, "an image is sent as it is");
+    assert!(note.is_none());
+
+    // anything else: a thumbnail, made by the daemon.
+    let Response::Preview { mime, data, note } = c.request(Request::FsPreview { session: s.id, path: "notes.txt".into() }).await.unwrap() else { panic!() };
+    assert_eq!(mime, "image/png");
+    assert!(base64::engine::general_purpose::STANDARD.decode(data).unwrap().starts_with(b"\x89PNG"));
+    assert!(note.is_some());
+
+    assert!(c.request(Request::FsPreview { session: s.id, path: "../../etc/hosts".into() }).await.is_err());
+}
