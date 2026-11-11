@@ -92,6 +92,7 @@ Modules:
 | `checks`       | the branch, its pull request and CI                                   |
 | `artifacts`    | plans and files the agent made                                        |
 | `info`         | the session: model, cost, tool servers, linked folders                |
+| `terminal`     | a shell in the session's folder, run by the daemon on Ghostty's core: it outlives the window, and scripts can read and drive it (`photonctl term`) |
 | `surfaces`     | live views the agent drew for a pane (`photon_surface`, region `pane`). while one is open those leave the chat |
 
 Panes are tiles on the frame: 8 points apart, each a sheet with orchard's panel corner.
@@ -387,6 +388,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.zoom` | Maximize or restore pane | ⇧ ⌘ ↩ | pane? |
 | `pane.close` | Close pane | ⌘ W | pane? |
 | `pane.show` | Show Conversation here |  | module, pane? |
+| `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |
 | `pane.focus` | Focus a pane |  | pane |
 | `pane.toggle` | Show or hide a pane |  | pane |
 | `pane.move` | Move a pane |  | pane, to, zone: left|right|top|bottom|swap |

@@ -56,6 +56,18 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl surface SESSION remove NAME
   photonctl mcp                             photon as MCP tools, on stdin/stdout (agents get this)
 
+  terminals the daemon runs (ghostty's emulator; they outlive windows):
+  photonctl term ls
+  photonctl term open [--cwd DIR] [--session S] [--size 120x32] [-- COMMAND...]
+                                            a login shell, or COMMAND run by one; prints its id
+  photonctl term send ID TEXT...            type TEXT (no return)
+  photonctl term run ID COMMAND...          type COMMAND and return
+  photonctl term capture ID [--history]     the text on screen (with --history, all of it)
+  photonctl term wait ID [--text T] [--timeout SECS]
+                                            until the screen shows T, or until it exits
+  photonctl term attach ID                  its output, raw, as it comes
+  photonctl term close ID
+
   photonctl settings [key=value...]         the daemon's settings; with pairs, change them
       e.g. settings agent_tools=false     agents no longer get photon's tools
       --window NAME    which window (default: the one opened last)
@@ -221,6 +233,7 @@ async fn run() -> anyhow::Result<()> {
             };
             client.request(Request::SurfaceOp { session, op }).await?;
         }
+        "term" => term(&client, &mut events, &mut args, json).await?,
         "settings" => {
             let rest: Vec<String> = std::mem::take(&mut args.rest);
             let reply = if rest.is_empty() { client.request(Request::Settings).await? } else { client.request(Request::SetSettings { patch: ui_args(&rest)? }).await? };
@@ -476,10 +489,106 @@ async fn follow_events(events: &mut Events, json: bool) {
             Event::Lagged => println!("!! fell behind; events were dropped. run again for a fresh view."),
             Event::Ui { window, kind, .. } => println!("window {window}: {kind}"),
             Event::Settings { settings } => println!("settings: {}", serde_json::to_string(&settings).unwrap_or_default()),
+            Event::TermUpdated { info } => println!("{}", term_line(&info)),
+            Event::TermRemoved { term } => println!("terminal {term} closed"),
+            Event::TermOutput { .. } => {}
             Event::UiCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
         }
     }
     println!("connection closed");
+}
+
+fn term_line(t: &photon_proto::term::TermInfo) -> String {
+    let what = if t.command.is_empty() { "shell".to_owned() } else { t.command.join(" ") };
+    let state = t.exited.map_or_else(|| "running".to_owned(), |c| format!("exited {c}"));
+    let title = if t.title.is_empty() { String::new() } else { format!("  {}", t.title) };
+    format!("{:<4} {:<10} {:>3}x{:<3} {}  {}{title}", t.id, state, t.cols, t.rows, t.cwd, what)
+}
+
+async fn term(client: &Client, events: &mut Events, args: &mut Args, json: bool) -> anyhow::Result<()> {
+    let id = |s: String| s.parse::<photon_proto::term::TermId>().with_context(|| format!("{s} isn't a terminal id (photonctl term ls lists them)"));
+    match args.next("ls, open, send, run, capture, wait, attach or close")?.as_str() {
+        "ls" => {
+            let Response::Terms { terms } = client.request(Request::TermList).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string(&terms)?);
+            }
+            for t in terms.iter().filter(|_| !json) {
+                println!("{}", term_line(t));
+            }
+        }
+        "open" => {
+            let cwd = args.opt("--cwd")?.map(|c| PathBuf::from(c).canonicalize().map(|p| p.to_string_lossy().into_owned())).transpose()?;
+            let session = match args.opt("--session")? {
+                Some(s) => Some(resolve(client, &s).await?),
+                None => None,
+            };
+            let size = args.opt("--size")?.unwrap_or_else(|| "120x32".into());
+            let (cols, rows) = size.split_once('x').and_then(|(c, r)| Some((c.parse().ok()?, r.parse().ok()?))).context("--size is COLSxROWS, like 120x32")?;
+            if args.rest.first().is_some_and(|a| a == "--") {
+                args.rest.remove(0);
+            }
+            let command = std::mem::take(&mut args.rest);
+            let Response::Term { info } = client.request(Request::TermOpen { session, cwd, command, cols, rows }).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string(&info)?);
+            } else {
+                println!("{}", info.id);
+            }
+        }
+        verb @ ("send" | "run") => {
+            let term = id(args.next("a terminal")?)?;
+            let mut text = std::mem::take(&mut args.rest).join(" ");
+            if verb == "run" {
+                text.push('\r');
+            }
+            client.request(Request::TermInput { term, text }).await?;
+        }
+        "capture" => {
+            let term = id(args.next("a terminal")?)?;
+            let history = args.flag("--history");
+            let Response::TermText { text } = client.request(Request::TermCapture { term, history }).await? else { bail!("unexpected reply") };
+            println!("{text}");
+        }
+        "wait" => {
+            let term = id(args.next("a terminal")?)?;
+            let text = args.opt("--text")?;
+            let secs: f64 = args.opt("--timeout")?.map(|t| t.parse()).transpose().context("--timeout is seconds")?.unwrap_or(30.0);
+            match client.request(Request::TermWait { term, text, timeout_ms: (secs * 1000.0) as u64 }).await? {
+                Response::TermText { text } => println!("{text}"),
+                Response::Term { info } => {
+                    println!("{}", term_line(&info));
+                    if let Some(code) = info.exited.filter(|c| *c != 0) {
+                        std::process::exit(code.clamp(1, 255));
+                    }
+                }
+                other => bail!("unexpected reply: {other:?}"),
+            }
+        }
+        "attach" => {
+            // what it shows and then what it writes, raw, until it closes. read-only.
+            let term = id(args.next("a terminal")?)?;
+            client.request(Request::TermAttach { term }).await?;
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            while let Some(ev) = events.recv().await {
+                match ev {
+                    Event::TermOutput { term: t, bytes } if t == term => {
+                        out.write_all(&bytes)?;
+                        out.flush()?;
+                    }
+                    Event::TermRemoved { term: t } if t == term => break,
+                    _ => {}
+                }
+            }
+        }
+        "close" => {
+            let term = id(args.next("a terminal")?)?;
+            client.request(Request::TermClose { term }).await?;
+        }
+        other => bail!("unknown term command {other}: use ls, open, send, run, capture, wait, attach or close"),
+    }
+    Ok(())
 }
 
 fn run_state_word(s: &RunState) -> &'static str {

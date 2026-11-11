@@ -41,6 +41,7 @@ actions!(
         PaletteScope,
         SplitRight,
         SplitDown,
+        NewTerminal,
         ClosePane,
         MaximizePane,
         Quit,
@@ -86,6 +87,7 @@ pub fn bind_keys(cx: &mut App) {
         // the pane last clicked in.
         KeyBinding::new("cmd-d", SplitRight, None),
         KeyBinding::new("shift-cmd-d", SplitDown, None),
+        KeyBinding::new("ctrl-`", NewTerminal, None),
         KeyBinding::new("cmd-w", ClosePane, None),
         KeyBinding::new("shift-cmd-enter", MaximizePane, None),
         KeyBinding::new("escape", CloseAsk, Some("Ask")),
@@ -113,6 +115,7 @@ fn set_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Split Pane Right", SplitRight),
                 MenuItem::action("Split Pane Down", SplitDown),
+                MenuItem::action("New Terminal", NewTerminal),
                 MenuItem::action("Maximize Pane", MaximizePane),
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::separator(),

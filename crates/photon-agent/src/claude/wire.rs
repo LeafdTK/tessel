@@ -40,7 +40,7 @@ Inline $...$ maths is not typeset, so write short inline expressions as plain te
 Use a diagram or a formula when it explains something better than prose, not for decoration.";
 
 /// added to `HOST_NOTE` when the agent has photon's tools.
-pub const TOOLS_NOTE: &str = "\n\nYou also have photon's tools. photon_surface draws live UI in this chat (progress, status cards, choices, results) that you update in place as work goes on; prefer it to repeating status in prose for anything that changes. photon_window runs anything a person can click in the app: split panes, show changes or files, switch theme. Use them when they help the person, not for their own sake.";
+pub const TOOLS_NOTE: &str = "\n\nYou also have photon's tools. photon_surface draws live UI in this chat (progress, status cards, choices, results) that you update in place as work goes on; prefer it to repeating status in prose for anything that changes. photon_window runs anything a person can click in the app: split panes, show changes or files, switch theme. photon_terminal runs things the person should watch, like a dev server, in a terminal pane (Bash is still for one-off commands). Use them when they help the person, not for their own sake.";
 
 /// a message from the user. with attachments it becomes a list of blocks:
 /// the text, then each image or document.

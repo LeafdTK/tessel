@@ -1171,10 +1171,12 @@ pub enum Module {
     Info,
     /// live ui the agent drew for a pane (`photon_surface` with region "pane").
     Surfaces,
+    /// a shell the daemon runs, on ghostty's emulator.
+    Terminal,
 }
 
 /// name, module, title, lucide icon, what it is.
-pub const MODULES: [(&str, Module, &str, &str, &str); 9] = [
+pub const MODULES: [(&str, Module, &str, &str, &str); 10] = [
     ("conversation", Module::Conversation, "Conversation", "message-square", "The session: what the agent says and does, and the message box"),
     ("sessions", Module::Sessions, "Sessions", "list", "Every session, the ones that need you first"),
     ("workspace", Module::Workspace, "Workspace", "panels-top-left", "Changes, files, checks, artifacts and info as tabs"),
@@ -1184,6 +1186,7 @@ pub const MODULES: [(&str, Module, &str, &str, &str); 9] = [
     ("artifacts", Module::Artifacts, "Artifacts", "sparkles", "Plans and files the agent made"),
     ("info", Module::Info, "Info", "info", "The session: model, cost, tools, folders"),
     ("surfaces", Module::Surfaces, "Surfaces", "layout-dashboard", "Live views the agent drew: progress, results, choices"),
+    ("terminal", Module::Terminal, "Terminal", "square-terminal", "A shell in the session's folder, on Ghostty's core"),
 ];
 
 impl Module {

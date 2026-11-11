@@ -5,6 +5,7 @@
 //! reconnecting (starting one if needed) and re-subscribes to whatever was open.
 
 use photon_client::{Client, ClientError, Events};
+use photon_proto::term::{TermId, TermInfo};
 use photon_proto::{
     Attachment, DirEntry, Event, FileContent, FileDiff, GitSummary, Item, ItemId, ModelInfo, PermissionDecision, PermissionRequest,
     PrStatus, Request, RequestId, Response, Seq, SessionId, SessionSnapshot, SessionSummary, WorktreeSpec,
@@ -50,6 +51,13 @@ pub enum Cmd {
     SurfaceEvent { session: SessionId, surface: String, element: String, act: String, value: serde_json::Value },
     /// change some of the daemon's settings (a partial object).
     SetSettings(serde_json::Value),
+    /// start a terminal for a pane.
+    TermOpen { pane: String, session: Option<SessionId>, cwd: Option<String>, cols: u16, rows: u16 },
+    TermAttach(TermId),
+    /// keys, as the terminal encoded them: sent as a binary frame.
+    TermInput(TermId, Vec<u8>),
+    TermResize(TermId, u16, u16),
+    TermClose(TermId),
 }
 
 #[derive(Debug)]
@@ -78,6 +86,13 @@ pub enum UiEvent {
     Watched(bool),
     /// what the daemon is set to (on connecting, and whenever it changes).
     DaemonSettings(photon_proto::DaemonSettings),
+    /// every terminal (on connecting, and after falling behind): anything
+    /// attached starts over from a fresh dump.
+    Terms(Vec<TermInfo>),
+    TermOpened { pane: String, session: Option<SessionId>, info: TermInfo },
+    TermOutput(TermId, Vec<u8>),
+    TermUpdated(TermInfo),
+    TermRemoved(TermId),
     /// a session started aside exists, with this id.
     Aside(SessionId),
     /// something the user did failed. shown, not fatal.
@@ -160,6 +175,17 @@ async fn subscribe(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, op
     Ok(())
 }
 
+/// every terminal, so the window can (re)attach what it shows. an older
+/// daemon has none; that's no error.
+fn list_terms(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>) {
+    let (client, ui) = (client.clone(), ui.clone());
+    tokio::spawn(async move {
+        if let Ok(Response::Terms { terms }) = client.request(Request::TermList).await {
+            let _ = ui.send(UiEvent::Terms(terms));
+        }
+    });
+}
+
 /// ask about a session's folder without holding up everything else: git and
 /// the disk can take a while, and tokens must keep streaming meanwhile.
 fn ask(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, req: Request, answer: impl FnOnce(Response) -> Option<UiEvent> + Send + 'static) {
@@ -198,6 +224,7 @@ async fn session(
         Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
         _ => None,
     });
+    list_terms(client, ui);
     loop {
         tokio::select! {
             ev = events.recv() => {
@@ -213,8 +240,13 @@ async fn session(
                         if subscribe(client, ui, open).await.is_err() {
                             return Ended::Lost;
                         }
+                        // terminals too: the daemon stopped sending their bytes.
+                        list_terms(client, ui);
                         continue;
                     }
+                    Event::TermOutput { term, bytes } => UiEvent::TermOutput(term, bytes),
+                    Event::TermUpdated { info } => UiEvent::TermUpdated(info),
+                    Event::TermRemoved { term } => UiEvent::TermRemoved(term),
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
                     Event::Settings { settings } => UiEvent::DaemonSettings(settings),
@@ -294,6 +326,26 @@ async fn session(
                         tokio::spawn(async move {
                             let _ = client.request(Request::UiPublish { kind, data }).await;
                         });
+                        Ok(())
+                    }
+                    Cmd::TermOpen { pane, session, cwd, cols, rows } => {
+                        ask(client, ui, Request::TermOpen { session, cwd, command: Vec::new(), cols, rows }, move |r| match r {
+                            Response::Term { info } => Some(UiEvent::TermOpened { pane, session, info }),
+                            _ => None,
+                        });
+                        Ok(())
+                    }
+                    Cmd::TermAttach(term) => {
+                        ask(client, ui, Request::TermAttach { term }, |_| None);
+                        Ok(())
+                    }
+                    Cmd::TermInput(term, bytes) => client.send_term_input(term, &bytes),
+                    Cmd::TermResize(term, cols, rows) => {
+                        ask(client, ui, Request::TermResize { term, cols, rows }, |_| None);
+                        Ok(())
+                    }
+                    Cmd::TermClose(term) => {
+                        ask(client, ui, Request::TermClose { term }, |_| None);
                         Ok(())
                     }
                     Cmd::SetSettings(patch) => {

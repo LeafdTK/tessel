@@ -5,6 +5,8 @@
 //! there is exactly one order in which things happened.
 
 use crate::paths::Paths;
+use crate::server::Out;
+use photon_proto::term::TermId;
 use crate::reducer::{Effects, Input, Meta, SessionState};
 use crate::store::Store;
 use crate::workspace;
@@ -57,7 +59,7 @@ impl Config {
 }
 
 pub enum HubMsg {
-    Connected { client: ClientId, tx: mpsc::Sender<Envelope> },
+    Connected { client: ClientId, tx: mpsc::Sender<Out> },
     Request { client: ClientId, id: u64, req: Request },
     Disconnected { client: ClientId },
     Agent { session: SessionId, generation: u64, output: AgentOutput },
@@ -65,6 +67,14 @@ pub enum HubMsg {
     Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
     /// a worktree finished being made (or failed) for a pending create.
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError> },
+    /// keys for a terminal: a binary frame from any client.
+    TermInput { payload: Vec<u8> },
+    /// from a terminal's thread.
+    TermOutput { term: TermId, bytes: Vec<u8> },
+    TermChanged { term: TermId, title: String, cwd: Option<String> },
+    TermExited { term: TermId, code: i32 },
+    /// everything on a terminal, for a client that asked to attach.
+    TermDump { term: TermId, client: ClientId, id: u64, bytes: Vec<u8> },
     Stop,
 }
 
@@ -78,7 +88,7 @@ pub struct Create {
 }
 
 struct Client {
-    tx: mpsc::Sender<Envelope>,
+    tx: mpsc::Sender<Out>,
     ready: bool,
     summary: bool,
     detail: Option<SessionId>,
@@ -126,6 +136,8 @@ pub struct Hub {
     ui_calls: HashMap<u64, UiCall>,
     next_ui: u64,
     settings: photon_proto::DaemonSettings,
+    terms: std::collections::BTreeMap<TermId, crate::term::Handle>,
+    next_term: TermId,
 }
 
 pub fn now_ms() -> Millis {
@@ -153,6 +165,8 @@ impl Hub {
             ui_calls: HashMap::new(),
             next_ui: 1,
             settings: photon_proto::DaemonSettings::default(),
+            terms: Default::default(),
+            next_term: 1,
         };
         hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
@@ -213,6 +227,9 @@ impl Hub {
             }
             HubMsg::Disconnected { client } => {
                 let gone = self.clients.remove(&client);
+                for t in self.terms.values_mut() {
+                    t.attached.remove(&client);
+                }
                 // a window that goes away answers nothing more: its callers hear so now.
                 if gone.as_ref().is_some_and(|c| c.window.is_some()) {
                     let stranded: Vec<u64> = self.ui_calls.iter().filter(|(_, c)| c.window == client).map(|(k, _)| *k).collect();
@@ -242,7 +259,56 @@ impl Hub {
                 });
                 self.respond(client, id, result);
             }
-            HubMsg::Stop => return true,
+            HubMsg::TermInput { payload } => {
+                if let Some((term, bytes)) = photon_proto::term::decode(&payload)
+                    && let Some(t) = self.terms.get(&term)
+                {
+                    t.send(crate::term::Cmd::Input(bytes.to_vec()));
+                }
+            }
+            HubMsg::TermOutput { term, bytes } => {
+                let to: Vec<ClientId> = self.terms.get(&term).map(|t| t.attached.iter().copied().collect()).unwrap_or_default();
+                for c in to {
+                    self.send(c, Out::Term(term, bytes.clone()));
+                }
+            }
+            HubMsg::TermChanged { term, title, cwd } => {
+                if let Some(t) = self.terms.get_mut(&term) {
+                    t.info.title = title;
+                    if let Some(cwd) = cwd {
+                        t.info.cwd = cwd;
+                    }
+                    let info = t.info.clone();
+                    self.tell_everyone(Event::TermUpdated { info });
+                }
+            }
+            HubMsg::TermExited { term, code } => {
+                if let Some(t) = self.terms.get_mut(&term) {
+                    t.info.exited = Some(code);
+                    if t.closing {
+                        self.forget_term(term);
+                    } else {
+                        let info = t.info.clone();
+                        self.tell_everyone(Event::TermUpdated { info });
+                    }
+                }
+            }
+            HubMsg::TermDump { term, client, id, bytes } => match self.terms.get_mut(&term) {
+                Some(t) if self.clients.contains_key(&client) => {
+                    t.attached.insert(client);
+                    let info = t.info.clone();
+                    self.respond(client, id, Ok(Response::Term { info }));
+                    self.send(client, Out::Term(term, bytes));
+                }
+                Some(_) => {}
+                None => self.respond(client, id, Err(no_term(term))),
+            },
+            HubMsg::Stop => {
+                for t in self.terms.values() {
+                    t.send(crate::term::Cmd::Quit);
+                }
+                return true;
+            }
         }
         self.clients.retain(|_, c| !c.dead);
         false
@@ -475,6 +541,97 @@ impl Hub {
                 self.send(client, Envelope::Ev { ev: Event::UiWatched { watched } });
                 Ok(Response::Ack)
             }
+            Request::TermOpen { session, cwd, command, cols, rows } => {
+                let session_cwd = session.and_then(|s| self.sessions.get(&s)).map(|l| l.state.meta.cwd.clone());
+                if let Some(s) = session
+                    && session_cwd.is_none()
+                {
+                    return Some(Err(not_found(s)));
+                }
+                let cwd = cwd.or(session_cwd).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
+                if !std::path::Path::new(&cwd).is_dir() {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory"))));
+                }
+                let id = self.next_term;
+                self.next_term += 1;
+                let info = photon_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None };
+                let mut env = vec![("PHOTON_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
+                if let Some(s) = session {
+                    env.push(("PHOTON_SESSION".into(), s.to_string()));
+                }
+                match crate::term::spawn(info.clone(), env, self.tx.clone()) {
+                    Ok(handle) => {
+                        self.terms.insert(id, handle);
+                        self.tell_everyone(Event::TermUpdated { info: info.clone() });
+                        Ok(Response::Term { info })
+                    }
+                    Err(e) => Err(RpcError::new(ErrorCode::Internal, format!("couldn't start a terminal: {e}"))),
+                }
+            }
+            Request::TermList => Ok(Response::Terms { terms: self.terms.values().map(|t| t.info.clone()).collect() }),
+            Request::TermAttach { term } => match self.terms.get(&term) {
+                // answered with its dump, from its thread.
+                Some(t) => {
+                    t.send(crate::term::Cmd::Dump { client, id });
+                    return None;
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermDetach { term } => {
+                if let Some(t) = self.terms.get_mut(&term) {
+                    t.attached.remove(&client);
+                }
+                Ok(Response::Ack)
+            }
+            Request::TermInput { term, text } => match self.terms.get(&term) {
+                Some(t) if t.info.exited.is_some() => Err(RpcError::new(ErrorCode::Conflict, format!("terminal {term} has exited"))),
+                Some(t) => {
+                    t.send(crate::term::Cmd::Input(text.into_bytes()));
+                    Ok(Response::Ack)
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermResize { term, cols, rows } => match self.terms.get_mut(&term) {
+                Some(t) => {
+                    let (cols, rows) = (cols.max(2), rows.max(1));
+                    if (t.info.cols, t.info.rows) != (cols, rows) {
+                        t.send(crate::term::Cmd::Resize(cols, rows));
+                        (t.info.cols, t.info.rows) = (cols, rows);
+                        let info = t.info.clone();
+                        self.tell_everyone(Event::TermUpdated { info });
+                    }
+                    Ok(Response::Ack)
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermClose { term } => match self.terms.get_mut(&term) {
+                Some(t) if t.info.exited.is_some() => {
+                    self.forget_term(term);
+                    Ok(Response::Ack)
+                }
+                Some(t) => {
+                    t.closing = true;
+                    t.send(crate::term::Cmd::Hangup);
+                    Ok(Response::Ack)
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermCapture { term, history } => match self.terms.get(&term) {
+                Some(t) => {
+                    t.send(crate::term::Cmd::Capture { client, id, history });
+                    return None;
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermWait { term, text, timeout_ms } => match self.terms.get(&term) {
+                Some(t) if text.is_none() && t.info.exited.is_some() => Ok(Response::Term { info: t.info.clone() }),
+                Some(t) => {
+                    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.min(3_600_000));
+                    t.send(crate::term::Cmd::Wait { client, id, text, deadline });
+                    return None;
+                }
+                None => Err(no_term(term)),
+            },
             Request::Settings => Ok(Response::Settings { settings: self.settings.clone() }),
             Request::SetSettings { patch } => {
                 let Some(patch) = patch.as_object() else {
@@ -497,11 +654,7 @@ impl Hub {
                         return Some(Err(RpcError::new(ErrorCode::Internal, format!("couldn't save the settings: {e}"))));
                     }
                     self.settings = next;
-                    let ev = Event::Settings { settings: self.settings.clone() };
-                    let everyone: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.ready).map(|(id, _)| *id).collect();
-                    for c in everyone {
-                        self.send(c, Envelope::Ev { ev: ev.clone() });
-                    }
+                    self.tell_everyone(Event::Settings { settings: self.settings.clone() });
                 }
                 Ok(Response::Settings { settings: self.settings.clone() })
             }
@@ -876,7 +1029,7 @@ impl Hub {
         }
         // a client we dropped events for is told so as soon as it has room.
         for c in self.clients.values_mut() {
-            if c.lagged && c.tx.try_send(Envelope::Ev { ev: Event::Lagged }).is_ok() {
+            if c.lagged && c.tx.try_send(Envelope::Ev { ev: Event::Lagged }.into()).is_ok() {
                 c.lagged = false;
             }
         }
@@ -892,7 +1045,7 @@ impl Hub {
         let Some(c) = self.clients.get_mut(&client) else { return };
         // a response can't be dropped: the client is waiting on it. if there
         // is no room, the client is beyond saving; cut it loose to reconnect.
-        if c.tx.try_send(env).is_err() {
+        if c.tx.try_send(env.into()).is_err() {
             c.dead = true;
         }
     }
@@ -900,7 +1053,7 @@ impl Hub {
     /// an event a client must not miss (a command for a window): sent like a response.
     fn respond_event(&mut self, client: ClientId, ev: Event) {
         let Some(c) = self.clients.get_mut(&client) else { return };
-        if c.tx.try_send(Envelope::Ev { ev }).is_err() {
+        if c.tx.try_send(Envelope::Ev { ev }.into()).is_err() {
             c.dead = true;
         }
     }
@@ -914,21 +1067,40 @@ impl Hub {
         }
     }
 
-    fn send(&mut self, client: ClientId, env: Envelope) {
+    fn send(&mut self, client: ClientId, out: impl Into<Out>) {
         let Some(c) = self.clients.get_mut(&client) else { return };
         if c.lagged || c.dead {
             return;
         }
-        match c.tx.try_send(env) {
+        match c.tx.try_send(out.into()) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 // events are droppable, but never silently: the client must
-                // know its picture is stale. it resubscribes for a fresh one.
+                // know its picture is stale. it resubscribes for a fresh one,
+                // and attaches to its terminals again (each starts from a dump).
                 c.lagged = true;
                 c.summary = false;
                 c.detail = None;
+                for t in self.terms.values_mut() {
+                    t.attached.remove(&client);
+                }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => c.dead = true,
+        }
+    }
+
+    /// something every connected client hears.
+    fn tell_everyone(&mut self, ev: Event) {
+        let everyone: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.ready).map(|(id, _)| *id).collect();
+        for c in everyone {
+            self.send(c, Envelope::Ev { ev: ev.clone() });
+        }
+    }
+
+    fn forget_term(&mut self, term: TermId) {
+        if let Some(t) = self.terms.remove(&term) {
+            t.send(crate::term::Cmd::Quit);
+            self.tell_everyone(Event::TermRemoved { term });
         }
     }
 
@@ -942,6 +1114,10 @@ impl Hub {
             }
         }
     }
+}
+
+fn no_term(term: TermId) -> RpcError {
+    RpcError::new(ErrorCode::NotFound, format!("no terminal {term}"))
 }
 
 fn not_found(session: SessionId) -> RpcError {

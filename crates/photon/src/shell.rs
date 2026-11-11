@@ -19,6 +19,7 @@ mod projects;
 mod settings;
 mod sidebar;
 mod surface;
+mod terminal;
 
 pub(crate) use compose::{Drawer, TranscriptOpts};
 pub(crate) use panel::{Tab, Workspace};
@@ -153,6 +154,14 @@ pub struct Shell {
     surfaces_docked: bool,
     /// the daemon's own settings; none until it says (or if it's too old to).
     pub(crate) daemon_settings: Option<photon_proto::DaemonSettings>,
+    /// terminals the daemon runs, as this window draws them.
+    terms: HashMap<photon_proto::term::TermId, terminal::TermCell>,
+    /// which terminal a pane shows, per open session.
+    pane_terms: HashMap<(String, Option<SessionId>), photon_proto::term::TermId>,
+    /// panes waiting on a terminal the daemon is starting for them.
+    term_opening: std::collections::HashSet<(String, Option<SessionId>)>,
+    /// a terminal pane that takes the keys as soon as its shell is up.
+    term_focus: Option<String>,
     pub(crate) palette_ui: palette::PaletteState,
     /// the pointer is over the transcript's message rail.
     rail_open: bool,
@@ -452,6 +461,10 @@ impl Shell {
             ui_watched: false,
             surfaces_docked: false,
             daemon_settings: None,
+            terms: HashMap::new(),
+            pane_terms: HashMap::new(),
+            term_opening: Default::default(),
+            term_focus: None,
             palette_ui,
             rail_open: false,
             ask_open: false,
@@ -672,6 +685,7 @@ impl Shell {
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
             UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
+            ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {
                 self.show_new = false;
                 self.error = None;
@@ -1723,6 +1737,7 @@ impl Render for Shell {
         // panes head for wherever the layout and the room now put them.
         self.sync_panes();
         self.sync_surfaces_dock(cx);
+        self.sync_terminals(window, cx);
         // the panel follows the open session, and a file that has arrived gets its editor.
         self.switch_workspace();
         self.materialize_file(window, cx);
@@ -1803,6 +1818,11 @@ impl Render for Shell {
             .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &crate::SplitRight, window, cx| this.split_focused_right(window, cx)))
             .on_action(cx.listener(|this, _: &crate::SplitDown, window, cx| this.split_focused_down(window, cx)))
+            .on_action(cx.listener(|this, _: &crate::NewTerminal, window, cx| {
+                if let Err(e) = this.exec("terminal.new", &serde_json::json!({}), window, cx) {
+                    this.error = Some(e);
+                }
+            }))
             .on_action(cx.listener(|this, _: &crate::ClosePane, window, cx| this.close_focused(window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_end(cx);

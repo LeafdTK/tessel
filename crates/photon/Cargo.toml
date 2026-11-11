@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 gpui-kit.workspace = true
 photon-proto.workspace = true
+photon-term.workspace = true
 photon-client = { path = "../photon-client" }
 tokio.workspace = true
 uuid.workspace = true

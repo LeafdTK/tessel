@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 photon-proto = { path = "crates/photon-proto" }
 photon-agent = { path = "crates/photon-agent" }
+photon-term = { path = "crates/photon-term" }
 
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -17,6 +18,10 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "sync", "time", "signal", "fs"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# terminals: ghostty's own emulator core. pre-1.0, so pinned exactly. building
+# it needs zig 0.15 on PATH: `export PATH="$(brew --prefix zig@0.15)/bin:$PATH"`.
+libghostty-vt = "=0.2.2"
 
 # ui stack: gpui-kit pins the matching gpui-pre snapshot and gpui-component.
 # bump on purpose, never with a caret.
@@ -38,6 +43,12 @@ opt-level = 2
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# ghostty's build picks zig's Debug mode whenever cargo builds with debug info,
+# and Debug ghostty parses terminal output thousands of times slower. without
+# debug info here it builds ReleaseFast, in dev too.
+[profile.dev.package.libghostty-vt-sys]
+debug = false
 
 [profile.release]
 lto = "thin"

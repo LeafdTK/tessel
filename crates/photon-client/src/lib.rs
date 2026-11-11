@@ -3,7 +3,7 @@
 //! one connection, any number of concurrent requests, and a stream of events.
 //! used by the cli and the app; nothing in here knows about either.
 
-use photon_proto::frame::{self, Decoder, KIND_JSON};
+use photon_proto::frame::{self, Decoder, KIND_BINARY, KIND_JSON};
 use photon_proto::{Envelope, ErrorCode, Event, PROTO_MAJOR, PROTO_MINOR, Request, Response, RpcError};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -101,6 +101,13 @@ impl Client {
                         Ok(None) => break,
                         Err(_) => break 'read,
                     };
+                    if frame.kind == KIND_BINARY {
+                        // a terminal's bytes, in order with everything else.
+                        if let Some((term, bytes)) = photon_proto::term::decode(&frame.payload) {
+                            let _ = ev_tx.send(Event::TermOutput { term, bytes: bytes.to_vec() });
+                        }
+                        continue;
+                    }
                     if frame.kind != KIND_JSON {
                         continue;
                     }
@@ -154,6 +161,12 @@ impl Client {
             }
             other => Err(RpcError::new(ErrorCode::Internal, format!("unexpected reply to hello: {other:?}")).into()),
         }
+    }
+
+    /// type into a terminal: a binary frame, sent without waiting for anything.
+    pub fn send_term_input(&self, term: photon_proto::term::TermId, bytes: &[u8]) -> Result<(), ClientError> {
+        let frame = frame::encode(KIND_BINARY, &photon_proto::term::encode(term, bytes)).map_err(|e| RpcError::new(ErrorCode::Invalid, e.to_string()))?;
+        self.out.send(frame).map_err(|_| ClientError::Closed)
     }
 
     pub async fn request(&self, req: Request) -> Result<Response, ClientError> {

@@ -67,6 +67,24 @@ The reference for the format is ui/README.md in photon's home.",
             }}
         },
         {
+            "name": "photon_terminal",
+            "description": "Terminals photon runs, in this session's folder, that the person can watch in a pane. Use Bash for one-off commands; \
+use this for things that keep running or that the person should see: dev servers, watchers, REPLs, interactive programs. \
+ops: open (command: what to run, or leave out for a shell; show: put it in a pane, default true) -> its id; \
+run (term, command: typed, then return); send (term, text: typed as is; \\u0003 is ctrl-c); \
+read (term, history: also what scrolled away) -> its text; wait (term, text: until the screen shows it, or leave out to wait for it to exit; timeout seconds, default 30); \
+list; close (term).",
+            "inputSchema": {"type": "object", "properties": {
+                "op": {"type": "string", "enum": ["open", "run", "send", "read", "wait", "list", "close"]},
+                "term": {"type": "integer", "description": "which terminal (from open or list)"},
+                "command": {"type": "string"},
+                "text": {"type": "string"},
+                "show": {"type": "boolean"},
+                "history": {"type": "boolean"},
+                "timeout": {"type": "number", "description": "wait: seconds"}
+            }, "required": ["op"]}
+        },
+        {
             "name": "photon_surface",
             "description": surface,
             "inputSchema": {"type": "object", "properties": {
@@ -107,6 +125,71 @@ impl Server {
         }
     }
 
+    async fn terminal(&mut self, args: &Value) -> anyhow::Result<String> {
+        let op = args.get("op").and_then(Value::as_str).unwrap_or("");
+        let term = || args.get("term").and_then(Value::as_u64).ok_or_else(|| anyhow::anyhow!("{op} needs \"term\" (open or list gives one)"));
+        let text_of = |r: Response| match r {
+            Response::TermText { text } => Ok(text),
+            other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
+        };
+        Ok(match op {
+            "open" => {
+                let command: Vec<String> = args.get("command").and_then(Value::as_str).filter(|c| !c.trim().is_empty()).map(|c| vec![c.to_owned()]).unwrap_or_default();
+                let session = self.session;
+                let reply = self.client().await?.request(Request::TermOpen { session, cwd: None, command, cols: 120, rows: 32 }).await?;
+                let Response::Term { info } = reply else { anyhow::bail!("unexpected reply") };
+                // a pane for it: a new terminal pane shows a running one of this session that no pane shows.
+                let shown = if args.get("show").and_then(Value::as_bool).unwrap_or(true) {
+                    match self.window("terminal.new", json!({})).await {
+                        Ok(_) => " and shown in a pane".to_owned(),
+                        Err(e) => format!(" (not shown: {e})"),
+                    }
+                } else {
+                    String::new()
+                };
+                format!("terminal {} is running in {}{shown}", info.id, info.cwd)
+            }
+            "run" | "send" => {
+                let mut text = args.get(if op == "run" { "command" } else { "text" }).and_then(Value::as_str).unwrap_or("").to_owned();
+                if op == "run" {
+                    text.push('\r');
+                }
+                let term = term()?;
+                self.client().await?.request(Request::TermInput { term, text }).await?;
+                "typed".to_owned()
+            }
+            "read" => {
+                let (term, history) = (term()?, args.get("history").and_then(Value::as_bool).unwrap_or(false));
+                text_of(self.client().await?.request(Request::TermCapture { term, history }).await?)?
+            }
+            "wait" => {
+                let term = term()?;
+                let text = args.get("text").and_then(Value::as_str).map(str::to_owned);
+                let timeout_ms = (args.get("timeout").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.1, 600.0) * 1000.0) as u64;
+                match self.client().await?.request(Request::TermWait { term, text, timeout_ms }).await? {
+                    Response::TermText { text } => format!("the screen now:\n{text}"),
+                    Response::Term { info } => format!("it exited with {}", info.exited.unwrap_or(-1)),
+                    other => anyhow::bail!("unexpected reply: {other:?}"),
+                }
+            }
+            "list" => {
+                let Response::Terms { terms } = self.client().await?.request(Request::TermList).await? else { anyhow::bail!("unexpected reply") };
+                let mine: Vec<String> = terms
+                    .iter()
+                    .filter(|t| self.session.is_none() || t.session == self.session)
+                    .map(|t| format!("{}: {} in {}{}", t.id, if t.command.is_empty() { "shell".to_owned() } else { t.command.join(" ") }, t.cwd, t.exited.map(|c| format!(" (exited {c})")).unwrap_or_default()))
+                    .collect();
+                if mine.is_empty() { "no terminals".to_owned() } else { mine.join("\n") }
+            }
+            "close" => {
+                let term = term()?;
+                self.client().await?.request(Request::TermClose { term }).await?;
+                "closed".to_owned()
+            }
+            other => anyhow::bail!("photon_terminal has no op {other:?}: open, run, send, read, wait, list or close"),
+        })
+    }
+
     /// run one tool. the text is what the agent reads back.
     async fn call(&mut self, name: &str, args: &Value) -> anyhow::Result<String> {
         let text = |v: Value| if v.is_null() { "done".to_owned() } else { serde_json::to_string_pretty(&v).unwrap_or_default() };
@@ -142,6 +225,7 @@ impl Server {
                 self.client().await?.request(Request::SurfaceOp { session, op }).await?;
                 "done: it's on screen".to_owned()
             }
+            "photon_terminal" => self.terminal(args).await?,
             other => anyhow::bail!("there's no tool {other}"),
         })
     }

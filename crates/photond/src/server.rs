@@ -6,7 +6,7 @@
 //! larger updates instead of a growing backlog.
 
 use crate::hub::{CLIENT_QUEUE, ClientId, HubMsg};
-use photon_proto::frame::{self, Decoder, KIND_JSON};
+use photon_proto::frame::{self, Decoder, KIND_BINARY, KIND_JSON};
 use photon_proto::{Envelope, Event};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -14,6 +14,22 @@ use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
+
+/// what goes out to a client: an envelope, or a terminal's bytes.
+#[derive(Debug)]
+pub enum Out {
+    Env(Envelope),
+    Term(photon_proto::term::TermId, Vec<u8>),
+}
+
+impl From<Envelope> for Out {
+    fn from(e: Envelope) -> Self {
+        Out::Env(e)
+    }
+}
+
+/// a terminal's bytes are merged up to this much per frame.
+const TERM_FRAME: usize = 1024 * 1024;
 
 pub async fn serve(listener: UnixListener, hub: mpsc::UnboundedSender<HubMsg>) {
     loop {
@@ -39,7 +55,7 @@ where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
     let client: ClientId = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::channel::<Envelope>(CLIENT_QUEUE);
+    let (tx, rx) = mpsc::channel::<Out>(CLIENT_QUEUE);
     if hub.send(HubMsg::Connected { client, tx }).is_err() {
         return false;
     }
@@ -70,6 +86,12 @@ async fn read_loop(mut read: impl AsyncRead + Unpin, client: ClientId, hub: &mps
                 // a peer sending nonsense lengths is not worth talking to.
                 Err(_) => return,
                 Ok(Some(f)) => {
+                    if f.kind == KIND_BINARY {
+                        if hub.send(HubMsg::TermInput { payload: f.payload }).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     if f.kind != KIND_JSON {
                         continue;
                     }
@@ -85,7 +107,7 @@ async fn read_loop(mut read: impl AsyncRead + Unpin, client: ClientId, hub: &mps
     }
 }
 
-async fn write_loop(mut write: impl AsyncWrite + Unpin, mut rx: mpsc::Receiver<Envelope>) {
+async fn write_loop(mut write: impl AsyncWrite + Unpin, mut rx: mpsc::Receiver<Out>) {
     let mut batch = Vec::with_capacity(256);
     let mut bytes = Vec::with_capacity(64 * 1024);
     loop {
@@ -93,11 +115,16 @@ async fn write_loop(mut write: impl AsyncWrite + Unpin, mut rx: mpsc::Receiver<E
         if rx.recv_many(&mut batch, 1024).await == 0 {
             break;
         }
-        let merged = coalesce(std::mem::take(&mut batch));
         bytes.clear();
-        for env in &merged {
-            let Ok(json) = serde_json::to_vec(env) else { continue };
-            match frame::encode(KIND_JSON, &json) {
+        for out in merge(std::mem::take(&mut batch)) {
+            let framed = match out {
+                Out::Env(env) => {
+                    let Ok(json) = serde_json::to_vec(&env) else { continue };
+                    frame::encode(KIND_JSON, &json)
+                }
+                Out::Term(term, b) => frame::encode(KIND_BINARY, &photon_proto::term::encode(term, &b)),
+            };
+            match framed {
                 Ok(f) => bytes.extend_from_slice(&f),
                 Err(e) => eprintln!("photond: dropping an oversized message: {e}"),
             }
@@ -107,6 +134,29 @@ async fn write_loop(mut write: impl AsyncWrite + Unpin, mut rx: mpsc::Receiver<E
         }
     }
     let _ = write.shutdown().await;
+}
+
+/// shrink a queue: envelopes as `coalesce` does, and a terminal's bytes that
+/// follow each other into one frame. order is kept.
+fn merge(batch: Vec<Out>) -> Vec<Out> {
+    let mut out: Vec<Out> = Vec::with_capacity(batch.len());
+    let mut envs: Vec<Envelope> = Vec::new();
+    for o in batch {
+        match o {
+            Out::Env(e) => envs.push(e),
+            Out::Term(term, b) => {
+                if !envs.is_empty() {
+                    out.extend(coalesce(std::mem::take(&mut envs)).into_iter().map(Out::Env));
+                }
+                match out.last_mut() {
+                    Some(Out::Term(t, prev)) if *t == term && prev.len() + b.len() <= TERM_FRAME => prev.extend_from_slice(&b),
+                    _ => out.push(Out::Term(term, b)),
+                }
+            }
+        }
+    }
+    out.extend(coalesce(envs).into_iter().map(Out::Env));
+    out
 }
 
 /// shrink a queue of envelopes without changing what it means:

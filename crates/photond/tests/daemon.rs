@@ -107,7 +107,17 @@ async fn until(c: &Client, id: SessionId, what: &str, pred: impl Fn(&SessionSumm
 }
 
 /// read events until one satisfies `pred`; everything read is returned.
-async fn events_until(ev: &mut Events, what: &str, pred: impl Fn(&Event) -> bool) -> Vec<Event> {
+/// the next envelope on a raw client queue (terminal bytes skipped).
+async fn recv_env(rx: &mut mpsc::Receiver<photond::server::Out>) -> Option<Envelope> {
+    loop {
+        match rx.recv().await? {
+            photond::server::Out::Env(e) => return Some(e),
+            photond::server::Out::Term(..) => continue,
+        }
+    }
+}
+
+async fn events_until(ev: &mut Events, what: &str, mut pred: impl FnMut(&Event) -> bool) -> Vec<Event> {
     let mut seen = Vec::new();
     loop {
         let e = tokio::time::timeout(Duration::from_secs(5), ev.recv())
@@ -534,17 +544,17 @@ async fn a_client_that_cannot_keep_up_is_told_and_not_left_with_a_silently_stale
     let d = Daemon::start(&["interrupt_text"]).await;
     let hub = d.running.as_ref().unwrap().hub.clone();
     // a client with room for only a handful of messages, that we do not read from.
-    let (tx, mut rx) = mpsc::channel::<Envelope>(4);
+    let (tx, mut rx) = mpsc::channel::<photond::server::Out>(4);
     let me = 9_000_001;
     hub.send(HubMsg::Connected { client: me, tx }).unwrap();
     let hello = Request::Hello { proto_major: PROTO_MAJOR, proto_minor: PROTO_MINOR, build: "t".into(), client: "slow".into(), auth: None };
     hub.send(HubMsg::Request { client: me, id: 1, req: hello }).unwrap();
-    assert!(matches!(rx.recv().await, Some(Envelope::Res { id: 1, ok: Some(Response::Welcome { .. }), .. })));
+    assert!(matches!(recv_env(&mut rx).await, Some(Envelope::Res { id: 1, ok: Some(Response::Welcome { .. }), .. })));
 
     let (c, _) = d.client().await;
     let s = create(&c, &d.cwd(), None).await;
     hub.send(HubMsg::Request { client: me, id: 2, req: Request::Subscribe { summary: true, detail: Some(s.id), tail: 10 } }).unwrap();
-    assert!(matches!(rx.recv().await, Some(Envelope::Res { id: 2, ok: Some(Response::Subscribed { .. }), .. })));
+    assert!(matches!(recv_env(&mut rx).await, Some(Envelope::Res { id: 2, ok: Some(Response::Subscribed { .. }), .. })));
 
     // a long streamed reply: far more events than the slow client has room for.
     c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "essay".into(), attachments: vec![] }).await.unwrap();
@@ -556,7 +566,7 @@ async fn a_client_that_cannot_keep_up_is_told_and_not_left_with_a_silently_stale
     // drain what fit, then the daemon must say events were dropped.
     let mut got_lagged = false;
     let mut last = None;
-    while let Ok(Some(env)) = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
+    while let Ok(Some(env)) = tokio::time::timeout(Duration::from_millis(500), recv_env(&mut rx)).await {
         got_lagged |= matches!(env, Envelope::Ev { ev: Event::Lagged });
         last = Some(env);
     }
@@ -565,7 +575,7 @@ async fn a_client_that_cannot_keep_up_is_told_and_not_left_with_a_silently_stale
 
     // resubscribing gives a complete, current picture.
     hub.send(HubMsg::Request { client: me, id: 3, req: Request::Subscribe { summary: true, detail: Some(s.id), tail: 1000 } }).unwrap();
-    let Some(Envelope::Res { id: 3, ok: Some(Response::Subscribed { detail: Some(snap), .. }), .. }) = rx.recv().await else { panic!() };
+    let Some(Envelope::Res { id: 3, ok: Some(Response::Subscribed { detail: Some(snap), .. }), .. }) = recv_env(&mut rx).await else { panic!() };
     assert_eq!(snap.items, snapshot(&c, s.id).await.items);
     // the fast client was never affected.
     assert_eq!(list(&c).await.len(), 1);
@@ -914,5 +924,86 @@ async fn turning_agent_tools_off_is_kept_told_to_everyone_and_reaches_the_next_a
     d.boot(&["plain"]).await;
     let (c, _) = d.client().await;
     assert!(!settings(c.request(Request::Settings).await.unwrap()).agent_tools);
+    d.stop().await;
+}
+
+#[tokio::test]
+async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wait_on_it() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (c, mut ev) = d.client().await;
+    let script = "printf 'ready\\n'; read a; printf 'got:%s\\n' \"$a\"; read b; printf 'then:%s\\n' \"$b\"; exit 3";
+    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec![script.into()], cols: 40, rows: 10 }).await.unwrap() {
+        Response::Term { info } => info,
+        other => panic!("{other:?}"),
+    };
+    events_until(&mut ev, "everyone hears it opened", |e| matches!(e, Event::TermUpdated { info: i } if i.id == info.id)).await;
+
+    let text = |r: Response| match r {
+        Response::TermText { text } => text,
+        other => panic!("{other:?}"),
+    };
+    let ready = text(c.request(Request::TermWait { term: info.id, text: Some("ready".into()), timeout_ms: 5000 }).await.unwrap());
+    assert!(ready.contains("ready"), "{ready}");
+
+    // attaching starts with everything already on it, as bytes.
+    c.request(Request::TermAttach { term: info.id }).await.unwrap();
+    let mut seen = Vec::new();
+    events_until(&mut ev, "the dump", |e| {
+        if let Event::TermOutput { term, bytes } = e
+            && *term == info.id
+        {
+            seen.extend_from_slice(bytes);
+        }
+        String::from_utf8_lossy(&seen).contains("ready")
+    })
+    .await;
+
+    // typed as a window types (a binary frame), and as a script does.
+    c.send_term_input(info.id, b"one\r").unwrap();
+    text(c.request(Request::TermWait { term: info.id, text: Some("got:one".into()), timeout_ms: 5000 }).await.unwrap());
+    c.request(Request::TermInput { term: info.id, text: "two\r".into() }).await.unwrap();
+    let exited = match c.request(Request::TermWait { term: info.id, text: None, timeout_ms: 5000 }).await.unwrap() {
+        Response::Term { info } => info,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(exited.exited, Some(3), "its exit status");
+    let screen = text(c.request(Request::TermCapture { term: info.id, history: true }).await.unwrap());
+    assert!(screen.contains("got:one") && screen.contains("then:two"), "{screen}");
+
+    // an attached client was streamed the rest.
+    events_until(&mut ev, "the output, live", |e| {
+        if let Event::TermOutput { bytes, .. } = e {
+            seen.extend_from_slice(bytes);
+        }
+        String::from_utf8_lossy(&seen).contains("then:two")
+    })
+    .await;
+
+    // waiting for what never comes ends with why.
+    let err = c.request(Request::TermWait { term: info.id, text: Some("never".into()), timeout_ms: 50 }).await.unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+
+    // an exited terminal stays until closed, so its output can still be read.
+    let listed = match c.request(Request::TermList).await.unwrap() {
+        Response::Terms { terms } => terms,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(listed.len(), 1);
+    c.request(Request::TermClose { term: info.id }).await.unwrap();
+    events_until(&mut ev, "and then it's gone", |e| matches!(e, Event::TermRemoved { term } if *term == info.id)).await;
+    assert!(c.request(Request::TermCapture { term: info.id, history: false }).await.is_err());
+    d.stop().await;
+}
+
+#[tokio::test]
+async fn closing_a_running_terminal_hangs_it_up() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (c, mut ev) = d.client().await;
+    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec!["sleep 600".into()], cols: 40, rows: 10 }).await.unwrap() {
+        Response::Term { info } => info,
+        other => panic!("{other:?}"),
+    };
+    c.request(Request::TermClose { term: info.id }).await.unwrap();
+    events_until(&mut ev, "hung up and forgotten", |e| matches!(e, Event::TermRemoved { term } if *term == info.id)).await;
     d.stop().await;
 }

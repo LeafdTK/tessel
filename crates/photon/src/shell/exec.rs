@@ -117,6 +117,10 @@ impl Shell {
                 done
             }
 
+            "terminal.new" => {
+                let pane = self.new_terminal(window, cx).ok_or("there's no pane to put a terminal beside")?;
+                Ok(json!({"pane": pane}))
+            }
             "pane.split" => {
                 let pane = self.pane_arg(args)?;
                 let axis = match arg(args, "dir").unwrap_or("right") {

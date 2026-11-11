@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 photon-proto.workspace = true
 photon-agent.workspace = true
+photon-term.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

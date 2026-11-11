@@ -231,6 +231,56 @@ pub enum Request {
         #[serde(default)]
         value: serde_json::Value,
     },
+    // ---- terminals -----------------------------------------------------------
+    /// start a terminal: a login shell, or `command` run by one.
+    TermOpen {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        /// where it starts. none: the session's folder, else home.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        command: Vec<String>,
+        cols: u16,
+        rows: u16,
+    },
+    TermList,
+    /// send me this terminal's bytes: first everything on it (as a binary
+    /// frame of the bytes that would draw it), then whatever comes.
+    TermAttach {
+        term: crate::term::TermId,
+    },
+    TermDetach {
+        term: crate::term::TermId,
+    },
+    /// type into it. (a window sends keys as binary frames instead.)
+    TermInput {
+        term: crate::term::TermId,
+        text: String,
+    },
+    TermResize {
+        term: crate::term::TermId,
+        cols: u16,
+        rows: u16,
+    },
+    /// hang it up. one already exited is forgotten.
+    TermClose {
+        term: crate::term::TermId,
+    },
+    /// its text: the screen, or everything history still holds.
+    TermCapture {
+        term: crate::term::TermId,
+        #[serde(default)]
+        history: bool,
+    },
+    /// answer once the screen shows `text`, or (with no text) once it exits.
+    TermWait {
+        term: crate::term::TermId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        #[serde(default = "default_wait_ms")]
+        timeout_ms: u64,
+    },
     // ---- the daemon's own settings ------------------------------------------
     Settings,
     /// change some settings: a partial object, merged. answers with all of them.
@@ -256,6 +306,10 @@ impl Default for DaemonSettings {
     fn default() -> Self {
         Self { agent_tools: true }
     }
+}
+
+fn default_wait_ms() -> u64 {
+    30_000
 }
 
 fn default_tail() -> u32 {
@@ -328,6 +382,15 @@ pub enum Response {
     },
     Settings {
         settings: DaemonSettings,
+    },
+    Term {
+        info: crate::term::TermInfo,
+    },
+    Terms {
+        terms: Vec<crate::term::TermInfo>,
+    },
+    TermText {
+        text: String,
     },
     Ack,
     #[serde(other)]
@@ -421,6 +484,21 @@ pub enum Event {
     /// the daemon's settings changed (to everyone connected).
     Settings {
         settings: DaemonSettings,
+    },
+    /// a terminal opened or changed: title, folder, size, exit (to everyone).
+    TermUpdated {
+        info: crate::term::TermInfo,
+    },
+    TermRemoved {
+        term: crate::term::TermId,
+    },
+    /// bytes from a terminal this client is attached to. arrives as a binary
+    /// frame, never as json; the client library hands it over in order with
+    /// everything else.
+    #[serde(skip)]
+    TermOutput {
+        term: crate::term::TermId,
+        bytes: Vec<u8>,
     },
     #[serde(other)]
     Unknown,

@@ -523,7 +523,7 @@ impl Shell {
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
                 )
             })
-            .children(self.pane_title(module, now, cx))
+            .children(self.pane_title(module, id, now, cx))
             // the conversation and the workspace fill their own headers.
             .when(!matches!(module, Some(Module::Conversation | Module::Workspace)), |d| d.child(div().flex_1()))
             .child(controls)
@@ -556,7 +556,7 @@ impl Shell {
     }
 
     /// what the header says: the module, or for the conversation the session itself.
-    fn pane_title(&self, module: Option<Module>, now: Millis, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn pane_title(&self, module: Option<Module>, pane_id: &str, now: Millis, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let p = self.palette.get();
         let icon = |name: &str| div().flex_shrink_0().child(Icon::empty().path(format!("icons/{name}.svg")).small().text_color(p.tertiary)).into_any_element();
         match module {
@@ -598,6 +598,15 @@ impl Shell {
             }
             // the workspace's header is its tabs.
             Some(Module::Workspace) => vec![div().id("pane-tabs").flex_1().min_w_0().overflow_x_scroll().child(self.panel_tabs_el(cx)).into_any_element()],
+            // a terminal is called what its program says, else where it is.
+            Some(Module::Terminal) => {
+                let (title, exited) = self.term_title(pane_id).unwrap_or_else(|| ("Terminal".into(), None));
+                vec![
+                    icon(Module::Terminal.icon()),
+                    div().min_w_0().flex_shrink(1.0).truncate().set(Type::Callout).font_weight(FontWeight(550.)).child(title).into_any_element(),
+                    div().when(exited.is_none(), |d| d.hidden()).flex_shrink_0().child(theme::badge("exited", p.tertiary)).into_any_element(),
+                ]
+            }
             Some(m) => vec![icon(m.icon()), div().set(Type::Callout).font_weight(FontWeight(550.)).child(m.title()).into_any_element()],
             None => vec![icon("square-dashed"), div().set(Type::Callout).text_color(p.secondary).child("Empty Pane").into_any_element()],
         }
@@ -618,6 +627,7 @@ impl Shell {
             Module::Artifacts => div().size_full().child(self.artifacts_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Info => div().size_full().child(self.info_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Surfaces => self.surfaces_pane(cx),
+            Module::Terminal => self.terminal_el(pane.map_or("", |p| p.id.as_str()), cx),
         }
     }
 

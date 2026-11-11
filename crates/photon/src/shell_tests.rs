@@ -1338,3 +1338,52 @@ fn agents_can_be_kept_from_photons_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
+
+// ---- terminals --------------------------------------------------------------------
+
+fn term_info(id: u64, session: Option<SessionId>) -> photon_proto::term::TermInfo {
+    photon_proto::term::TermInfo { id, title: String::new(), cwd: "/tmp".into(), cols: 80, rows: 24, session, command: vec![], exited: None }
+}
+
+#[gpui_kit::test]
+fn a_terminal_pane_opens_a_shell_for_the_session_shows_it_and_sends_keys_as_the_program_wants_them(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "column", "children": [
+        {"module": "conversation"}, {"id": "t", "module": "terminal"}
+    ]}}}"#);
+    // the pane asks the daemon for a shell in the session's folder.
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::TermOpen { pane, session: Some(s), .. } if pane == "t" && *s == sid(1))), "{asked:?}");
+
+    rig.feed(cx, vec![UiEvent::TermOpened { pane: "t".into(), session: Some(sid(1)), info: term_info(7, Some(sid(1))) }]);
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::TermAttach(7))), "and attaches to it: {asked:?}");
+    assert!(asked.iter().any(|c| matches!(c, Cmd::TermResize(7, ..))), "sized to its pane: {asked:?}");
+    rig.feed(cx, vec![UiEvent::TermOutput(7, b"\x1b]0;my shell\x07$ ".to_vec()), UiEvent::TermUpdated(photon_proto::term::TermInfo { title: "my shell".into(), ..term_info(7, Some(sid(1))) })]);
+    assert!(rig.exists(cx, "terminal-7"));
+
+    rig.click(cx, "terminal-7");
+    rig.asked();
+    rig.press(cx, "l");
+    rig.press(cx, "ctrl-c");
+    rig.press(cx, "up");
+    let typed: Vec<u8> = rig.asked().into_iter().filter_map(|c| if let Cmd::TermInput(7, b) = c { Some(b) } else { None }).flatten().collect();
+    assert_eq!(typed, b"l\x03\x1b[A");
+    // ⌘ stays the window's: the palette still opens from a terminal.
+    rig.press(cx, "cmd-k");
+    assert!(rig.exists(cx, "palette"));
+}
+
+#[gpui_kit::test]
+fn a_shell_already_running_for_the_session_is_shown_rather_than_starting_another(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.feed(cx, vec![UiEvent::Terms(vec![term_info(3, Some(sid(1))), term_info(4, Some(sid(2)))])]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "column", "children": [
+        {"module": "conversation"}, {"id": "t", "module": "terminal"}
+    ]}}}"#);
+    let asked = rig.asked();
+    assert!(!asked.iter().any(|c| matches!(c, Cmd::TermOpen { .. })), "{asked:?}");
+    assert!(asked.iter().any(|c| matches!(c, Cmd::TermAttach(3))), "its own session's, not another's: {asked:?}");
+}
