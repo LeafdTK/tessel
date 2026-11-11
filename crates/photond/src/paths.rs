@@ -33,6 +33,11 @@ impl Paths {
         self.home.join("photond.lock")
     }
 
+    /// the daemon's settings (`DaemonSettings`), as json.
+    pub fn settings(&self) -> PathBuf {
+        self.home.join("settings.json")
+    }
+
     pub fn db(&self) -> PathBuf {
         self.home.join("photon.db")
     }

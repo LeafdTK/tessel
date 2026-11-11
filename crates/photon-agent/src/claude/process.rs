@@ -153,6 +153,10 @@ impl ClaudeBackend {
             let env: serde_json::Map<String, serde_json::Value> = tools.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
             let config = serde_json::json!({"mcpServers": {"photon": {"command": tools.command, "args": ["mcp"], "env": env}}});
             args.extend(["--mcp-config".to_owned(), config.to_string()]);
+            // photon's own tools only touch photon (its window, this session's
+            // surfaces), so they don't stop to ask. the few that would need a
+            // person are refused by the server itself.
+            args.extend(["--allowedTools".to_owned(), "mcp__photon".to_owned()]);
             // the note about how replies are shown grows a paragraph about the tools.
             if let Some(i) = args.iter().position(|a| a == wire::HOST_NOTE) {
                 args[i] = format!("{}{}", wire::HOST_NOTE, wire::TOOLS_NOTE);
@@ -338,6 +342,7 @@ mod tests {
         assert_eq!(config["mcpServers"]["photon"]["env"]["PHOTON_SESSION"], "s-1");
         assert!(args.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("photon_surface") && w[1].contains("```mermaid")), "one note, both parts");
         assert_eq!(args.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
+        assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__photon"]), "they run without a permission prompt");
         let without = ClaudeBackend::args(&SpawnOpts { tools: None, ..opts });
         assert!(!without.iter().any(|a| a == "--mcp-config"));
     }

@@ -1121,13 +1121,13 @@ fn panes_split_take_a_module_and_close_and_the_file_keeps_what_you_did(cx: &mut 
     assert_eq!(read()["root"]["children"][1]["layout"]["children"][1]["module"], "changes");
     assert!(rig.shell.read_with(cx, |s, _| s.visible_tabs().contains(&crate::shell::Tab::Changes)), "and it is kept up to date");
 
-    // and close it again.
-    hover(&mut rig, cx, "pane-changes-header");
-    rig.click(cx, "pane-changes-more");
-    rig.click(cx, "pane-changes-close");
+    // and close it again. it kept the name the split gave it.
+    hover(&mut rig, cx, "pane-pane-1-header");
+    rig.click(cx, "pane-pane-1-more");
+    rig.click(cx, "pane-pane-1-close");
     let layout = &read()["root"]["children"][1]["layout"];
     assert_eq!(layout["children"].as_array().unwrap().len(), 2, "{layout}");
-    assert!(!rig.exists(cx, "pane-changes-header"), "gone once it has faded");
+    assert!(!rig.exists(cx, "pane-pane-1-header"), "gone once it has faded");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -1179,6 +1179,8 @@ fn keys_split_and_maximize_the_pane_you_last_clicked_in(cx: &mut TestAppContext)
 
     let width = |rig: &Rig, cx: &mut TestAppContext, id: &'static str| cx.update_window(rig.window, |_, window, _| window.find(id).bounds().size.width).unwrap();
     rig.press(cx, "alt-cmd-i");
+    // the split took the focus; clicking the conversation brings it back.
+    rig.click(cx, "pane-conversation-header");
     let before = width(&rig, cx, "pane-conversation-header");
     rig.press(cx, "shift-cmd-enter");
     let maximized = width(&rig, cx, "pane-conversation-header");
@@ -1228,7 +1230,16 @@ fn a_script_drives_the_window_through_the_same_commands_and_is_answered(cx: &mut
     assert!(ls["panes"].as_array().unwrap().iter().any(|p| p["module"] == "conversation" && p["focused"] == true));
 
     rig.feed(cx, vec![UiEvent::Call { call: 2, cmd: "pane.split".into(), args: serde_json::json!({"dir": "down"}) }]);
+    let split = answer(&mut rig).unwrap().1.unwrap();
+    let new = split["pane"].as_str().expect("names the new pane").to_owned();
+    // "split, then show" fills the new pane rather than replacing the one you were in.
+    rig.feed(cx, vec![UiEvent::Call { call: 20, cmd: "pane.show".into(), args: serde_json::json!({"module": "changes"}) }]);
     assert!(answer(&mut rig).unwrap().1.is_ok());
+    rig.feed(cx, vec![UiEvent::Call { call: 21, cmd: "ui.ls".into(), args: serde_json::Value::Null }]);
+    let ls = answer(&mut rig).unwrap().1.unwrap();
+    let panes = ls["panes"].as_array().unwrap();
+    assert!(panes.iter().any(|p| p["module"] == "conversation"), "the conversation is still there: {panes:?}");
+    assert!(panes.iter().any(|p| p["id"] == new.as_str() && p["module"] == "changes" && p["focused"] == true), "{panes:?}");
     let layout: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(layout["root"]["children"][1]["layout"]["children"][0]["split"], "column", "written like a click would");
 
@@ -1265,4 +1276,65 @@ fn the_palette_finds_a_command_by_a_few_letters_and_runs_it(cx: &mut TestAppCont
     rig.typed(cx, "split the auth");
     rig.press(cx, "enter");
     assert!(matches!(rig.asked().last(), Some(Cmd::Open(Some(id))) if *id == sid(2)));
+}
+
+// ---- surfaces ---------------------------------------------------------------------
+
+fn surface_item(name: &str, order: u64, node: serde_json::Value, region: &str) -> Item {
+    Item { id: ItemId::from(format!("surface/{name}").as_str()), parent: None, seq: order, order, created_ms: 0, body: ItemBody::Surface { surface: name.into(), node, region: region.into() } }
+}
+
+#[gpui_kit::test]
+fn an_agents_surface_is_drawn_in_the_chat_and_what_you_pick_goes_back_to_it(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    let node = serde_json::json!({"k": "card", "p": {"title": "Deploy"}, "c": [
+        {"k": "choice", "id": "env", "p": {"options": ["staging", "production"], "value": "staging"}},
+        {"k": "button", "id": "go", "p": {"label": "Promote", "variant": "primary"}}
+    ]});
+    rig.feed(cx, vec![snapshot_of(idle, vec![surface_item("deploy", 1, node, "inline")], vec![])]);
+    assert!(rig.exists(cx, "surface-deploy-go"));
+
+    rig.click(cx, "surface-deploy-env-1");
+    rig.click(cx, "surface-deploy-go");
+    let sent: Vec<(String, String, serde_json::Value)> = rig
+        .asked()
+        .into_iter()
+        .filter_map(|c| match c {
+            Cmd::SurfaceEvent { surface, element, act, value, session } if surface == "deploy" && session == sid(1) => Some((element, act, value)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent, vec![("env".into(), "change".into(), serde_json::json!("production")), ("go".into(), "click".into(), serde_json::Value::Null)]);
+}
+
+#[gpui_kit::test]
+fn a_pane_surface_lives_in_the_surfaces_pane_while_one_is_open_and_in_the_chat_when_not(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    let node = serde_json::json!({"k": "button", "id": "go", "p": {"label": "Go"}});
+    rig.feed(cx, vec![snapshot_of(idle, vec![surface_item("s", 1, node, "pane")], vec![])]);
+    assert!(rig.exists(cx, "surface-s-go"), "no surfaces pane: drawn in the chat, never lost");
+
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "surfaces"}
+    ]}}}"#);
+    let found = |rig: &mut Rig, cx: &mut TestAppContext| cx.update_window(rig.window, |_, window, _| window.find_all("surface-s-go").len()).unwrap();
+    assert_eq!(found(&mut rig, cx), 1, "drawn once");
+    assert!(cx.update_window(rig.window, |_, window, _| window.within("surfaces-pane").try_find("surface-s-go").is_some()).unwrap(), "and in the pane");
+}
+
+#[gpui_kit::test]
+fn agents_can_be_kept_from_photons_tools_from_settings(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.press(cx, "cmd-,");
+    rig.click(cx, "settings-tab-agents");
+    // an older daemon has no settings: the switch does nothing.
+    rig.click(cx, "agent-tools");
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
+
+    rig.feed(cx, vec![UiEvent::DaemonSettings(photon_proto::DaemonSettings { agent_tools: true })]);
+    rig.click(cx, "agent-tools");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }

@@ -124,8 +124,9 @@ impl Shell {
                     "down" => Axis::Column,
                     other => return Err(format!("\"{other}\" isn't a direction. use right or down")),
                 };
-                self.split_pane(pane.trail, axis, window, cx);
-                done
+                // the answer names the new pane (focused now), so a script can go on with it.
+                let new = self.split_pane(pane.trail, axis, window, cx);
+                Ok(json!({"pane": new}))
             }
             "pane.close" => {
                 let pane = self.pane_arg(args)?;
@@ -221,6 +222,16 @@ impl Shell {
                     return Err(format!("\"{h}\" isn't a colour. write #rrggbb"));
                 }
                 self.set_accent(hex, window, cx);
+                done
+            }
+
+            "daemon.set" => {
+                let patch = args.as_object().filter(|o| !o.is_empty()).ok_or("say what to set, like {\"agent_tools\": false}")?;
+                if self.daemon_settings.is_none() {
+                    return Err("the daemon running now is too old to change settings. restart it, then try again".into());
+                }
+                // the daemon checks it; what it ends up as comes back to everyone.
+                self.cmd(Cmd::SetSettings(Value::Object(patch.clone())));
                 done
             }
 

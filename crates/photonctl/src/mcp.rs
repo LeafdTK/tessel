@@ -18,12 +18,21 @@ Examples: {\"cmd\":\"pane.split\",\"args\":{\"dir\":\"right\"}}, {\"cmd\":\"pane
 {\"cmd\":\"theme.set\",\"args\":{\"base\":\"tern\"}}, {\"cmd\":\"session.open\",\"args\":{\"session\":\"<id prefix>\"}}. \
 Panes are named by id, @focused, or the module they show. photon_window_state shows what is on screen; photon_commands lists every command.";
 
+/// window commands an agent may not run. photon's tools run without asking,
+/// so anything that loses work or changes what agents may do stays with people.
+const FOR_PEOPLE: &[(&str, &str)] = &[
+    ("session.delete", "it deletes a session and its history"),
+    ("daemon.set", "it changes what agents are allowed to do"),
+    ("layout.reset", "it throws away the layout they made"),
+];
+
 fn tools() -> Value {
     let kinds: Vec<String> = KINDS.iter().map(|(k, about)| if about.is_empty() { (*k).to_owned() } else { format!("{k} ({about})") }).collect();
     let surface = format!(
         "Draw live UI in your chat (or in a Surfaces pane) and update it in place: progress, status cards, \
-choices for the person, results. ops: put (draw or redraw a whole surface: surface, node, region inline|pane), \
-set (change one element's props: surface, element, props), remove (surface). An element is \
+choices for the person, results. ops: put (draw or redraw a whole surface: surface, node, region inline|pane; \
+pane surfaces show in a Surfaces pane, opened with photon_window pane.show {{\"module\":\"surfaces\"}}, and in the chat while none is open), \
+set (change one element's props in place: surface, element (an id; leave out for the top element), props), remove (surface). An element is \
 {{\"k\": kind, \"id\": optional, \"p\": props, \"c\": children}}. When the person clicks a button, ticks a checkbox \
 or picks a choice you get a message <surface-event surface=… element=… act=… value=…/>. Everything is drawn in photon's own \
 style; you choose structure and tone, not colours. Kinds: {}.",
@@ -65,7 +74,7 @@ The reference for the format is ui/README.md in photon's home.",
                 "surface": {"type": "string", "description": "a name for the surface, yours to choose"},
                 "node": {"type": "object", "description": "put: the element tree"},
                 "region": {"type": "string", "enum": ["inline", "pane"], "description": "put: where it shows (default inline)"},
-                "element": {"type": "string", "description": "set: the id of the element to change"},
+                "element": {"type": "string", "description": "set: the id of the element to change; leave out for the surface's top element"},
                 "props": {"type": "object", "description": "set: props to merge (null removes one)"}
             }, "required": ["op", "surface"]}
         }
@@ -88,6 +97,9 @@ impl Server {
     }
 
     async fn window(&mut self, cmd: &str, args: Value) -> anyhow::Result<Value> {
+        if let Some((_, why)) = FOR_PEOPLE.iter().find(|(c, _)| *c == cmd) {
+            anyhow::bail!("{cmd} is for the person to do, not an agent: {why}. ask them if it's needed");
+        }
         let reply = self.client().await?.request(Request::UiExec { window: None, cmd: cmd.to_owned(), args }).await?;
         match reply {
             Response::UiResult { value } => Ok(value),

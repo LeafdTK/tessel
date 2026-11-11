@@ -48,6 +48,8 @@ pub enum Cmd {
     UiPublish { kind: String, data: serde_json::Value },
     /// someone acted on a surface an agent drew.
     SurfaceEvent { session: SessionId, surface: String, element: String, act: String, value: serde_json::Value },
+    /// change some of the daemon's settings (a partial object).
+    SetSettings(serde_json::Value),
 }
 
 #[derive(Debug)]
@@ -74,6 +76,8 @@ pub enum UiEvent {
     Call { call: u64, cmd: String, args: serde_json::Value },
     /// whether anyone listens to what the window publishes.
     Watched(bool),
+    /// what the daemon is set to (on connecting, and whenever it changes).
+    DaemonSettings(photon_proto::DaemonSettings),
     /// a session started aside exists, with this id.
     Aside(SessionId),
     /// something the user did failed. shown, not fatal.
@@ -189,6 +193,11 @@ async fn session(
         Ok(_) | Err(ClientError::Rpc(_)) => {}
         Err(_) => return Ended::Lost,
     }
+    // the daemon's settings, for the settings page. an older daemon has none.
+    ask(client, ui, Request::Settings, |r| match r {
+        Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
+        _ => None,
+    });
     loop {
         tokio::select! {
             ev = events.recv() => {
@@ -208,6 +217,7 @@ async fn session(
                     }
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
+                    Event::Settings { settings } => UiEvent::DaemonSettings(settings),
                     Event::Ui { .. } | Event::Unknown => continue,
                 };
                 if ui.send(out).is_err() {
@@ -283,6 +293,13 @@ async fn session(
                         let client = client.clone();
                         tokio::spawn(async move {
                             let _ = client.request(Request::UiPublish { kind, data }).await;
+                        });
+                        Ok(())
+                    }
+                    Cmd::SetSettings(patch) => {
+                        ask(client, ui, Request::SetSettings { patch }, |r| match r {
+                            Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
+                            _ => None,
                         });
                         Ok(())
                     }

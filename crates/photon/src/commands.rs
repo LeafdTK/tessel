@@ -68,6 +68,7 @@ pub static COMMANDS: &[Spec] = &[
     c("pane.show", "Show Checks here", "circle-check", None, r#"{"module":"checks"}"#, ""),
     c("pane.show", "Show Artifacts here", "sparkles", None, r#"{"module":"artifacts"}"#, ""),
     c("pane.show", "Show Info here", "info", None, r#"{"module":"info"}"#, ""),
+    c("pane.show", "Show Surfaces here", "layout-dashboard", None, r#"{"module":"surfaces"}"#, ""),
     q("pane.focus", "Focus a pane", "pane"),
     q("pane.toggle", "Show or hide a pane", "pane"),
     q("pane.move", "Move a pane", "pane, to, zone: left|right|top|bottom|swap"),
@@ -85,6 +86,9 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.size", "Interface size: Default", "a-large-small", None, r#"{"size":"default"}"#, ""),
     c("theme.size", "Interface size: Large", "a-large-small", None, r#"{"size":"large"}"#, ""),
     q("theme.accent", "Set the accent colour", "hex: #rrggbb, or null for the theme's own"),
+    // the daemon
+    c("daemon.set", "Agents: let them use photon", "bot", None, r#"{"agent_tools":true}"#, "agent_tools?: true|false. photon's tools for agents, as each next starts"),
+    c("daemon.set", "Agents: no photon tools", "bot-off", None, r#"{"agent_tools":false}"#, ""),
     // the layout file, whole
     c("layout.reset", "Reset the layout", "rotate-ccw", None, "{}", ""),
     q("layout.get", "The layout file (ui.json)", ""),

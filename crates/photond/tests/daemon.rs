@@ -867,3 +867,52 @@ async fn an_agent_draws_a_surface_changes_it_in_place_and_hears_what_was_clicked
     assert!(snap.unwrap().items.iter().any(|i| matches!(&i.body, ItemBody::Surface { node, .. } if node.is_null())), "removed, and the record says so");
     d.stop().await;
 }
+
+#[tokio::test]
+async fn turning_agent_tools_off_is_kept_told_to_everyone_and_reaches_the_next_agent() {
+    let mut d = Daemon::start_with(&["plain", "plain"], |cfg| cfg.tools_bin = Some(PathBuf::from("/bin/echo"))).await;
+    let (c, _) = d.client().await;
+    let (other, mut other_ev) = d.client().await;
+    let settings = |r: Response| match r {
+        Response::Settings { settings } => settings,
+        other => panic!("{other:?}"),
+    };
+    assert!(settings(c.request(Request::Settings).await.unwrap()).agent_tools, "on unless turned off");
+
+    let spawned = |d: &Daemon| d.backend.spawned.lock().unwrap().iter().map(|o| o.tools.is_some()).collect::<Vec<_>>();
+    let wait_spawns = |d: &Daemon, n: usize| {
+        let backend = d.backend.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            while backend.spawned.lock().unwrap().len() < n {
+                assert!(tokio::time::Instant::now() < deadline, "no agent started");
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+    };
+    create(&c, &d.cwd(), Some("hi")).await;
+    wait_spawns(&d, 1).await;
+
+    let now = settings(c.request(Request::SetSettings { patch: serde_json::json!({"agent_tools": false}) }).await.unwrap());
+    assert!(!now.agent_tools);
+    events_until(&mut other_ev, "the change, told to another client", |e| matches!(e, Event::Settings { settings } if !settings.agent_tools)).await;
+    drop(other);
+
+    // mistakes are refused, and change nothing.
+    let err = c.request(Request::SetSettings { patch: serde_json::json!({"agent_toolz": true}) }).await.unwrap_err();
+    assert!(err.to_string().contains("there's no setting \"agent_toolz\""), "{err}");
+    let err = c.request(Request::SetSettings { patch: serde_json::json!({"agent_tools": "no"}) }).await.unwrap_err();
+    assert!(err.to_string().contains("isn't a setting's value"), "{err}");
+
+    create(&c, &d.cwd(), Some("hi again")).await;
+    wait_spawns(&d, 2).await;
+    assert_eq!(spawned(&d), [true, false], "the agent started after gets no tools");
+
+    // kept across a restart.
+    drop(c);
+    d.stop().await;
+    d.boot(&["plain"]).await;
+    let (c, _) = d.client().await;
+    assert!(!settings(c.request(Request::Settings).await.unwrap()).agent_tools);
+    d.stop().await;
+}

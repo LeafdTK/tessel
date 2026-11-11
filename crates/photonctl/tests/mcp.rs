@@ -34,9 +34,13 @@ fn an_agent_can_start_it_list_its_tools_and_hear_why_a_call_failed() {
             // no session: refused as a tool error, without touching a daemon.
             json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "photon_surface", "arguments": {"op": "remove", "surface": "x"}}}),
             json!({"jsonrpc": "2.0", "id": 4, "method": "nonsense"}),
+            // what loses work stays with people, refused before any daemon is asked.
+            json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "photon_window", "arguments": {"cmd": "session.delete", "args": {"session": "x"}}}}),
         ],
     );
-    assert_eq!(out.len(), 4, "a notification gets no answer: {out:?}");
+    assert_eq!(out.len(), 5, "a notification gets no answer: {out:?}");
+    assert_eq!(out[4]["result"]["isError"], true);
+    assert!(out[4]["result"]["content"][0]["text"].as_str().unwrap().contains("for the person to do"));
     assert_eq!(out[0]["result"]["serverInfo"]["name"], "photon");
     assert_eq!(out[0]["result"]["protocolVersion"], "2025-06-18");
 

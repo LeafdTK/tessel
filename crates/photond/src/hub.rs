@@ -125,6 +125,7 @@ pub struct Hub {
     done_order: VecDeque<Uuid>,
     ui_calls: HashMap<u64, UiCall>,
     next_ui: u64,
+    settings: photon_proto::DaemonSettings,
 }
 
 pub fn now_ms() -> Millis {
@@ -151,7 +152,9 @@ impl Hub {
             done_order: VecDeque::new(),
             ui_calls: HashMap::new(),
             next_ui: 1,
+            settings: photon_proto::DaemonSettings::default(),
         };
+        hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
         for p in hub.store.load_sessions().await? {
             let id = p.meta.id;
@@ -472,6 +475,36 @@ impl Hub {
                 self.send(client, Envelope::Ev { ev: Event::UiWatched { watched } });
                 Ok(Response::Ack)
             }
+            Request::Settings => Ok(Response::Settings { settings: self.settings.clone() }),
+            Request::SetSettings { patch } => {
+                let Some(patch) = patch.as_object() else {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, "settings change with an object, like {\"agent_tools\": false}")));
+                };
+                let mut all = serde_json::to_value(&self.settings).unwrap_or_default();
+                for (k, v) in patch {
+                    if all.get(k).is_none() {
+                        let known: Vec<String> = all.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                        return Some(Err(RpcError::new(ErrorCode::Invalid, format!("there's no setting \"{k}\". settings: {}", known.join(", ")))));
+                    }
+                    all[k] = v.clone();
+                }
+                let next: photon_proto::DaemonSettings = match serde_json::from_value(all) {
+                    Ok(n) => n,
+                    Err(e) => return Some(Err(RpcError::new(ErrorCode::Invalid, format!("that isn't a setting's value: {e}")))),
+                };
+                if next != self.settings {
+                    if let Err(e) = save_settings(&self.cfg.paths.settings(), &next) {
+                        return Some(Err(RpcError::new(ErrorCode::Internal, format!("couldn't save the settings: {e}"))));
+                    }
+                    self.settings = next;
+                    let ev = Event::Settings { settings: self.settings.clone() };
+                    let everyone: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.ready).map(|(id, _)| *id).collect();
+                    for c in everyone {
+                        self.send(c, Envelope::Ev { ev: ev.clone() });
+                    }
+                }
+                Ok(Response::Settings { settings: self.settings.clone() })
+            }
             Request::UiWindows => {
                 let mut windows: Vec<(u64, String)> = self.clients.values().filter_map(|c| c.window.as_ref().map(|(n, s)| (*s, n.clone()))).collect();
                 windows.sort();
@@ -556,7 +589,11 @@ impl Hub {
                     SurfaceOp::Set { surface, element, .. } => match existing {
                         Some(ItemBody::Surface { node, .. }) => {
                             let mut probe = node.clone();
-                            (!photon_proto::surface::set_props(&mut probe, element, &serde_json::json!({}))).then(|| format!("surface {surface} has no element \"{element}\""))
+                            (!photon_proto::surface::set_props(&mut probe, element, &serde_json::json!({}))).then(|| {
+                                let known = photon_proto::surface::ids(node);
+                                let known = if known.is_empty() { "it has no ids".to_owned() } else { format!("its ids: {}", known.join(", ")) };
+                                format!("surface {surface} has no element \"{element}\" ({known}; leave element out to change the top one)")
+                            })
                         }
                         _ => Some(format!("there's no surface \"{surface}\"; put it first")),
                     },
@@ -685,7 +722,7 @@ impl Hub {
             permission_mode: live.state.permission_mode.clone(),
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             raw_log: Some(self.cfg.paths.raw_log(&session)),
-            tools: self.cfg.tools_bin.as_ref().map(|bin| photon_agent::backend::AgentTools {
+            tools: self.cfg.tools_bin.as_ref().filter(|_| self.settings.agent_tools).map(|bin| photon_agent::backend::AgentTools {
                 command: bin.clone(),
                 env: vec![
                     ("PHOTON_SESSION".into(), session.to_string()),
@@ -909,4 +946,22 @@ impl Hub {
 
 fn not_found(session: SessionId) -> RpcError {
     RpcError::new(ErrorCode::NotFound, format!("no session {session}"))
+}
+
+/// the settings file, or the defaults when there is none or it can't be read.
+fn load_settings(path: &std::path::Path) -> photon_proto::DaemonSettings {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            eprintln!("photond: {} isn't readable ({e}); using the defaults", path.display());
+            photon_proto::DaemonSettings::default()
+        }),
+        Err(_) => photon_proto::DaemonSettings::default(),
+    }
+}
+
+/// written whole, then moved into place: a crash never leaves half a file.
+fn save_settings(path: &std::path::Path, s: &photon_proto::DaemonSettings) -> std::io::Result<()> {
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(s).unwrap_or_default())?;
+    std::fs::rename(tmp, path)
 }

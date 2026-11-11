@@ -296,8 +296,18 @@ impl Shell {
         self.edit_panes(|layout| remove_at(layout, &trail), window, cx);
     }
 
-    pub(crate) fn split_pane(&mut self, trail: Vec<usize>, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
-        self.edit_panes(|layout| split_at(layout, &trail, axis), window, cx);
+    /// split a pane in two. the new half gets the focus, as it does in a
+    /// terminal: "split, then show X" puts X in the new pane, not over the old.
+    pub(crate) fn split_pane(&mut self, trail: Vec<usize>, axis: Axis, window: &mut Window, cx: &mut Context<Self>) -> Option<String> {
+        // named in the file, so it keeps its name whatever it goes on to show
+        // (an unnamed pane is called after its module, and would be renamed).
+        let taken: std::collections::HashSet<String> = self.ui.panes().into_iter().map(|p| p.id.clone()).collect();
+        let id = (1..).map(|n| format!("pane-{n}")).find(|id| !taken.contains(id))?;
+        self.edit_panes(|layout| split_at(layout, &trail, axis, &id), window, cx);
+        self.ui.panes().iter().any(|p| p.id == id).then(|| {
+            self.pane_focus = Some(id.clone());
+            id
+        })
     }
 
     pub(crate) fn set_pane_module(&mut self, trail: Vec<usize>, module: Module, window: &mut Window, cx: &mut Context<Self>) {
@@ -607,6 +617,7 @@ impl Shell {
             Module::Checks => div().size_full().child(self.checks_tab(cx)).into_any_element(),
             Module::Artifacts => div().size_full().child(self.artifacts_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Info => div().size_full().child(self.info_tab(session.expect("checked above"), cx)).into_any_element(),
+            Module::Surfaces => self.surfaces_pane(cx),
         }
     }
 
@@ -719,8 +730,8 @@ impl Shell {
                 let sep = || theme::float_sep(&p);
                 let mut list = theme::float_list(&p)
                     .w(px(248.))
-                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| this.split_pane(t1.clone(), Axis::Row, w, cx)))).test_support())
-                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| this.split_pane(t2.clone(), Axis::Column, w, cx)))).test_support())
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
                     .child(
                         theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-zoom")), Some(if zoomed { "minimize-2" } else { "maximize-2" }), if zoomed { "Restore" } else { "Maximize" }, None, Some("⇧ ⌘ ↩"), false)
                             .on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx))))
@@ -1004,7 +1015,7 @@ fn remove_at(layout: &mut Value, trail: &[usize]) {
 }
 
 /// put an empty pane beside one: into its split if that runs the same way, or a new split.
-fn split_at(layout: &mut Value, trail: &[usize], axis: Axis) {
+fn split_at(layout: &mut Value, trail: &[usize], axis: Axis, id: &str) {
     let name = if axis == Axis::Row { "row" } else { "column" };
     if let Some((last, parent)) = trail.split_last()
         && let Some(split) = at_trail(layout, parent)
@@ -1012,7 +1023,7 @@ fn split_at(layout: &mut Value, trail: &[usize], axis: Axis) {
         && let Some(Value::Array(children)) = split.get_mut("children")
     {
         let size = children.get(*last).and_then(|c| c.get("size")).and_then(Value::as_f64).unwrap_or(1.0);
-        children.insert(last + 1, json!({ "size": size }));
+        children.insert(last + 1, json!({ "id": id, "size": size }));
         return;
     }
     let Some(target) = at_trail(layout, trail) else { return };
@@ -1021,7 +1032,7 @@ fn split_at(layout: &mut Value, trail: &[usize], axis: Axis) {
     if let Value::Object(o) = &mut leaf {
         o.remove("size");
     }
-    let mut split = json!({ "split": name, "children": [leaf, {}] });
+    let mut split = json!({ "split": name, "children": [leaf, { "id": id }] });
     if let Some(size) = size {
         split["size"] = size;
     }
@@ -1127,10 +1138,11 @@ mod tests {
         let mut l = json!({"split": "row", "children": [{"module": "conversation", "size": 3}, {"split": "column", "size": 2, "children": [{"module": "changes"}, {"module": "files"}]}]});
         remove_at(&mut l, &[1, 1]);
         assert_eq!(l, json!({"split": "row", "children": [{"module": "conversation", "size": 3}, {"module": "changes", "size": 2}]}), "a split of one is just that one, in its place");
-        split_at(&mut l, &[0], Axis::Row);
+        split_at(&mut l, &[0], Axis::Row, "pane-1");
         assert_eq!(l["children"].as_array().unwrap().len(), 3, "a row split again to the right gets a sibling, not a nested split");
-        split_at(&mut l, &[2], Axis::Column);
-        assert_eq!(l["children"][2], json!({"split": "column", "size": 2, "children": [{"module": "changes"}, {}]}));
+        assert_eq!(l["children"][1], json!({"id": "pane-1", "size": 3.0}), "named, and the size of what it split");
+        split_at(&mut l, &[2], Axis::Column, "pane-2");
+        assert_eq!(l["children"][2], json!({"split": "column", "size": 2, "children": [{"module": "changes"}, {"id": "pane-2"}]}));
         // carry changes to the right of files, then swap it with the conversation.
         let mut l = json!({"split": "row", "children": [{"id": "c", "module": "conversation", "size": 3}, {"id": "w", "split": "column", "size": 2, "children": [{"id": "ch", "module": "changes"}, {"id": "f", "module": "files"}]}]});
         move_pane(&mut l, "ch", "f", Zone::Right);

@@ -1169,10 +1169,12 @@ pub enum Module {
     Checks,
     Artifacts,
     Info,
+    /// live ui the agent drew for a pane (`photon_surface` with region "pane").
+    Surfaces,
 }
 
 /// name, module, title, lucide icon, what it is.
-pub const MODULES: [(&str, Module, &str, &str, &str); 8] = [
+pub const MODULES: [(&str, Module, &str, &str, &str); 9] = [
     ("conversation", Module::Conversation, "Conversation", "message-square", "The session: what the agent says and does, and the message box"),
     ("sessions", Module::Sessions, "Sessions", "list", "Every session, the ones that need you first"),
     ("workspace", Module::Workspace, "Workspace", "panels-top-left", "Changes, files, checks, artifacts and info as tabs"),
@@ -1181,6 +1183,7 @@ pub const MODULES: [(&str, Module, &str, &str, &str); 8] = [
     ("checks", Module::Checks, "Checks", "circle-check", "The branch, its pull request and CI"),
     ("artifacts", Module::Artifacts, "Artifacts", "sparkles", "Plans and files the agent made"),
     ("info", Module::Info, "Info", "info", "The session: model, cost, tools, folders"),
+    ("surfaces", Module::Surfaces, "Surfaces", "layout-dashboard", "Live views the agent drew: progress, results, choices"),
 ];
 
 impl Module {

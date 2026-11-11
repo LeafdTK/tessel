@@ -55,6 +55,9 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl surface SESSION set NAME ELEMENT JSON
   photonctl surface SESSION remove NAME
   photonctl mcp                             photon as MCP tools, on stdin/stdout (agents get this)
+
+  photonctl settings [key=value...]         the daemon's settings; with pairs, change them
+      e.g. settings agent_tools=false     agents no longer get photon's tools
       --window NAME    which window (default: the one opened last)
       PANE is a pane id, @focused, or the module it shows
 
@@ -217,6 +220,18 @@ async fn run() -> anyhow::Result<()> {
                 other => bail!("unknown surface op {other}: use put, set or remove"),
             };
             client.request(Request::SurfaceOp { session, op }).await?;
+        }
+        "settings" => {
+            let rest: Vec<String> = std::mem::take(&mut args.rest);
+            let reply = if rest.is_empty() { client.request(Request::Settings).await? } else { client.request(Request::SetSettings { patch: ui_args(&rest)? }).await? };
+            let Response::Settings { settings } = reply else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string(&settings)?);
+            } else {
+                for (k, v) in serde_json::to_value(&settings)?.as_object().into_iter().flatten() {
+                    println!("{k} = {v}");
+                }
+            }
         }
         "send" => {
             let session = resolve(&client, &args.next("a session")?).await?;
@@ -460,6 +475,7 @@ async fn follow_events(events: &mut Events, json: bool) {
             }
             Event::Lagged => println!("!! fell behind; events were dropped. run again for a fresh view."),
             Event::Ui { window, kind, .. } => println!("window {window}: {kind}"),
+            Event::Settings { settings } => println!("settings: {}", serde_json::to_string(&settings).unwrap_or_default()),
             Event::UiCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
         }
     }

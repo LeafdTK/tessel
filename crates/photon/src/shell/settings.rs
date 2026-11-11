@@ -22,9 +22,10 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 3] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 4] = [
     ("appearance", "Appearance", "icons/palette.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
+    ("agents", "Agents", "icons/bot.svg"),
     ("customize", "Customize", "icons/sparkles.svg"),
 ];
 
@@ -316,9 +317,30 @@ impl Shell {
                 Button::new("settings-reset").small().outline().label(if self.confirm_reset { "Delete ui.json" } else { "Reset" }).on_click(cx.listener(|this, _, window, cx| this.reset_ui(window, cx))),
             ));
 
+        let agent_tools = self.daemon_settings.as_ref().map(|d| d.agent_tools);
+        let agents_rows = v_flex().child(self.setting_row(
+            "Agents can use photon",
+            match agent_tools {
+                Some(_) => "Arrange this window and draw live views in the chat. Applies as each agent next starts.",
+                None => "The daemon running now is too old to set this. Restart it to get it.",
+            },
+            {
+                let me = cx.entity().downgrade();
+                Switch::new("agent-tools").checked(agent_tools.unwrap_or(false)).disabled(agent_tools.is_none()).on_click(move |on, window, cx| {
+                    let on = *on;
+                    let _ = me.update(cx, |this, cx| {
+                        if let Err(e) = this.exec("daemon.set", &json!({"agent_tools": on}), window, cx) {
+                            this.error = Some(e);
+                        }
+                    });
+                })
+            },
+        ));
+
         let current = self.settings_section;
         let (title, rows) = match current {
             "conversation" => ("Conversation", conversation_rows),
+            "agents" => ("Agents", agents_rows),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };
@@ -435,24 +457,14 @@ impl Shell {
         pick: fn(&mut Shell, &'static str, &mut Window, &mut Context<Shell>),
     ) -> impl IntoElement {
         let p = self.palette.get();
-        let mut tray = h_flex().p(px(2.)).gap(px(2.)).rounded(px(theme::R_CONTROL)).bg(p.fill);
+        let mut tray = theme::tray(&p);
         for (value, label) in options.iter().copied() {
             let on = value == selected;
             tray = tray.child(
-                div()
-                    .id(SharedString::from(format!("{name}-{value}")))
+                theme::segment(&p, SharedString::from(format!("{name}-{value}")), label, on)
                     .test_support()
                     .aria_label(SharedString::from(format!("{label}{}", if on { ", selected" } else { "" })))
-                    .h(px(24.))
-                    .px_3()
-                    .flex()
-                    .items_center()
-                    .rounded(px(theme::R_TILE))
-                    .set(Type::Callout)
-                    .when(on, |d| d.bg(p.raised).shadow_sm().text_color(p.label))
-                    .when(!on, |d| d.text_color(p.secondary).hover(|d| d.text_color(p.label)))
-                    .on_click(cx.listener(move |this, _, window, cx| pick(this, value, window, cx)))
-                    .child(label),
+                    .on_click(cx.listener(move |this, _, window, cx| pick(this, value, window, cx))),
             );
         }
         tray

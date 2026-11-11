@@ -92,6 +92,7 @@ Modules:
 | `checks`       | the branch, its pull request and CI                                   |
 | `artifacts`    | plans and files the agent made                                        |
 | `info`         | the session: model, cost, tool servers, linked folders                |
+| `surfaces`     | live views the agent drew for a pane (`photon_surface`, region `pane`). while one is open those leave the chat |
 
 Panes are tiles on the frame: 8 points apart, each a sheet with orchard's panel corner.
 
@@ -394,6 +395,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.appearance` | Appearance: System |  | mode: system|light|dark |
 | `theme.size` | Interface size: Compact |  | size: compact|default|large |
 | `theme.accent` | Set the accent colour |  | hex: #rrggbb, or null for the theme's own |
+| `daemon.set` | Agents: let them use photon |  | agent_tools?: true|false. photon's tools for agents, as each next starts |
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |
 | `layout.set` | Replace the layout file |  | json: the whole ui.json; answers with what check.txt says |

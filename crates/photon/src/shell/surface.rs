@@ -30,6 +30,46 @@ impl Shell {
         Some(self.element(surface, session, node, cx))
     }
 
+    /// keep `surfaces_docked` in step with the layout. when it flips, pane
+    /// surfaces come into or leave the chat, so its rows are measured again.
+    pub(crate) fn sync_surfaces_dock(&mut self, cx: &mut Context<Self>) {
+        let docked = self.ui.panes().into_iter().any(|p| p.module == Some(crate::ui::Module::Surfaces) && self.pane_open(p));
+        if docked != self.surfaces_docked {
+            self.surfaces_docked = docked;
+            let len = self.model.open.as_ref().map_or(0, |o| o.len());
+            self.scroller.update(cx, |s, cx| s.reset(len, cx));
+        }
+    }
+
+    /// the Surfaces pane: what the agent drew for it, newest at the bottom.
+    pub(crate) fn surfaces_pane(&self, cx: &App) -> AnyElement {
+        let pal = self.palette.get();
+        let drawn: Vec<AnyElement> = self
+            .model
+            .open
+            .as_ref()
+            .into_iter()
+            .flat_map(|o| (0..o.len()).filter_map(|i| o.row(i)))
+            .filter_map(|(item, _)| match &item.body {
+                ItemBody::Surface { surface, node, region } if region == "pane" => self.surface_el(surface, node, cx),
+                _ => None,
+            })
+            .collect();
+        if drawn.is_empty() {
+            return v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap(z(6.))
+                .p(z(24.))
+                .child(Icon::empty().path("icons/layout-dashboard.svg").size(z(20.)).text_color(pal.tertiary))
+                .child(div().set(Type::Callout).text_color(pal.secondary).child("Nothing here yet"))
+                .child(div().set(Type::Subheadline).text_color(pal.tertiary).text_center().max_w(z(240.)).child("Ask the agent to show progress, results or choices in this pane."))
+                .into_any_element();
+        }
+        v_flex().id("surfaces-pane").test_support().size_full().overflow_y_scroll().p(z(12.)).gap(z(12.)).children(drawn).into_any_element()
+    }
+
     fn tone(&self, p: &Value, default: Hsla) -> Hsla {
         let pal = self.palette.get();
         match s(p, "tone") {
@@ -128,7 +168,8 @@ impl Shell {
                     _ => ButtonKind::Secondary,
                 };
                 let send = ev(id.clone(), "click", Value::Null);
-                natural(theme::button(&pal, eid(""), s(&p, "label").unwrap_or("").to_owned(), s(&p, "icon"), kind).on_click(move |_, _, _| send()).into_any_element())
+                let label = s(&p, "label").unwrap_or("").to_owned();
+                natural(theme::button(&pal, eid(""), label.clone(), s(&p, "icon"), kind).test_support().aria_label(label).on_click(move |_, _, _| send()).into_any_element())
             }
             "badge" => natural(theme::badge(shown(p.get("text")), self.tone(&p, pal.secondary)).into_any_element()),
             "progress" => {
@@ -171,7 +212,13 @@ impl Shell {
                 let mut tray = theme::tray(&pal);
                 for (i, opt) in p.get("options").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).enumerate() {
                     let send = ev(id.clone(), "change", Value::String(opt.to_owned()));
-                    tray = tray.child(theme::segment(&pal, eid(&format!("-{i}")), opt.to_owned(), value.as_deref() == Some(opt)).on_click(move |_, _, _| send()));
+                    let on = value.as_deref() == Some(opt);
+                    tray = tray.child(
+                        theme::segment(&pal, eid(&format!("-{i}")), opt.to_owned(), on)
+                            .test_support()
+                            .aria_label(SharedString::from(format!("{opt}{}", if on { ", selected" } else { "" })))
+                            .on_click(move |_, _, _| send()),
+                    );
                 }
                 natural(tray.into_any_element())
             }

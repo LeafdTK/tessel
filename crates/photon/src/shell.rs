@@ -149,6 +149,10 @@ pub struct Shell {
     ui_calls: Vec<(u64, String, serde_json::Value)>,
     /// someone listens to what this window publishes.
     ui_watched: bool,
+    /// a Surfaces pane is on screen, so pane surfaces live there, not in the chat.
+    surfaces_docked: bool,
+    /// the daemon's own settings; none until it says (or if it's too old to).
+    pub(crate) daemon_settings: Option<photon_proto::DaemonSettings>,
     pub(crate) palette_ui: palette::PaletteState,
     /// the pointer is over the transcript's message rail.
     rail_open: bool,
@@ -446,6 +450,8 @@ impl Shell {
             root_focus: cx.focus_handle(),
             ui_calls: Vec::new(),
             ui_watched: false,
+            surfaces_docked: false,
+            daemon_settings: None,
             palette_ui,
             rail_open: false,
             ask_open: false,
@@ -665,6 +671,7 @@ impl Shell {
             UiEvent::Aside(id) => self.layout_agent = Some(id),
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
             UiEvent::Watched(w) => self.ui_watched = w,
+            UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
             UiEvent::Created => {
                 self.show_new = false;
                 self.error = None;
@@ -1407,7 +1414,8 @@ impl Shell {
                     .child(surface_event_line(text))
                     .into_any_element(),
             ),
-            // until there is a surfaces pane, a pane surface is drawn here too, never dropped.
+            // a pane surface is drawn in the Surfaces pane when one is open, here when not: never dropped.
+            ItemBody::Surface { region, .. } if region == "pane" && self.surfaces_docked => None,
             ItemBody::Surface { surface, node, .. } => self.surface_el(surface, node, cx),
             // photon's own tools: what they did (a surface, the window changing) is the record.
             ItemBody::Tool { tool, status, .. } if tool.starts_with("mcp__photon__") && *status != ToolStatus::Failed => None,
@@ -1714,6 +1722,7 @@ impl Render for Shell {
 
         // panes head for wherever the layout and the room now put them.
         self.sync_panes();
+        self.sync_surfaces_dock(cx);
         // the panel follows the open session, and a file that has arrived gets its editor.
         self.switch_workspace();
         self.materialize_file(window, cx);

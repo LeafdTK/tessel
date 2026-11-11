@@ -25,7 +25,13 @@ pub enum SurfaceOp {
         region: String,
     },
     /// change one element's props, merged over what it had.
-    Set { surface: String, element: String, props: Value },
+    Set {
+        surface: String,
+        /// the element to change. left out (or empty): the surface's top element.
+        #[serde(default)]
+        element: String,
+        props: Value,
+    },
     Remove { surface: String },
 }
 
@@ -41,10 +47,11 @@ impl SurfaceOp {
     }
 }
 
-/// merge `props` into the element with `id` somewhere in `node`. false if
-/// there is no such element. a prop set to null is removed.
+/// merge `props` into the element with `id` somewhere in `node` (the top
+/// element for an empty `id`). false if there is no such element. a prop set
+/// to null is removed.
 pub fn set_props(node: &mut Value, id: &str, props: &Value) -> bool {
-    if node.get("id").and_then(Value::as_str) == Some(id) {
+    if id.is_empty() || node.get("id").and_then(Value::as_str) == Some(id) {
         let Some(obj) = node.as_object_mut() else { return false };
         let p = obj.entry("p").or_insert_with(|| Value::Object(Default::default()));
         if let (Some(p), Some(new)) = (p.as_object_mut(), props.as_object()) {
@@ -62,6 +69,15 @@ pub fn set_props(node: &mut Value, id: &str, props: &Value) -> bool {
         Some(children) => children.iter_mut().any(|c| set_props(c, id, props)),
         None => false,
     }
+}
+
+/// the ids in a surface, in order: what `set` can name.
+pub fn ids(node: &Value) -> Vec<String> {
+    let mut out: Vec<String> = node.get("id").and_then(Value::as_str).map(str::to_owned).into_iter().collect();
+    for c in node.get("c").and_then(Value::as_array).into_iter().flatten() {
+        out.extend(ids(c));
+    }
+    out
 }
 
 /// every kind of element, and the props each understands. the vocabulary is
@@ -173,6 +189,16 @@ mod tests {
         assert!(p.iter().any(|e| e.starts_with("node.c[0]") && e.contains("isn't an element")), "{p:?}");
         assert!(p.iter().any(|e| e.starts_with("node.c[1]") && e.contains("needs an \"id\"")), "{p:?}");
         assert!(p.iter().any(|e| e.contains("\"color\" isn't a field")), "{p:?}");
+    }
+
+    #[test]
+    fn set_without_an_element_changes_the_top_one() {
+        let mut node = json!({"k": "card", "p": {"status": "running"}, "c": [{"k": "progress", "id": "bar"}]});
+        let op: SurfaceOp = serde_json::from_value(json!({"op": "set", "surface": "s", "props": {"status": "done"}})).unwrap();
+        let SurfaceOp::Set { element, props, .. } = op else { panic!() };
+        assert!(set_props(&mut node, &element, &props));
+        assert_eq!(node["p"]["status"], "done");
+        assert_eq!(ids(&node), ["bar"]);
     }
 
     #[test]

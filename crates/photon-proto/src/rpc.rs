@@ -231,9 +231,31 @@ pub enum Request {
         #[serde(default)]
         value: serde_json::Value,
     },
+    // ---- the daemon's own settings ------------------------------------------
+    Settings,
+    /// change some settings: a partial object, merged. answers with all of them.
+    SetSettings {
+        patch: serde_json::Value,
+    },
     Shutdown,
     #[serde(other)]
     Unknown,
+}
+
+/// what the daemon is set to. kept with the daemon (not the window) so a
+/// remote daemon is set the same way as a local one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DaemonSettings {
+    /// agents photon starts get photon's tools: arranging the window and
+    /// drawing surfaces. takes effect as each agent next starts.
+    pub agent_tools: bool,
+}
+
+impl Default for DaemonSettings {
+    fn default() -> Self {
+        Self { agent_tools: true }
+    }
 }
 
 fn default_tail() -> u32 {
@@ -303,6 +325,9 @@ pub enum Response {
     },
     UiWindows {
         windows: Vec<String>,
+    },
+    Settings {
+        settings: DaemonSettings,
     },
     Ack,
     #[serde(other)]
@@ -392,6 +417,10 @@ pub enum Event {
     /// builds no events while nobody is.
     UiWatched {
         watched: bool,
+    },
+    /// the daemon's settings changed (to everyone connected).
+    Settings {
+        settings: DaemonSettings,
     },
     #[serde(other)]
     Unknown,
