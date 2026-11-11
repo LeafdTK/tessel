@@ -12,6 +12,7 @@ mod ask;
 mod compose;
 mod composer;
 mod exec;
+mod looks;
 mod files;
 mod git;
 mod palette;
@@ -165,6 +166,10 @@ pub struct Shell {
     /// a terminal pane that takes the keys as soon as its shell is up.
     term_focus: Option<String>,
     git: git::GitView,
+    /// a theme being tried on: drawn, not written.
+    theme_preview: Option<String>,
+    /// the preview is the palette's: closing it takes it off.
+    theme_preview_by_palette: bool,
     /// the commit went in: the message box empties (it needs a window to).
     git_clear_message: bool,
     /// a message written for what's staged, for the message box.
@@ -473,6 +478,8 @@ impl Shell {
             term_opening: Default::default(),
             term_focus: None,
             git: git::GitView::new(window, cx),
+            theme_preview: None,
+            theme_preview_by_palette: false,
             git_clear_message: false,
             git_suggestion: None,
             palette_ui,
@@ -1752,6 +1759,9 @@ impl Render for Shell {
         self.sync_surfaces_dock(cx);
         self.sync_terminals(window, cx);
         self.sync_git_message(window, cx);
+        if !self.palette_ui.open && std::mem::take(&mut self.theme_preview_by_palette) {
+            self.preview_theme(None, window, cx);
+        }
         // the panel follows the open session, and a file that has arrived gets its editor.
         self.switch_workspace();
         self.materialize_file(window, cx);

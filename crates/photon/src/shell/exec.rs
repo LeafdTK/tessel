@@ -117,6 +117,38 @@ impl Shell {
                 done
             }
 
+            "theme.use" => {
+                let name = arg(args, "name").ok_or("say which theme: name (theme.list lists them)")?.to_owned();
+                self.use_theme(&name, window, cx)?;
+                done
+            }
+            "theme.list" => {
+                let current = self.theme_list().into_iter().map(|t| json!({"name": t.key, "title": t.name, "about": t.about, "current": crate::ui::themes::is_current(&t, &self.ui.theme)})).collect::<Vec<_>>();
+                Ok(json!(current))
+            }
+            "theme.density" => {
+                let d = arg(args, "density").ok_or("density: islands or compact")?;
+                if !matches!(d, "islands" | "compact") {
+                    return Err(format!("\"{d}\" isn't a density. use islands or compact"));
+                }
+                let v = (d != "islands").then(|| json!(d));
+                self.edit_ui(|f| Self::set_in(f, "theme", "density", v), window, cx);
+                done
+            }
+            "theme.material" => {
+                let m = arg(args, "material").ok_or("material: solid or glass")?;
+                if !matches!(m, "solid" | "glass") {
+                    return Err(format!("\"{m}\" isn't a material. use solid or glass"));
+                }
+                let v = (m != "solid").then(|| json!(m));
+                self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);
+                done
+            }
+            "layout.use" => {
+                let name = arg(args, "name").ok_or("say which layout: studio, focus, tiles or rail")?.to_owned();
+                self.use_layout(&name, window, cx)?;
+                done
+            }
             "files.open" => {
                 let path = arg(args, "path").ok_or("say which file: path, relative to the session's folder")?.trim_start_matches("./").to_owned();
                 if self.ws_session.is_none() {

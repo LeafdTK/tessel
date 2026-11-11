@@ -15,11 +15,25 @@ use serde_json::{Map, Value};
 use std::fmt::Write as _;
 
 pub mod harmony;
+pub mod themes;
 
 pub const REFERENCE: &str = include_str!("README.md");
 
 /// the layouts photon ships with. a `ui.json` can start from one and change parts.
-pub const PRESETS: [(&str, &str); 1] = [("default", include_str!("presets/default.json"))];
+pub const PRESETS: [(&str, &str); 4] = [
+    ("default", include_str!("presets/default.json")),
+    ("focus", include_str!("presets/focus.json")),
+    ("tiles", include_str!("presets/tiles.json")),
+    ("rail", include_str!("presets/rail.json")),
+];
+
+/// the layouts offered by name, as people see them: name, title, what it is.
+pub const LAYOUTS: [(&str, &str, &str); 4] = [
+    ("default", "Studio", "The conversation, with the workspace beside it"),
+    ("focus", "Focus", "Only the conversation"),
+    ("tiles", "Tiles", "The conversation, a terminal and git"),
+    ("rail", "Rail", "Sessions as a pane beside the conversation"),
+];
 
 pub fn preset(name: &str) -> Option<&'static str> {
     PRESETS.iter().find(|(n, _)| *n == name).map(|(_, text)| *text)
@@ -367,16 +381,20 @@ pub struct ThemeSpec {
     pub freestyle: bool,
     /// how big the interface is drawn: 1 is the default.
     pub scale: Option<f32>,
+    /// panes flush with hairlines between them, instead of floating islands.
+    pub compact: Option<bool>,
+    /// the desktop shows through, blurred, behind the frame.
+    pub glass: Option<bool>,
 }
 
 impl ThemeSpec {
-    fn parse(v: &Value) -> Result<Self, String> {
+    pub(crate) fn parse(v: &Value) -> Result<Self, String> {
         let bases = [("photon", Base::Photon), ("orchard", Base::Orchard), ("tern", Base::Tern)];
         if v.is_string() {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"photon\", \"orchard\", \"tern\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material"])?;
         let mut t = Self::default();
         if let Some(b) = obj.get("base") {
             t.base = Some(one_of(b, "theme.base", &bases)?);
@@ -402,6 +420,12 @@ impl ThemeSpec {
         if let Some(f) = obj.get("mono") {
             t.mono = Some(text(f, "theme.mono")?.to_owned());
         }
+        if let Some(d) = obj.get("density") {
+            t.compact = Some(one_of(d, "theme.density", &[("islands", false), ("compact", true)])?);
+        }
+        if let Some(m) = obj.get("material") {
+            t.glass = Some(one_of(m, "theme.material", &[("solid", false), ("glass", true)])?);
+        }
         for (key, out) in [("light", &mut t.light), ("dark", &mut t.dark_tokens)] {
             let Some(m) = obj.get(key) else { continue };
             let m = m.as_object().ok_or_else(|| format!("theme.{key}: expected an object of colour roles, like {{\"accent\": \"#df3047\"}}"))?;
@@ -423,6 +447,8 @@ impl ThemeSpec {
         self.font = over.font.or(self.font.take());
         self.scale = over.scale.or(self.scale);
         self.mono = over.mono.or(self.mono.take());
+        self.compact = over.compact.or(self.compact);
+        self.glass = over.glass.or(self.glass);
         self.light.extend(over.light);
         self.dark_tokens.extend(over.dark_tokens);
     }

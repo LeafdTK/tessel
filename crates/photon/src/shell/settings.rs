@@ -22,8 +22,9 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 4] = [
-    ("appearance", "Appearance", "icons/palette.svg"),
+pub(crate) const SECTIONS: [(&str, &str, &str); 5] = [
+    ("appearance", "Appearance", "icons/sun-moon.svg"),
+    ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
     ("agents", "Agents", "icons/bot.svg"),
     ("customize", "Customize", "icons/sparkles.svg"),
@@ -184,14 +185,37 @@ impl Shell {
         let own_layout = file.contains_key("root");
         let t = self.transcript_opts;
 
-        let appearance_rows = v_flex()
+        let _ = base;
+        let density = if theme.compact.unwrap_or(false) { "compact" } else { "islands" };
+        let material = if theme.glass.unwrap_or(false) { "glass" } else { "solid" };
+        let themes_rows = v_flex()
+            .child(
+                v_flex()
+                    .child(
+                        v_flex()
+                            .px_4()
+                            .pt_3()
+                            .gap(px(2.))
+                            .child(div().set(Type::Body).child("Theme"))
+                            .child(div().set(Type::Subheadline).text_color(p.secondary).child("Hover to try one on. Your own go in ~/.photon/themes.")),
+                    )
+                    .child(self.theme_gallery(cx)),
+            )
             .child(self.setting_row(
-                "Palette",
-                "Photon follows macOS. Orchard is Hack Club's warm palette. Tern is cool and quiet.",
-                self.segmented("palette", &[("photon", "Photon"), ("orchard", "Orchard"), ("tern", "Tern")], base, cx, |this, v, w, cx| {
-                    this.edit_ui(|f| Self::set_in(f, "theme", "base", Some(json!(v))), w, cx)
+                "Density",
+                "Islands float apart. Compact sits flush, a hairline between.",
+                self.segmented("density", &[("islands", "Islands"), ("compact", "Compact")], density, cx, |this, v, w, cx| {
+                    let _ = this.exec("theme.density", &json!({"density": v}), w, cx);
                 }),
             ))
+            .child(self.setting_row(
+                "Material",
+                "Glass lets the desktop through, blurred, behind the frame.",
+                self.segmented("material", &[("solid", "Solid"), ("glass", "Glass")], material, cx, |this, v, w, cx| {
+                    let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
+                }),
+            ));
+        let appearance_rows = v_flex()
             .child(self.setting_row(
                 "Appearance",
                 "",
@@ -298,6 +322,21 @@ impl Shell {
                 })
             }))
             .child(self.setting_row(
+                "Arrangement",
+                "Studio has the workspace beside you. Focus is only the conversation. Tiles adds a terminal and git. Rail puts sessions in a pane.",
+                self.segmented(
+                    "layout",
+                    &[("default", "Studio"), ("focus", "Focus"), ("tiles", "Tiles"), ("rail", "Rail")],
+                    self.current_layout().unwrap_or(""),
+                    cx,
+                    |this, v, w, cx| {
+                        if let Err(e) = this.exec("layout.use", &json!({"name": v}), w, cx) {
+                            this.error = Some(e);
+                        }
+                    },
+                ),
+            ))
+            .child(self.setting_row(
                 "Layout",
                 if own_layout { "Your panes, as you arranged them. Reset puts back the default and keeps your theme." } else { "Split, swap and close panes from their headers. Drag the gaps to resize." },
                 Button::new("settings-reset-layout").small().outline().label("Reset Layout").when(!own_layout, |b| b.disabled(true)).on_click(cx.listener(|this, _, window, cx| {
@@ -341,6 +380,7 @@ impl Shell {
         let (title, rows) = match current {
             "conversation" => ("Conversation", conversation_rows),
             "agents" => ("Agents", agents_rows),
+            "themes" => ("Themes", themes_rows),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };

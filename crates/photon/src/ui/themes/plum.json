@@ -1,0 +1,35 @@
+{
+  "name": "Plum",
+  "about": "Deep berry",
+  "base": "photon",
+  "light": {
+    "app": "#f1eaf0",
+    "sheet": "#fbf7fa",
+    "raised": "#ffffff",
+    "sunken": "#eee4ec",
+    "border": "#e0d2dd",
+    "text": "#2a1828",
+    "muted": "#6c5468",
+    "accent": "#a63d8f",
+    "hover": "#ece7eb",
+    "active": "#edd9e9",
+    "faint": "#928891",
+    "ghost": "#c0b9bf",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#1a1219",
+    "sheet": "#221821",
+    "raised": "#2c1f2b",
+    "sunken": "#150e14",
+    "border": "#3a2938",
+    "text": "#f3e6f1",
+    "muted": "#b49cb0",
+    "accent": "#e070c8",
+    "hover": "#352b34",
+    "active": "#573150",
+    "faint": "#8a7f89",
+    "ghost": "#5d525b",
+    "on-accent": "#ffffff"
+  }
+}

@@ -400,6 +400,11 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.size` | Interface size: Compact |  | size: compact|default|large |
 | `theme.accent` | Set the accent colour |  | hex: #rrggbb, or null for the theme's own |
 | `daemon.set` | Agents: let them use photon |  | agent_tools?: true|false. photon's tools for agents, as each next starts |
+| `theme.use` | Use a theme |  | name: one of theme.list, or a file in ~/.photon/themes |
+| `theme.list` | Every theme |  |  |
+| `theme.density` | Density: Islands |  | density: islands|compact |
+| `theme.material` | Material: Solid |  | material: solid|glass |
+| `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |
 | `layout.set` | Replace the layout file |  | json: the whole ui.json; answers with what check.txt says |

@@ -1,0 +1,35 @@
+{
+  "name": "Moss",
+  "about": "Quiet greens",
+  "base": "photon",
+  "light": {
+    "app": "#e8ece6",
+    "sheet": "#f5f7f3",
+    "raised": "#ffffff",
+    "sunken": "#e2e7df",
+    "border": "#d3dacf",
+    "text": "#1c241d",
+    "muted": "#56635a",
+    "accent": "#3f7d4e",
+    "hover": "#e6e8e4",
+    "active": "#d8e3d9",
+    "faint": "#888e88",
+    "ghost": "#b8bcb7",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#131814",
+    "sheet": "#192019",
+    "raised": "#212a22",
+    "sunken": "#101411",
+    "border": "#2a352b",
+    "text": "#e5ece4",
+    "muted": "#9aa99b",
+    "accent": "#6cc183",
+    "hover": "#2b322b",
+    "active": "#304d37",
+    "faint": "#7f867e",
+    "ghost": "#525952",
+    "on-accent": "#111111"
+  }
+}

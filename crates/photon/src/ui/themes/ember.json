@@ -1,0 +1,35 @@
+{
+  "name": "Ember",
+  "about": "Warm dark, an orange spark",
+  "base": "photon",
+  "light": {
+    "app": "#f1ebe7",
+    "sheet": "#fbf7f4",
+    "raised": "#ffffff",
+    "sunken": "#efe6e0",
+    "border": "#e2d6cd",
+    "text": "#2a1d17",
+    "muted": "#6e5a50",
+    "accent": "#d9541e",
+    "hover": "#ece8e5",
+    "active": "#f6ddd2",
+    "faint": "#928a86",
+    "ghost": "#c0bab6",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#1a1310",
+    "sheet": "#221915",
+    "raised": "#2c211b",
+    "sunken": "#150f0c",
+    "border": "#3a2b23",
+    "text": "#f3e7e0",
+    "muted": "#b39d92",
+    "accent": "#ff7a3d",
+    "hover": "#352c27",
+    "active": "#603420",
+    "faint": "#8a807a",
+    "ghost": "#5d534e",
+    "on-accent": "#ffffff"
+  }
+}

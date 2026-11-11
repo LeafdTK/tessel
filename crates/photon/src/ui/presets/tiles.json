@@ -1,0 +1,101 @@
+{
+  "root": {
+    "type": "row",
+    "w": "full",
+    "h": "full",
+    "align": "start",
+    "bg": "app",
+    "children": [
+      {
+        "type": "drawer",
+        "id": "sidebar",
+        "side": "left",
+        "width": 264,
+        "min": 220,
+        "max": 380,
+        "open": true,
+        "border": false,
+        "children": [
+          {
+            "type": "row",
+            "id": "sidebar-titlebar",
+            "drag": true,
+            "h": 52,
+            "shrink": false,
+            "justify": "end",
+            "pr": 8,
+            "children": [
+              {
+                "type": "add"
+              }
+            ]
+          },
+          {
+            "type": "sessions"
+          },
+          {
+            "type": "connection"
+          },
+          {
+            "type": "row",
+            "px": 12,
+            "py": 8,
+            "gap": 4,
+            "children": [
+              {
+                "type": "button",
+                "id": "settings",
+                "action": "settings",
+                "icon": "settings"
+              },
+              {
+                "type": "spacer"
+              },
+              {
+                "type": "button",
+                "id": "customize",
+                "action": "customize",
+                "icon": "sparkles"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": "panes",
+        "id": "workspace",
+        "grow": true,
+        "h": "full",
+        "p": 8,
+        "layout": {
+          "split": "row",
+          "children": [
+            {
+              "module": "conversation",
+              "size": 3,
+              "user": "right",
+              "width": 760,
+              "gutter": 24
+            },
+            {
+              "split": "column",
+              "size": 2,
+              "children": [
+                {
+                  "id": "terminal",
+                  "module": "terminal",
+                  "size": 1
+                },
+                {
+                  "id": "git",
+                  "module": "git",
+                  "size": 1
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

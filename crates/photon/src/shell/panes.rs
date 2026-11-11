@@ -18,7 +18,10 @@ use gpui_kit::component::popover::Popover;
 use serde_json::{Value, json};
 
 /// the gap between tiles: orchard's 8.
-pub(crate) const GAP: f32 = 8.0;
+/// room between panes: islands float apart; compact panes sit a hairline apart.
+pub(crate) fn gap() -> f32 {
+    if theme::compact() { 1.0 } else { 8.0 }
+}
 /// the least a pane is given, side by side and stacked, while there is room for it.
 const MIN_W: f32 = 280.0;
 const MIN_H: f32 = 160.0;
@@ -157,7 +160,8 @@ impl Shell {
                 // a folded child keeps a place of no size, so it unfolds from where it lives.
                 let total: f32 = shown.iter().map(|(_, c)| c.size()).sum::<f32>().max(0.0001);
                 let along = if *axis == Axis::Row { area.w } else { area.h };
-                let room = (along - GAP * shown.len().saturating_sub(1) as f32).max(0.0);
+                let gap = gap();
+                let room = (along - gap * shown.len().saturating_sub(1) as f32).max(0.0);
                 let mut at = if *axis == Axis::Row { area.x } else { area.y };
                 let mut prev: Option<(usize, f32)> = None;
                 let lens = fit(children.iter().map(|c| if self.any_open(c) { c.size() / total } else { 0.0 }).collect(), room, if *axis == Axis::Row { MIN_W } else { MIN_H });
@@ -165,14 +169,14 @@ impl Shell {
                     let open = self.any_open(c);
                     let len = lens[i];
                     if open && let Some((pi, pshare)) = prev {
-                        let g = if *axis == Axis::Row { Rect { x: at - GAP, y: area.y, w: GAP, h: area.h } } else { Rect { x: area.x, y: at - GAP, w: area.w, h: GAP } };
+                        let g = if *axis == Axis::Row { Rect { x: at - gap, y: area.y, w: gap, h: area.h } } else { Rect { x: area.x, y: at - gap, w: area.w, h: gap } };
                         gaps.push(Gap { trail: trail.clone(), index: pi, axis: *axis, rect: g, shares: (pshare, c.size()), room: room * (pshare + c.size()) / total });
                         let _ = i;
                     }
                     let r = if *axis == Axis::Row { Rect { x: at, y: area.y, w: len, h: area.h } } else { Rect { x: area.x, y: at, w: area.w, h: len } };
                     self.layout(c, r, out, gaps);
                     if open {
-                        at += len + GAP;
+                        at += len + gap;
                         prev = Some((i, c.size()));
                     }
                 }
@@ -535,11 +539,11 @@ impl Shell {
             Some(m) => self.module_el(m, pane, now, cx),
         };
         let fid = id.to_owned();
+        let compact = theme::compact();
         v_flex()
             .group(group)
             .size_full()
-            .rounded(px(theme::R_PANEL))
-            .border_1()
+            .when(!compact, |d| d.rounded(px(theme::R_PANEL)).border_1().shadow_sm())
             // the pane your keys act on wears a faint ring of the accent.
             .border_color(if focused { p.accent.opacity(0.35) } else { p.separator })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| {
@@ -548,7 +552,6 @@ impl Shell {
                 }
             }))
             .bg(p.window)
-            .shadow_sm()
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))

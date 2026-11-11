@@ -1028,9 +1028,19 @@ fn settings_open_from_the_keyboard_and_write_what_you_pick_to_the_layout_file(cx
     assert!(rig.exists(cx, "settings-page"));
     let read = || serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&file).unwrap()).unwrap();
 
-    rig.click(cx, "palette-orchard");
+    // hovering a theme tries it on without writing anything; clicking keeps it.
+    rig.click(cx, "settings-tab-themes");
+    let before = read();
+    cx.update_window(rig.window, |_, window, cx| window.hover("theme-dusk", cx)).unwrap();
+    rig.settle(cx);
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.theme_preview_for_test()), Some("dusk".to_owned()));
+    assert_eq!(read(), before, "a preview writes nothing");
+    rig.click(cx, "theme-orchard");
     assert_eq!(read()["theme"]["base"], "orchard");
     assert_eq!(read()["theme"]["font"], "Inter", "what wasn't touched stays");
+    rig.feed(cx, vec![UiEvent::Call { call: 90, cmd: "theme.density".into(), args: serde_json::json!({"density": "compact"}) }]);
+    assert_eq!(read()["theme"]["density"], "compact", "as a command, like every setting");
+    rig.click(cx, "settings-tab-appearance");
     rig.click(cx, "appearance-dark");
     assert!(rig.shell.read_with(cx, |s, _| s.palette.get().dark), "applied at once, not on the next poll");
 

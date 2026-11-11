@@ -1,0 +1,35 @@
+{
+  "name": "Sand",
+  "about": "Sunlit and soft",
+  "base": "photon",
+  "light": {
+    "app": "#f0ebdf",
+    "sheet": "#faf7ef",
+    "raised": "#fffdf8",
+    "sunken": "#ece5d6",
+    "border": "#ded5c1",
+    "text": "#2b261b",
+    "muted": "#6b634f",
+    "accent": "#9a7414",
+    "hover": "#ece8e0",
+    "active": "#ebe2cc",
+    "faint": "#928e85",
+    "ghost": "#c0bcb4",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#1b1913",
+    "sheet": "#221f18",
+    "raised": "#2b2820",
+    "sunken": "#16140f",
+    "border": "#36322a",
+    "text": "#eee8d8",
+    "muted": "#ada48c",
+    "accent": "#e2b443",
+    "hover": "#343129",
+    "active": "#584924",
+    "faint": "#888478",
+    "ghost": "#5b574e",
+    "on-accent": "#111111"
+  }
+}

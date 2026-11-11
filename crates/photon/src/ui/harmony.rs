@@ -61,11 +61,14 @@ pub fn harmonize(ui: &mut Ui) -> Report {
     if primaries > 1 {
         r.warnings.push(format!("{primaries} primary buttons are always on screen. one view gets one; make the rest \"ghost\" or show them only \"when\" they apply"));
     }
-    if !nodes.iter().any(|n| n.style.drag) {
+    // panes have headers, and a pane header is a title bar: it moves the window,
+    // and the one under the window's buttons makes room for them.
+    let panes = nodes.iter().any(|n| n.kind == Kind::Panes);
+    if !panes && !nodes.iter().any(|n| n.style.drag) {
         r.warnings.push("nothing has \"drag\": true, so there is no title bar to move the window by. give the top row of the layout \"drag\": true".into());
     }
     let left_drawer = nodes.iter().any(|n| n.kind == Kind::Drawer && n.props.side == super::Side::Left);
-    if !left_drawer && !nodes.iter().any(|n| n.style.inset.is_some()) {
+    if !left_drawer && !panes && !nodes.iter().any(|n| n.style.inset.is_some()) {
         r.warnings.push("nothing leaves room for the window's close/minimise/zoom buttons at the top left. give the top row \"inset\": true".into());
     }
     let conversation = ui.has_module(super::Module::Conversation);

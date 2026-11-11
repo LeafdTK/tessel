@@ -74,7 +74,8 @@ impl Shell {
     fn palette_items(&self) -> Vec<Item> {
         let mut items: Vec<Item> = crate::commands::COMMANDS
             .iter()
-            .filter(|s| s.palette && s.id != "app.palette")
+            // themes come from their files (below), not the three bases.
+            .filter(|s| s.palette && s.id != "app.palette" && s.id != "theme.set")
             .map(|s| Item {
                 title: s.title.into(),
                 note: None,
@@ -85,6 +86,17 @@ impl Shell {
                 scope: if s.id.starts_with("theme.") { Scope::Look } else { Scope::Commands },
             })
             .collect();
+        for t in self.theme_list() {
+            items.push(Item {
+                title: format!("Theme: {}", t.name).into(),
+                note: (!t.about.is_empty()).then(|| t.about.clone()),
+                icon: "palette",
+                keys: None,
+                cmd: "theme.use",
+                args: json!({"name": t.key}),
+                scope: Scope::Look,
+            });
+        }
         // the open session first, then the ones that need you, then the rest.
         let open = self.model.open_summary().map(|s| s.id);
         let mut sessions: Vec<&SessionSummary> = self.model.sessions.iter().collect();
@@ -161,6 +173,12 @@ impl Shell {
         }
         let results = self.palette_results(cx);
         let selected = self.palette_ui.selected.min(results.len().saturating_sub(1));
+        // a theme under the selection is tried on; moving off it takes it off.
+        let trying = results.get(selected).filter(|it| it.cmd == "theme.use").and_then(|it| it.args.get("name")).and_then(Value::as_str).map(str::to_owned);
+        if trying != self.theme_preview && (trying.is_some() || self.theme_preview_by_palette) {
+            self.theme_preview_by_palette = trying.is_some();
+            self.preview_theme(trying.as_deref(), window, cx);
+        }
         let mut list = theme::float_list(&p).id("palette-list").test_support().max_h(px(380.)).overflow_y_scroll();
         if results.is_empty() {
             list = list.child(div().px(theme::z(10.)).py_3().set(Type::Callout).text_color(p.secondary).child("Nothing matches."));

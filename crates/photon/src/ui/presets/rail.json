@@ -1,0 +1,41 @@
+{
+  "root": {
+    "type": "row",
+    "w": "full",
+    "h": "full",
+    "align": "start",
+    "bg": "app",
+    "children": [
+      {
+        "type": "panes",
+        "id": "workspace",
+        "grow": true,
+        "h": "full",
+        "p": 8,
+        "layout": {
+          "split": "row",
+          "children": [
+            {
+              "id": "rail",
+              "module": "sessions",
+              "size": 1
+            },
+            {
+              "module": "conversation",
+              "size": 3,
+              "user": "right",
+              "width": 760,
+              "gutter": 24
+            },
+            {
+              "id": "inspector",
+              "module": "workspace",
+              "size": 2,
+              "open": false
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
