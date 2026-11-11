@@ -1,0 +1,27 @@
+{"phase":"running","type":"phase"}
+{"agent_session_id":"f8d37863-cd35-41d5-8c91-2532a492b2cd","agent_version":"2.1.319","cwd":"/private/tmp/photon-spike/repo","model":"claude-haiku-5-5","permission_mode":"default","type":"init"}
+{"item_id":"7db79b0e-7a8b-441e-8e6c-c8460ae6ddaf","text":"Use the Bash tool to run exactly: echo photon-fixture > denied.txt   Then tell me in one sentence what happened.","type":"user_message"}
+{"block":{"kind":"tool","tool":"Bash"},"item_id":"toolu_018kkF1BNz6k9UgUvBfDyDhr","parent":null,"type":"block_started"}
+{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1}
+{"tokens":32275,"type":"context_used"}
+{"input":{"command":"echo photon-fixture > denied.txt","description":"Write photon-fixture text into denied.txt"},"item_id":"toolu_018kkF1BNz6k9UgUvBfDyDhr","parent":null,"tool":"Bash","type":"tool_call"}
+{"phase":"requires_action","type":"phase"}
+{"request":{"description":"Write photon-fixture text into denied.txt","input":{"command":"echo photon-fixture > denied.txt","description":"Write photon-fixture text into denied.txt"},"is_question":false,"request_id":"f012b6fe-5056-4c7d-8d8f-c803499f58f1","suggestions":[{"behavior":"allow","destination":"localSettings","rules":[{"ruleContent":"echo photon-fixture *","toolName":"Bash"}],"type":"addRules"},{"destination":"session","directories":["/private/tmp/photon-spike/repo"],"type":"addDirectories"}],"tool":"Bash","tool_item":"toolu_018kkF1BNz6k9UgUvBfDyDhr"},"type":"permission_requested"}
+{"phase":"running","type":"phase"}
+{"item_id":"toolu_018kkF1BNz6k9UgUvBfDyDhr","ok":false,"output":"photon spike: denied by user","type":"tool_result"}
+{"block":{"kind":"thinking"},"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/0","parent":null,"type":"block_started"}
+{"tokens":35468,"type":"context_used"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/0","parent":null,"text":"","type":"thinking"}
+{"block":{"kind":"text"},"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","parent":null,"type":"block_started"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":"The","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" command","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" was denied by the user, so","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" `","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":"denied.txt` was not","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" created and","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" I did","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" not retry.","type":"delta"}
+{"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","parent":null,"text":"The command was denied by the user, so `denied.txt` was not created and I did not retry.","type":"text"}
+{"tokens":1000000,"type":"context_window"}
+{"cost_usd":0.00469866,"duration_ms":2450,"outcome":{"kind":"completed"},"type":"turn_finished"}
+{"phase":"idle","type":"phase"}

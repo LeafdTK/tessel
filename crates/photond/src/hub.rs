@@ -1,0 +1,737 @@
+//! the one task that owns every session.
+//!
+//! everything that can change a session arrives here as a message: client
+//! requests, agent output, timer ticks. one task, one queue, no locks, so
+//! there is exactly one order in which things happened.
+
+use crate::paths::Paths;
+use crate::reducer::{Effects, Input, Meta, SessionState};
+use crate::store::Store;
+use crate::workspace;
+use crate::worktree;
+use photon_agent::{Agent, AgentOutput, Backend, SpawnOpts};
+use photon_proto::{Attachment, 
+    AgentEvent, Envelope, ErrorCode, Event, ItemId, Millis, PROTO_MAJOR, PROTO_MINOR, Request, Response, RpcError,
+    SessionId, SessionSummary, WorktreeInfo, WorktreeSpec, compatible,
+};
+use std::collections::{HashMap, VecDeque};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use uuid::Uuid;
+
+pub type ClientId = u64;
+
+/// how many envelopes may queue for one client before we give up on it.
+pub const CLIENT_QUEUE: usize = 8192;
+
+/// remembered command ids, so a resend after a dropped link is a no-op.
+const REMEMBERED_COMMANDS: usize = 4096;
+
+#[derive(Clone)]
+pub struct Config {
+    pub paths: Paths,
+    pub build: String,
+    /// stop an agent process that has had nothing to do for this long. the
+    /// session stays; its next message starts a new process that resumes it.
+    pub idle_reap: Duration,
+    /// how long an interrupt gets before we stop the process outright.
+    pub interrupt_grace: Duration,
+    pub tick: Duration,
+}
+
+impl Config {
+    pub fn new(paths: Paths) -> Self {
+        Self {
+            paths,
+            build: env!("CARGO_PKG_VERSION").to_owned(),
+            idle_reap: Duration::from_secs(15 * 60),
+            interrupt_grace: Duration::from_secs(8),
+            tick: Duration::from_millis(500),
+        }
+    }
+}
+
+pub enum HubMsg {
+    Connected { client: ClientId, tx: mpsc::Sender<Envelope> },
+    Request { client: ClientId, id: u64, req: Request },
+    Disconnected { client: ClientId },
+    Agent { session: SessionId, generation: u64, output: AgentOutput },
+    /// the answer to a request that needed work off the main loop (git, files, the network).
+    Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
+    /// a worktree finished being made (or failed) for a pending create.
+    WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError> },
+    Stop,
+}
+
+pub struct Create {
+    cmd_id: Uuid,
+    cwd: String,
+    goal: Option<String>,
+    prompt: Option<String>,
+    model: Option<String>,
+    parent: Option<SessionId>,
+}
+
+struct Client {
+    tx: mpsc::Sender<Envelope>,
+    ready: bool,
+    summary: bool,
+    detail: Option<SessionId>,
+    /// we dropped events for this client and still owe it a `Lagged`.
+    lagged: bool,
+    dead: bool,
+}
+
+struct Live {
+    state: SessionState,
+    agent: Option<Box<dyn Agent>>,
+    /// bumps on every spawn, so output from an old process is ignored.
+    generation: u64,
+    last_summary: Option<SessionSummary>,
+    interrupt_deadline: Option<Millis>,
+    /// something only a fresh start picks up has changed (a linked folder).
+    /// the agent is stopped as soon as it is idle and comes back on demand.
+    restart_when_idle: bool,
+}
+
+pub struct Hub {
+    cfg: Config,
+    store: Store,
+    backend: Arc<dyn Backend>,
+    tx: mpsc::UnboundedSender<HubMsg>,
+    sessions: HashMap<SessionId, Live>,
+    clients: HashMap<ClientId, Client>,
+    done: HashMap<Uuid, Response>,
+    done_order: VecDeque<Uuid>,
+}
+
+pub fn now_ms() -> Millis {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as Millis).unwrap_or(0)
+}
+
+impl Hub {
+    /// load everything from the store. sessions that were mid-turn when the
+    /// daemon last stopped come back closed and flagged.
+    pub async fn load(
+        cfg: Config,
+        store: Store,
+        backend: Arc<dyn Backend>,
+        tx: mpsc::UnboundedSender<HubMsg>,
+    ) -> anyhow::Result<Self> {
+        let mut hub = Self {
+            cfg,
+            store,
+            backend,
+            tx,
+            sessions: HashMap::new(),
+            clients: HashMap::new(),
+            done: HashMap::new(),
+            done_order: VecDeque::new(),
+        };
+        let now = now_ms();
+        for p in hub.store.load_sessions().await? {
+            let id = p.meta.id;
+            let items = hub.store.load_items(id).await?;
+            // an agent left running by a daemon that was killed is stopped
+            // before anything else can talk to its session.
+            let dir = hub.cfg.paths.session_dir(&id);
+            let sid = id.to_string();
+            let markers = [sid.as_str(), p.agent_session_id.as_deref().unwrap_or("")];
+            if let Some(pid) = crate::orphans::reap(&dir, &markers) {
+                eprintln!("photond: stopped agent {pid} left over from a previous daemon (session {id})");
+            }
+            let mut state = SessionState::restore(p, items);
+            let fx = state.apply(Input::Recovered, now);
+            if !fx.upserts.is_empty() || fx.pending_changed || fx.summary_changed {
+                hub.store.save(state.persisted(), fx.upserts);
+            }
+            hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false });
+        }
+        Ok(hub)
+    }
+
+    pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<HubMsg>) {
+        let mut tick = tokio::time::interval(self.cfg.tick);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                msg = rx.recv() => match msg {
+                    None | Some(HubMsg::Stop) => break,
+                    Some(msg) => {
+                        if self.handle(msg) {
+                            break;
+                        }
+                    }
+                },
+                _ = tick.tick() => self.tick(),
+            }
+        }
+        self.shutdown().await;
+    }
+
+    async fn shutdown(&mut self) {
+        for live in self.sessions.values_mut() {
+            if let Some(agent) = live.agent.take() {
+                agent.kill();
+            }
+        }
+        self.store.flush().await;
+    }
+
+    /// returns true when the daemon should stop.
+    fn handle(&mut self, msg: HubMsg) -> bool {
+        match msg {
+            HubMsg::Connected { client, tx } => {
+                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: None, lagged: false, dead: false });
+            }
+            HubMsg::Disconnected { client } => {
+                self.clients.remove(&client);
+            }
+            HubMsg::Request { client, id, req } => {
+                let stop = matches!(req, Request::Shutdown);
+                if let Some(result) = self.request(client, id, req) {
+                    self.respond(client, id, result);
+                }
+                return stop && self.clients.get(&client).is_some_and(|c| c.ready);
+            }
+            HubMsg::Agent { session, generation, output } => self.agent_output(session, generation, output),
+            HubMsg::Reply { client, id, result } => self.respond(client, id, result),
+            HubMsg::WorktreeReady { client, id, create, result } => {
+                let result = result.and_then(|made| {
+                    let wt = WorktreeInfo { repo: made.repo, branch: made.branch };
+                    self.create_session(*create, made.path, Some(wt))
+                });
+                self.respond(client, id, result);
+            }
+            HubMsg::Stop => return true,
+        }
+        self.clients.retain(|_, c| !c.dead);
+        false
+    }
+
+    // ---- requests ------------------------------------------------------
+
+    /// `None` means the answer will come later (a worktree is being made).
+    fn request(&mut self, client: ClientId, id: u64, req: Request) -> Option<Result<Response, RpcError>> {
+        let ready = self.clients.get(&client).is_some_and(|c| c.ready);
+        if !ready && !matches!(req, Request::Hello { .. }) {
+            return Some(Err(RpcError::new(ErrorCode::NotReady, "say hello first")));
+        }
+        Some(match req {
+            Request::Hello { proto_major, proto_minor, .. } => {
+                if !compatible(proto_major) {
+                    Err(RpcError::new(
+                        ErrorCode::VersionMismatch,
+                        format!(
+                            "this daemon speaks protocol {PROTO_MAJOR}.{PROTO_MINOR}; the client speaks {proto_major}.{proto_minor}. \
+                             restart the daemon (or update the client) so they match."
+                        ),
+                    ))
+                } else {
+                    if let Some(c) = self.clients.get_mut(&client) {
+                        c.ready = true;
+                    }
+                    Ok(Response::Welcome {
+                        proto_major: PROTO_MAJOR,
+                        proto_minor: PROTO_MINOR,
+                        build: self.cfg.build.clone(),
+                        daemon_pid: std::process::id(),
+                        capabilities: vec!["worktrees".into(), "replay-user".into()],
+                    })
+                }
+            }
+            Request::SessionList => Ok(Response::Sessions { sessions: self.summaries() }),
+            Request::SessionCreate { cmd_id, cwd, worktree, goal, prompt, model, parent } => {
+                if let Some(prev) = self.done.get(&cmd_id) {
+                    return Some(Ok(prev.clone()));
+                }
+                if !Path::new(&cwd).is_dir() {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory"))));
+                }
+                if let Some(p) = parent
+                    && !self.sessions.contains_key(&p)
+                {
+                    return Some(Err(RpcError::new(ErrorCode::NotFound, format!("parent session {p} does not exist"))));
+                }
+                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, model, parent };
+                match worktree {
+                    None => self.create_session(create, cwd, None),
+                    Some(spec) => {
+                        self.make_worktree(client, id, create, spec);
+                        return None;
+                    }
+                }
+            }
+            Request::SessionSend { cmd_id, session, text, attachments } => {
+                if self.done.contains_key(&cmd_id) {
+                    return Some(Ok(Response::Ack));
+                }
+                let r = self.send_user(session, cmd_id, text, attachments);
+                if r.is_ok() {
+                    self.remember(cmd_id, Response::Ack);
+                }
+                r.map(|_| Response::Ack)
+            }
+            // with an agent running, ask it and let its answer change what we
+            // show: it knows the model's real name and may refuse. without
+            // one, remember the choice for when the next one starts.
+            Request::SessionSetModel { session, model, .. } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(_) if model.trim().is_empty() => Err(RpcError::new(ErrorCode::Invalid, "no model given")),
+                Some(live) => match &live.agent {
+                    Some(agent) => {
+                        agent.set_model(&model);
+                        Ok(Response::Ack)
+                    }
+                    None => self.apply(session, Input::SetModel { model }).map(|_| Response::Ack),
+                },
+            },
+            Request::SessionSetMode { session, mode, .. } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(_) if mode.trim().is_empty() => Err(RpcError::new(ErrorCode::Invalid, "no mode given")),
+                Some(live) => match &live.agent {
+                    Some(agent) => {
+                        agent.set_mode(&mode);
+                        Ok(Response::Ack)
+                    }
+                    None => self.apply(session, Input::SetMode { mode }).map(|_| Response::Ack),
+                },
+            },
+            Request::SessionInterrupt { session, .. } => match self.sessions.get_mut(&session) {
+                None => Err(not_found(session)),
+                Some(live) => {
+                    if let Some(agent) = &live.agent
+                        && live.state.turn_open()
+                    {
+                        agent.interrupt();
+                        live.interrupt_deadline = Some(now_ms() + self.cfg.interrupt_grace.as_millis() as Millis);
+                    }
+                    Ok(Response::Ack)
+                }
+            },
+            Request::SessionRefreshMcp { session } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(live) => {
+                    // with nothing running there is nobody to ask; what we last heard stands.
+                    if let Some(agent) = &live.agent {
+                        agent.mcp_status();
+                    }
+                    Ok(Response::Ack)
+                }
+            },
+            Request::SessionLinkDir { session, path, .. } => {
+                let path = path.trim().to_owned();
+                if !self.sessions.contains_key(&session) {
+                    Err(not_found(session))
+                } else if !Path::new(&path).is_absolute() || !Path::new(&path).is_dir() {
+                    Err(RpcError::new(ErrorCode::Invalid, format!("{path} is not a folder that exists (give its full path)")))
+                } else {
+                    self.relink(session, Input::LinkDir { path })
+                }
+            }
+            Request::SessionUnlinkDir { session, path, .. } => self.relink(session, Input::UnlinkDir { path }),
+            Request::ModelList => {
+                let (models, tx) = (self.backend.models(), self.tx.clone());
+                tokio::spawn(async move {
+                    let result = models.await.map(|models| Response::Models { models }).map_err(|e| RpcError::new(ErrorCode::Internal, format!("{e:#}")));
+                    let _ = tx.send(HubMsg::Reply { client, id, result });
+                });
+                return None;
+            }
+            Request::SessionSetGoal { session, goal, .. } => {
+                self.apply(session, Input::SetGoal { goal }).map(|_| Response::Ack)
+            }
+            Request::SessionDelete { session, remove_worktree, .. } => match self.sessions.remove(&session) {
+                // deleting something already gone is fine: that's what a resend looks like.
+                None => Ok(Response::Ack),
+                Some(live) => {
+                    if let Some(agent) = &live.agent {
+                        agent.kill();
+                    }
+                    self.store.delete(session);
+                    let dir = self.cfg.paths.session_dir(&session);
+                    let wt = live.state.meta.worktree.clone().filter(|_| remove_worktree);
+                    let path = live.state.meta.cwd.clone();
+                    tokio::spawn(async move {
+                        let _ = tokio::fs::remove_dir_all(dir).await;
+                        if let Some(wt) = wt
+                            && let Err(e) = worktree::remove(&wt.repo, &path).await
+                        {
+                            eprintln!("photond: removing worktree {path}: {e}");
+                        }
+                    });
+                    self.broadcast_summary_event(Event::SessionRemoved { session }, Some(session));
+                    for c in self.clients.values_mut() {
+                        if c.detail == Some(session) {
+                            c.detail = None;
+                        }
+                    }
+                    Ok(Response::Ack)
+                }
+            },
+            Request::PermissionRespond { session, request_id, decision, .. } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(live) => match (live.state.pending_request(&request_id).cloned(), &live.agent) {
+                    // already answered (by another client, or by a resend).
+                    (None, _) => Ok(Response::Ack),
+                    (Some(_), None) => Err(RpcError::new(ErrorCode::Conflict, "the agent is no longer running")),
+                    (Some(req), Some(agent)) => {
+                        agent.answer(&req, &decision);
+                        self.apply(session, Input::Answered { request_id, decision }).map(|_| Response::Ack)
+                    }
+                },
+            },
+            Request::MarkSeen { session, seq } => self.apply(session, Input::MarkSeen { seq }).map(|_| Response::Ack),
+            Request::Subscribe { summary, detail, tail } => {
+                let now = now_ms();
+                let snapshot = match detail {
+                    None => None,
+                    Some(s) => match self.sessions.get(&s) {
+                        None => return Some(Err(not_found(s))),
+                        Some(live) => Some(live.state.snapshot(tail as usize, now)),
+                    },
+                };
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.summary = summary;
+                    c.detail = detail;
+                    c.lagged = false;
+                }
+                Ok(Response::Subscribed { sessions: summary.then(|| self.summaries()), detail: snapshot })
+            }
+            Request::ItemsBefore { session, before, limit } => match self.sessions.get(&session) {
+                None => Err(not_found(session)),
+                Some(live) => {
+                    let (items, has_more) = live.state.items_before(before, limit.min(2000) as usize);
+                    Ok(Response::Items { items, has_more })
+                }
+            },
+            // everything about the working directory runs off the main loop:
+            // git and the disk can be slow, and one slow repository must not
+            // stall every other session.
+            Request::GitStatus { session } => {
+                return self.in_workdir(client, id, session, |dir| async move { Ok(Response::Git { summary: workspace::git_status(&dir).await }) });
+            }
+            Request::GitDiff { session, path } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::git_diff(&dir, &path).await.map(|diff| Response::Diff { diff }) });
+            }
+            Request::FsList { session, path } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::list(&dir, &path).await.map(|entries| Response::Dir { entries }) });
+            }
+            Request::FsRead { session, path } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::read(&dir, &path).await.map(|file| Response::File { file }) });
+            }
+            Request::FsWrite { session, path, content, .. } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::write(&dir, &path, &content).await.map(|()| Response::Ack) });
+            }
+            Request::PrStatus { session } => {
+                return self.in_workdir(client, id, session, |dir| async move { Ok(Response::Pr { status: workspace::pr_status(&dir).await }) });
+            }
+            Request::Shutdown => Ok(Response::Ack),
+            Request::Unknown => Err(RpcError::new(ErrorCode::Invalid, "this daemon does not know that request")),
+        })
+    }
+
+    /// run `work` in the session's working directory, off the main loop, and
+    /// send its answer when it is done. `None` is "the answer comes later".
+    fn in_workdir<F, Fut>(&self, client: ClientId, id: u64, session: SessionId, work: F) -> Option<Result<Response, RpcError>>
+    where
+        F: FnOnce(std::path::PathBuf) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<Response, RpcError>> + Send + 'static,
+    {
+        let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+        let dir = std::path::PathBuf::from(&live.state.meta.cwd);
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = work(dir).await;
+            let _ = tx.send(HubMsg::Reply { client, id, result });
+        });
+        None
+    }
+
+    fn make_worktree(&self, client: ClientId, id: u64, create: Create, spec: WorktreeSpec) {
+        let tx = self.tx.clone();
+        let root = self.cfg.paths.workspaces.clone();
+        let hint = create.goal.clone().or_else(|| create.prompt.clone()).unwrap_or_default();
+        tokio::spawn(async move {
+            let result = worktree::create(&create.cwd, &spec, &root, &hint).await;
+            let _ = tx.send(HubMsg::WorktreeReady { client, id, create: Box::new(create), result });
+        });
+    }
+
+    fn create_session(&mut self, c: Create, cwd: String, wt: Option<WorktreeInfo>) -> Result<Response, RpcError> {
+        let now = now_ms();
+        let id = SessionId::new();
+        let goal = c
+            .goal
+            .filter(|g| !g.trim().is_empty())
+            .or_else(|| c.prompt.as_deref().map(crate::activity::truncate).filter(|g| !g.is_empty()))
+            .unwrap_or_else(|| "untitled".to_owned());
+        let meta = Meta { id, goal, cwd, worktree: wt, parent: c.parent, created_ms: now, linked_dirs: Vec::new() };
+        let mut state = SessionState::new(meta);
+        state.model = c.model;
+        self.store.save(state.persisted(), Vec::new());
+        self.sessions.insert(
+            id,
+            Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false },
+        );
+        self.publish_summary(id, now);
+        if let Some(prompt) = c.prompt.filter(|p| !p.trim().is_empty()) {
+            // the session exists either way; a failed first send is reported in it.
+            if let Err(e) = self.send_user(id, c.cmd_id, prompt, Vec::new()) {
+                eprintln!("photond: first message for {id}: {e}");
+            }
+        }
+        let summary = self.sessions[&id].state.summary(now_ms());
+        let response = Response::Session { summary };
+        self.remember(c.cmd_id, response.clone());
+        Ok(response)
+    }
+
+    /// change which folders a session may work in. a running agent only
+    /// learns its folders when it starts, so it is restarted once idle.
+    fn relink(&mut self, session: SessionId, input: Input) -> Result<Response, RpcError> {
+        self.apply(session, input)?;
+        if let Some(live) = self.sessions.get_mut(&session)
+            && live.agent.is_some()
+        {
+            live.restart_when_idle = true;
+        }
+        Ok(Response::Ack)
+    }
+
+    fn send_user(&mut self, session: SessionId, cmd_id: Uuid, text: String, attachments: Vec<Attachment>) -> Result<(), RpcError> {
+        if text.trim().is_empty() && attachments.is_empty() {
+            return Err(RpcError::new(ErrorCode::Invalid, "empty message"));
+        }
+        // refuse what the agent can't read before anything is sent, so a
+        // message never arrives missing the file it talks about.
+        if let Some(bad) = attachments.iter().find(|a| !a.is_supported()) {
+            let why = format!("{} can't be attached ({}). images and pdfs can; for anything else, mention its path", bad.name, bad.media_type);
+            return Err(RpcError::new(ErrorCode::Invalid, why));
+        }
+        self.ensure_process(session)?;
+        let live = self.sessions.get(&session).ok_or_else(|| not_found(session))?;
+        if let Some(agent) = &live.agent {
+            agent.send_user(&text, &attachments);
+        }
+        let names = attachments.into_iter().map(|a| a.name).collect();
+        self.apply(session, Input::UserSent { item_id: ItemId(format!("user/{cmd_id}")), text, attachments: names })?;
+        Ok(())
+    }
+
+    /// make sure an agent process exists for this session, starting (or
+    /// resuming) one if not. reaping and crash recovery both lead here.
+    fn ensure_process(&mut self, session: SessionId) -> Result<(), RpcError> {
+        let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
+        if live.agent.is_some() {
+            return Ok(());
+        }
+        let cwd = live.state.meta.cwd.clone();
+        if !Path::new(&cwd).is_dir() {
+            return Err(RpcError::new(ErrorCode::Conflict, format!("{cwd} no longer exists")));
+        }
+        let known = live.state.agent_session_id.clone();
+        let opts = SpawnOpts {
+            cwd: cwd.into(),
+            resume: known.is_some(),
+            agent_session_id: known.unwrap_or_else(|| session.to_string()),
+            model: live.state.model.clone(),
+            permission_mode: live.state.permission_mode.clone(),
+            add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
+            raw_log: Some(self.cfg.paths.raw_log(&session)),
+        };
+        let spawned = self
+            .backend
+            .spawn(opts)
+            .map_err(|e| RpcError::new(ErrorCode::Internal, format!("could not start the agent: {e:#}")))?;
+        live.generation += 1;
+        live.restart_when_idle = false;
+        let generation = live.generation;
+        if let Some(pid) = spawned.agent.pid() {
+            crate::orphans::record(&self.cfg.paths.session_dir(&session), pid);
+        }
+        live.agent = Some(spawned.agent);
+        let tx = self.tx.clone();
+        let mut output = spawned.output;
+        tokio::spawn(async move {
+            while let Some(out) = output.recv().await {
+                if tx.send(HubMsg::Agent { session, generation, output: out }).is_err() {
+                    break;
+                }
+            }
+        });
+        self.apply(session, Input::Spawning)?;
+        Ok(())
+    }
+
+    fn agent_output(&mut self, session: SessionId, generation: u64, output: AgentOutput) {
+        let Some(live) = self.sessions.get_mut(&session) else { return };
+        if live.generation != generation {
+            return;
+        }
+        match output {
+            AgentOutput::Alive => {
+                let _ = self.apply(session, Input::Alive);
+            }
+            AgentOutput::Events(events) => {
+                for ev in events {
+                    let _ = self.apply(session, Input::Agent(ev));
+                }
+            }
+            AgentOutput::Exited { code } => {
+                live.agent = None;
+                live.interrupt_deadline = None;
+                crate::orphans::clear(&self.cfg.paths.session_dir(&session));
+                let _ = self.apply(session, Input::Agent(AgentEvent::Exited { code }));
+            }
+        }
+    }
+
+    // ---- state changes -----------------------------------------------------
+
+    fn apply(&mut self, session: SessionId, input: Input) -> Result<(), RpcError> {
+        let now = now_ms();
+        let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
+        let fx = live.state.apply(input, now);
+        if !live.state.turn_open() {
+            live.interrupt_deadline = None;
+        }
+        self.after(session, fx, now);
+        Ok(())
+    }
+
+    fn after(&mut self, session: SessionId, fx: Effects, now: Millis) {
+        let Some(live) = self.sessions.get(&session) else { return };
+        let persist = !fx.upserts.is_empty() || fx.pending_changed || fx.summary_changed;
+        if persist {
+            self.store.save(live.state.persisted(), fx.upserts.clone());
+        }
+        let pending = fx.pending_changed.then(|| live.state.pending().to_vec());
+        let watching: Vec<ClientId> =
+            self.clients.iter().filter(|(_, c)| c.detail == Some(session)).map(|(id, _)| *id).collect();
+        for client in watching {
+            for item in &fx.upserts {
+                self.send(client, Envelope::Ev { ev: Event::ItemUpserted { session, item: item.clone() } });
+            }
+            for d in &fx.deltas {
+                let ev = Event::ItemDelta { session, item_id: d.item_id.clone(), offset: d.offset, text: d.text.clone() };
+                self.send(client, Envelope::Ev { ev });
+            }
+            if let Some(pending) = &pending {
+                self.send(client, Envelope::Ev { ev: Event::PendingChanged { session, pending: pending.clone() } });
+            }
+        }
+        if persist {
+            self.publish_summary(session, now);
+        }
+    }
+
+    /// tell subscribers about a session's summary, but only if it changed.
+    fn publish_summary(&mut self, session: SessionId, now: Millis) {
+        let Some(live) = self.sessions.get_mut(&session) else { return };
+        let summary = live.state.summary(now);
+        if live.last_summary.as_ref() == Some(&summary) {
+            return;
+        }
+        live.last_summary = Some(summary.clone());
+        self.broadcast_summary_event(Event::SessionUpdated { summary }, Some(session));
+    }
+
+    fn broadcast_summary_event(&mut self, ev: Event, session: Option<SessionId>) {
+        let targets: Vec<ClientId> = self
+            .clients
+            .iter()
+            .filter(|(_, c)| c.ready && (c.summary || (session.is_some() && c.detail == session)))
+            .map(|(id, _)| *id)
+            .collect();
+        for client in targets {
+            self.send(client, Envelope::Ev { ev: ev.clone() });
+        }
+    }
+
+    fn summaries(&self) -> Vec<SessionSummary> {
+        let now = now_ms();
+        let mut all: Vec<_> = self.sessions.values().map(|l| l.state.summary(now)).collect();
+        all.sort_by_key(|s| (s.created_ms, s.id));
+        all
+    }
+
+    fn tick(&mut self) {
+        let now = now_ms();
+        let reap_after = self.cfg.idle_reap.as_millis() as Millis;
+        let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for id in ids {
+            // time alone changes a summary: silence becomes "stalled".
+            self.publish_summary(id, now);
+            let Some(live) = self.sessions.get_mut(&id) else { continue };
+            let Some(agent) = &live.agent else { continue };
+            if live.interrupt_deadline.is_some_and(|d| now >= d) && live.state.turn_open() {
+                // it was asked nicely and did not stop.
+                live.interrupt_deadline = None;
+                agent.kill();
+                continue;
+            }
+            let s = &live.state;
+            let idle = !s.turn_open() && s.pending().is_empty() && s.summary(now).background_tasks == 0;
+            if idle && (live.restart_when_idle || now.saturating_sub(s.updated_ms) >= reap_after) {
+                agent.kill();
+            }
+        }
+        // a client we dropped events for is told so as soon as it has room.
+        for c in self.clients.values_mut() {
+            if c.lagged && c.tx.try_send(Envelope::Ev { ev: Event::Lagged }).is_ok() {
+                c.lagged = false;
+            }
+        }
+    }
+
+    // ---- talking to clients --------------------------------------------------
+
+    fn respond(&mut self, client: ClientId, id: u64, result: Result<Response, RpcError>) {
+        let env = match result {
+            Ok(ok) => Envelope::Res { id, ok: Some(ok), err: None },
+            Err(err) => Envelope::Res { id, ok: None, err: Some(err) },
+        };
+        let Some(c) = self.clients.get_mut(&client) else { return };
+        // a response can't be dropped: the client is waiting on it. if there
+        // is no room, the client is beyond saving; cut it loose to reconnect.
+        if c.tx.try_send(env).is_err() {
+            c.dead = true;
+        }
+    }
+
+    fn send(&mut self, client: ClientId, env: Envelope) {
+        let Some(c) = self.clients.get_mut(&client) else { return };
+        if c.lagged || c.dead {
+            return;
+        }
+        match c.tx.try_send(env) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // events are droppable, but never silently: the client must
+                // know its picture is stale. it resubscribes for a fresh one.
+                c.lagged = true;
+                c.summary = false;
+                c.detail = None;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => c.dead = true,
+        }
+    }
+
+    fn remember(&mut self, cmd_id: Uuid, response: Response) {
+        if self.done.insert(cmd_id, response).is_none() {
+            self.done_order.push_back(cmd_id);
+            if self.done_order.len() > REMEMBERED_COMMANDS
+                && let Some(old) = self.done_order.pop_front()
+            {
+                self.done.remove(&old);
+            }
+        }
+    }
+}
+
+fn not_found(session: SessionId) -> RpcError {
+    RpcError::new(ErrorCode::NotFound, format!("no session {session}"))
+}

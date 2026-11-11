@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+photon-proto = { path = "crates/photon-proto" }
+photon-agent = { path = "crates/photon-agent" }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "net", "sync", "time", "signal", "fs"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# ui stack: gpui-kit pins the matching gpui-pre snapshot and gpui-component.
+# bump on purpose, never with a caret.
+# test-support is on for every build, not only tests. cargo would otherwise
+# compile the whole ui stack twice (once with, once without), which is several
+# gigabytes this machine does not have. cost: the library evaluates computed
+# style once more for elements marked for tests. revisit when disk allows.
+gpui-kit = { version = "=0.9.1", features = ["test-support"] }
+
+[profile.dev]
+debug = "line-tables-only"
+# the incremental cache costs over a gigabyte here; see the note on disk above.
+incremental = false
+
+# the app is built optimized even in dev, so frame-time measurements mean
+# something without needing a second (release) build of everything.
+[profile.dev.package.photon]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

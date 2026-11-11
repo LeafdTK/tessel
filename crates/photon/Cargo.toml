@@ -1,0 +1,31 @@
+[package]
+name = "photon"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "photon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "photon"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+photon-proto.workspace = true
+photon-client = { path = "../photon-client" }
+tokio.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+# drawing mermaid diagrams and maths. on by default; it only exists as a
+# feature so the app can be built without the two renderer crates. switching
+# it changes a feature on hashbrown, which rebuilds the whole ui stack
+# (several GB), so pick one setting and always build with `--workspace`.
+photon-rich = { path = "../photon-rich", optional = true }
+
+[features]
+default = ["rich"]
+rich = ["dep:photon-rich"]
