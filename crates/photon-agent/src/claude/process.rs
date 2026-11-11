@@ -149,6 +149,15 @@ impl ClaudeBackend {
         for dir in &opts.add_dirs {
             args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
         }
+        if let Some(tools) = &opts.tools {
+            let env: serde_json::Map<String, serde_json::Value> = tools.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
+            let config = serde_json::json!({"mcpServers": {"photon": {"command": tools.command, "args": ["mcp"], "env": env}}});
+            args.extend(["--mcp-config".to_owned(), config.to_string()]);
+            // the note about how replies are shown grows a paragraph about the tools.
+            if let Some(i) = args.iter().position(|a| a == wire::HOST_NOTE) {
+                args[i] = format!("{}{}", wire::HOST_NOTE, wire::TOOLS_NOTE);
+            }
+        }
         args
     }
 }
@@ -318,8 +327,24 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_given_photons_tools_gets_them_scoped_to_its_session_and_is_told_why() {
+        let tools = crate::backend::AgentTools { command: "/opt/photon/photonctl".into(), env: vec![("PHOTON_SESSION".into(), "s-1".into())] };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, add_dirs: vec![], raw_log: None, tools: Some(tools) };
+        let args = ClaudeBackend::args(&opts);
+        let at = args.iter().position(|a| a == "--mcp-config").expect("the tools are passed");
+        let config: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
+        assert_eq!(config["mcpServers"]["photon"]["command"], "/opt/photon/photonctl");
+        assert_eq!(config["mcpServers"]["photon"]["args"][0], "mcp");
+        assert_eq!(config["mcpServers"]["photon"]["env"]["PHOTON_SESSION"], "s-1");
+        assert!(args.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("photon_surface") && w[1].contains("```mermaid")), "one note, both parts");
+        assert_eq!(args.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
+        let without = ClaudeBackend::args(&SpawnOpts { tools: None, ..opts });
+        assert!(!without.iter().any(|a| a == "--mcp-config"));
+    }
+
+    #[test]
     fn first_spawn_names_the_session_and_later_ones_resume_it() {
-        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, add_dirs: vec![], raw_log: None };
+        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, add_dirs: vec![], raw_log: None, tools: None };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--session-id", "abc"]));
         assert!(!args.iter().any(|a| a == "--resume"));

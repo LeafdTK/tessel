@@ -626,6 +626,88 @@ pub fn float_sep(p: &Palette) -> gpui_kit::Div {
     gpui_kit::div().h(px(1.)).mx(z(10.)).my(z(4.)).bg(p.separator)
 }
 
+// ---- controls -----------------------------------------------------------------
+//
+// one height for everything you press or pick, so a button never sits beside a
+// switcher at a different size. a tray's segments sit inside it concentric:
+// `R_CONTROL` outside, less the tray's inset, inside.
+
+/// buttons, segmented trays, fields.
+pub const CONTROL_H: f32 = 28.0;
+/// the room between a tray and its segments.
+const TRAY_PAD: f32 = 2.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonKind {
+    /// the one thing to do here: filled with the accent.
+    Primary,
+    /// everything else: a quiet fill.
+    Secondary,
+    /// in a toolbar or a row of many: no fill until hovered.
+    Ghost,
+}
+
+/// a button: `CONTROL_H` tall, a 12 point label, an optional 14 point icon.
+pub fn button(p: &Palette, id: impl Into<SharedString>, label: impl Into<SharedString>, icon: Option<&str>, kind: ButtonKind) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::component::{Icon, h_flex};
+    use gpui_kit::prelude::FluentBuilder as _;
+    use gpui_kit::{InteractiveElement as _, ParentElement as _};
+    let p = *p;
+    let label: SharedString = label.into();
+    let (bg, ink, wash) = match kind {
+        ButtonKind::Primary => (p.accent, best_ink(p.accent), over(best_ink(p.accent).opacity(0.12), p.accent)),
+        ButtonKind::Secondary => (p.fill, p.label, p.hover),
+        ButtonKind::Ghost => (gpui_kit::transparent_black(), p.label, p.hover),
+    };
+    h_flex()
+        .id(id.into())
+        .flex_shrink_0()
+        .h(z(CONTROL_H))
+        .px(z(12.))
+        .gap(z(6.))
+        .justify_center()
+        .rounded(z(R_CONTROL))
+        .bg(bg)
+        .text_color(ink)
+        .set(Type::Callout)
+        .font_weight(FontWeight::MEDIUM)
+        .cursor_pointer()
+        .hover(move |d| d.bg(wash))
+        .when_some(icon, |d, i| d.child(Icon::empty().path(format!("icons/{i}.svg")).size(z(14.))))
+        .when(!label.is_empty(), |d| d.child(label))
+}
+
+/// the tray a set of segments sits in.
+pub fn tray(p: &Palette) -> gpui_kit::Div {
+    use gpui_kit::component::h_flex;
+    h_flex().flex_shrink_0().h(z(CONTROL_H)).p(z(TRAY_PAD)).gap(z(TRAY_PAD)).rounded(z(R_CONTROL)).bg(p.fill)
+}
+
+/// one choice in a tray. the chosen one is lifted out of it.
+pub fn segment(p: &Palette, id: impl Into<SharedString>, label: impl Into<SharedString>, on: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::component::h_flex;
+    use gpui_kit::prelude::FluentBuilder as _;
+    use gpui_kit::{InteractiveElement as _, ParentElement as _};
+    let p = *p;
+    h_flex()
+        .id(id.into())
+        .h_full()
+        .px(z(10.))
+        .rounded(z(R_CONTROL - TRAY_PAD))
+        .set(Type::Callout)
+        .cursor_pointer()
+        .when(on, |d| d.bg(p.raised).shadow_sm().text_color(p.label).font_weight(FontWeight::MEDIUM))
+        .when(!on, |d| d.text_color(p.secondary).hover(|d| d.text_color(p.label)))
+        .child(label.into())
+}
+
+/// a small label with a tone: "running", "3 failed".
+pub fn badge(text: impl Into<SharedString>, tone: Hsla) -> gpui_kit::Div {
+    use gpui_kit::component::h_flex;
+    use gpui_kit::ParentElement as _;
+    h_flex().flex_shrink_0().h(z(20.)).px(z(7.)).rounded(z(R_TILE - 2.0)).bg(tone.opacity(0.12)).text_color(tone).set(Type::Subheadline).font_weight(FontWeight::MEDIUM).child(text.into())
+}
+
 // ---- sizes -------------------------------------------------------------------
 
 /// the toolbar that is merged with the title bar.

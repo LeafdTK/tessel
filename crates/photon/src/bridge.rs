@@ -46,6 +46,8 @@ pub enum Cmd {
     UiAnswer { call: u64, result: Result<serde_json::Value, String> },
     /// something happened in the window, for whoever listens.
     UiPublish { kind: String, data: serde_json::Value },
+    /// someone acted on a surface an agent drew.
+    SurfaceEvent { session: SessionId, surface: String, element: String, act: String, value: serde_json::Value },
 }
 
 #[derive(Debug)]
@@ -283,6 +285,9 @@ async fn session(
                             let _ = client.request(Request::UiPublish { kind, data }).await;
                         });
                         Ok(())
+                    }
+                    Cmd::SurfaceEvent { session, surface, element, act, value } => {
+                        client.request(Request::SurfaceEvent { session, surface, element, act, value }).await.map(drop)
                     }
                     Cmd::SetGoal { session, goal } => client.request(Request::SessionSetGoal { cmd_id: Uuid::new_v4(), session, goal }).await.map(drop),
                     Cmd::SetMode { session, mode } => client.request(Request::SessionSetMode { cmd_id: Uuid::new_v4(), session, mode }).await.map(drop),

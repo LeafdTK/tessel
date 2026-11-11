@@ -39,6 +39,9 @@ as $$ ... $$ on one line, or between a line holding only $$ and another line hol
 Inline $...$ maths is not typeset, so write short inline expressions as plain text or code. \
 Use a diagram or a formula when it explains something better than prose, not for decoration.";
 
+/// added to `HOST_NOTE` when the agent has photon's tools.
+pub const TOOLS_NOTE: &str = "\n\nYou also have photon's tools. photon_surface draws live UI in this chat (progress, status cards, choices, results) that you update in place as work goes on; prefer it to repeating status in prose for anything that changes. photon_window runs anything a person can click in the app: split panes, show changes or files, switch theme. Use them when they help the person, not for their own sake.";
+
 /// a message from the user. with attachments it becomes a list of blocks:
 /// the text, then each image or document.
 pub fn user_message(text: &str, attachments: &[Attachment]) -> Value {

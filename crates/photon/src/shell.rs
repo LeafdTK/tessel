@@ -18,6 +18,7 @@ mod panes;
 mod projects;
 mod settings;
 mod sidebar;
+mod surface;
 
 pub(crate) use compose::{Drawer, TranscriptOpts};
 pub(crate) use panel::{Tab, Workspace};
@@ -1327,33 +1328,23 @@ impl Shell {
         let p = self.palette.get();
         let worktree = self.new_worktree;
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
-            div()
-                .id(id)
+            theme::segment(&p, id, label, on)
                 .test_support()
                 .aria_label(SharedString::from(format!("{label}{}", if on { ", selected" } else { "" })))
-                .h(px(24.))
-                .px_2()
-                .flex()
-                .items_center()
-                .rounded(px(theme::R_TILE))
-                .set(Type::Callout)
-                .when(on, |d| d.bg(p.raised).shadow_sm().text_color(p.label))
-                .when(!on, |d| d.text_color(p.secondary).hover(|d| d.text_color(p.label)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.new_worktree = set;
                     cx.notify();
                 }))
-                .child(label)
         };
         // the folder, as a chip you can type into.
         let folder = h_flex()
             .flex_1()
             .min_w(px(140.))
             .max_w(px(320.))
-            .h(px(28.))
+            .h(theme::z(theme::CONTROL_H))
             .pl_2()
             .gap_1()
-            .rounded(px(theme::R_TILE))
+            .rounded(theme::z(theme::R_CONTROL))
             .bg(p.fill)
             .child(div().flex_shrink_0().text_color(p.secondary).child(gpui_kit::component::Icon::empty().path("icons/folder.svg").small()))
             .child(div().flex_1().min_w_0().set(Type::Code).child(Input::new(&self.new_cwd).id("new-cwd").appearance(false).small()));
@@ -1372,18 +1363,14 @@ impl Shell {
                     .flex_wrap()
                     .gap_2()
                     .child(folder)
-                    .child(
-                        h_flex()
-                            .flex_shrink_0()
-                            .p(px(2.))
-                            .gap(px(2.))
-                            .rounded(px(theme::R_CONTROL))
-                            .bg(p.fill)
-                            .child(segment("in-place", "In place", !worktree, false))
-                            .child(segment("worktree-toggle", "New worktree", worktree, true)),
-                    )
+                    .child(theme::tray(&p).child(segment("in-place", "In place", !worktree, false)).child(segment("worktree-toggle", "New worktree", worktree, true)))
                     .child(div().flex_1().min_w(px(0.)))
-                    .child(Button::new("create").small().primary().label("Start").on_click(cx.listener(|this, _, window, cx| this.create(window, cx)))),
+                    .child(
+                        theme::button(&p, "create", "Start", None, theme::ButtonKind::Primary)
+                            .test_support()
+                            .aria_label("Start")
+                            .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
+                    ),
             );
         v_flex().size_full().items_center().justify_center().px_4().pb(px(48.)).child(
             v_flex()
@@ -1410,6 +1397,20 @@ impl Shell {
         let body: Option<AnyElement> = match &item.body {
             // a subagent's report comes back wrapped as a message "from the
             // user". it isn't one: show the report, quietly, as what it is.
+            // what you did to a surface goes to the agent as a message; here it's a quiet line.
+            ItemBody::User { text, .. } if text.starts_with("<surface-event") => Some(
+                h_flex()
+                    .gap_2()
+                    .set(Type::Callout)
+                    .text_color(p.tertiary)
+                    .child(gpui_kit::component::Icon::empty().path("icons/mouse-pointer-click.svg").size(px(13.)))
+                    .child(surface_event_line(text))
+                    .into_any_element(),
+            ),
+            // until there is a surfaces pane, a pane surface is drawn here too, never dropped.
+            ItemBody::Surface { surface, node, .. } => self.surface_el(surface, node, cx),
+            // photon's own tools: what they did (a surface, the window changing) is the record.
+            ItemBody::Tool { tool, status, .. } if tool.starts_with("mcp__photon__") && *status != ToolStatus::Failed => None,
             ItemBody::User { text, .. } if let Some(report) = handback(text) => Some(
                 v_flex()
                     .gap_1()
@@ -2016,6 +2017,17 @@ impl Shell {
             rail = rail.child(div().w(px(300.)).mr_1().rounded(px(theme::R_PANEL)).border_1().border_color(p.separator).bg(p.raised).shadow_lg().child(list));
         }
         rail.child(ticks).into_any_element()
+    }
+}
+
+/// "you clicked Stop", from `<surface-event ... element="stop" act="click"/>`.
+fn surface_event_line(text: &str) -> String {
+    let attr = |name: &str| text.split(&format!("{name}=\"")).nth(1).and_then(|r| r.split('"').next()).unwrap_or("").to_owned();
+    let (element, act, value) = (attr("element"), attr("act"), attr("value"));
+    match act.as_str() {
+        "click" => format!("You clicked {element}"),
+        _ if !value.is_empty() => format!("You set {element} to {value}"),
+        _ => format!("You changed {element}"),
     }
 }
 

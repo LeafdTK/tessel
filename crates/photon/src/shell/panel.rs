@@ -663,6 +663,9 @@ impl Shell {
         let diff: AnyElement = match (&self.ws.diff, &self.ws.diff_note) {
             (Some(state), _) => Diff::new(state)
                 .size_full()
+                // the pane is the frame. the diff's own square border would
+                // double its edge and poke out of its rounded corners.
+                .border_0()
                 .on_add_annotation(move |range, window, cx| {
                     let _ = me.update(cx, |this, cx| this.comment_on(range, window, cx));
                 })

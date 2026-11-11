@@ -54,6 +54,14 @@ pub enum ItemBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         finished_ms: Option<Millis>,
     },
+    /// live ui the agent drew (see `crate::surface`). a null `node` is a removed one.
+    Surface {
+        /// its name. not `id`: an item's body sits in the item's own object, which has one.
+        surface: String,
+        node: Value,
+        #[serde(default = "inline_region")]
+        region: String,
+    },
     /// something the daemon wants in the transcript: interrupted, aborted, error.
     Notice {
         level: NoticeLevel,
@@ -93,4 +101,8 @@ pub enum NoticeLevel {
     Error,
     #[serde(other)]
     Unknown,
+}
+
+fn inline_region() -> String {
+    "inline".into()
 }

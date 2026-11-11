@@ -104,7 +104,18 @@ impl Client {
                     if frame.kind != KIND_JSON {
                         continue;
                     }
-                    match serde_json::from_slice::<Envelope>(&frame.payload) {
+                    let envelope = serde_json::from_slice::<Envelope>(&frame.payload);
+                    // an answer we can't read still answers its request, with why:
+                    // a caller is never left waiting on something that already came.
+                    if let Err(e) = &envelope
+                        && let Some(id) = serde_json::from_slice::<serde_json::Value>(&frame.payload).ok().and_then(|v| v.get("id").and_then(serde_json::Value::as_u64))
+                    {
+                        if let Some(tx) = waiting.lock().unwrap().remove(&id) {
+                            let _ = tx.send(Err(RpcError::new(ErrorCode::Internal, format!("couldn't read the daemon's answer: {e}"))));
+                        }
+                        continue;
+                    }
+                    match envelope {
                         Ok(Envelope::Res { id, ok, err }) => {
                             if let Some(tx) = waiting.lock().unwrap().remove(&id) {
                                 let result = match (ok, err) {

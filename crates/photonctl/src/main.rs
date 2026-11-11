@@ -3,6 +3,8 @@
 //! everything the app can do goes through the same socket, so everything the
 //! app can do can be done (and tested) from here.
 
+mod mcp;
+
 use anyhow::{Context, bail};
 use photon_client::{Client, ClientError, Events};
 use photon_proto::*;
@@ -47,6 +49,12 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl ui theme photon|orchard|tern
   photonctl ui events [--filter KIND,...]   what windows do, as json lines
   photonctl ui windows                      the open windows
+
+  live ui in a session's chat (what agents draw with their photon_surface tool):
+  photonctl surface SESSION put NAME JSON [--pane]
+  photonctl surface SESSION set NAME ELEMENT JSON
+  photonctl surface SESSION remove NAME
+  photonctl mcp                             photon as MCP tools, on stdin/stdout (agents get this)
       --window NAME    which window (default: the one opened last)
       PANE is a pane id, @focused, or the module it shows
 
@@ -108,6 +116,11 @@ async fn run() -> anyhow::Result<()> {
     let json = args.flag("--json");
     let home = photon_proto::local::home();
     let cmd = args.next("a command")?;
+
+    // photon as tools for an agent: connects only when a tool is used.
+    if cmd == "mcp" {
+        return mcp::serve().await;
+    }
 
     if cmd == "daemon" {
         return match args.next("start or stop")?.as_str() {
@@ -186,6 +199,25 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         "ui" => ui(&client, &mut events, &mut args, json).await?,
+        "surface" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let pane = args.flag("--pane");
+            let op = match args.next("put, set or remove")?.as_str() {
+                "put" => photon_proto::surface::SurfaceOp::Put {
+                    surface: args.next("a surface name")?,
+                    node: serde_json::from_str(&args.next("the node, as json")?).context("the node isn't json")?,
+                    region: if pane { "pane".into() } else { "inline".into() },
+                },
+                "set" => photon_proto::surface::SurfaceOp::Set {
+                    surface: args.next("a surface name")?,
+                    element: args.next("an element id")?,
+                    props: serde_json::from_str(&args.next("the props, as json")?).context("the props aren't json")?,
+                },
+                "remove" => photon_proto::surface::SurfaceOp::Remove { surface: args.next("a surface name")? },
+                other => bail!("unknown surface op {other}: use put, set or remove"),
+            };
+            client.request(Request::SurfaceOp { session, op }).await?;
+        }
         "send" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             let text = args.rest.join(" ");
@@ -473,6 +505,7 @@ fn item_line(item: &Item) -> String {
             let out = output.as_deref().map(|o| format!(" -> {}", one_line(o, 120))).unwrap_or_default();
             format!("{indent}tool {tool} [{status}] {}{out}", one_line(&input.to_string(), 120))
         }
+        ItemBody::Surface { surface, node, .. } => format!("  ▣ surface {surface}{}", if node.is_null() { " (removed)" } else { "" }),
         ItemBody::Notice { text, .. } => format!("{indent}-- {text} --"),
         ItemBody::Unknown => format!("{indent}(something this build does not know how to show)"),
     }

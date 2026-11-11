@@ -39,6 +39,8 @@ pub struct Config {
     /// how long an interrupt gets before we stop the process outright.
     pub interrupt_grace: Duration,
     pub tick: Duration,
+    /// `photonctl`, to give every agent photon's tools. none: agents get none.
+    pub tools_bin: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -49,6 +51,7 @@ impl Config {
             idle_reap: Duration::from_secs(15 * 60),
             interrupt_grace: Duration::from_secs(8),
             tick: Duration::from_millis(500),
+            tools_bin: None,
         }
     }
 }
@@ -530,6 +533,45 @@ impl Hub {
                 self.tell_windows_if_watched();
                 Ok(Response::Ack)
             }
+            Request::SurfaceOp { session, op } => {
+                use photon_proto::ItemBody;
+                use photon_proto::surface::{MAX_SURFACE_BYTES, SurfaceOp};
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let item = ItemId::from(format!("surface/{}", op.surface()).as_str());
+                let existing = live.state.item(&item).map(|i| &i.body);
+                let problem = match &op {
+                    SurfaceOp::Put { node, region, .. } => {
+                        if serde_json::to_vec(node).map_or(true, |b| b.len() > MAX_SURFACE_BYTES) {
+                            Some(format!("a surface can be at most {} KB", MAX_SURFACE_BYTES / 1024))
+                        } else if !node.is_object() {
+                            Some("a surface's node is an object like {\"k\": \"text\", \"p\": {\"text\": \"hi\"}}".into())
+                        } else if let Some(first) = photon_proto::surface::validate(node).into_iter().next() {
+                            Some(first)
+                        } else if region != "inline" && region != "pane" {
+                            Some(format!("\"{region}\" isn't a region: use inline or pane"))
+                        } else {
+                            None
+                        }
+                    }
+                    SurfaceOp::Set { surface, element, .. } => match existing {
+                        Some(ItemBody::Surface { node, .. }) => {
+                            let mut probe = node.clone();
+                            (!photon_proto::surface::set_props(&mut probe, element, &serde_json::json!({}))).then(|| format!("surface {surface} has no element \"{element}\""))
+                        }
+                        _ => Some(format!("there's no surface \"{surface}\"; put it first")),
+                    },
+                    SurfaceOp::Remove { surface } => (!matches!(existing, Some(ItemBody::Surface { .. }))).then(|| format!("there's no surface \"{surface}\"")),
+                };
+                match problem {
+                    Some(p) => Err(RpcError::new(ErrorCode::Invalid, p)),
+                    None => self.apply(session, Input::Surface(op)).map(|_| Response::Ack),
+                }
+            }
+            Request::SurfaceEvent { session, surface, element, act, value } => {
+                // the agent that drew it hears about it, as a message in its own session.
+                let text = photon_proto::surface::event_message(&surface, &element, &act, &value);
+                return self.request(client, id, Request::SessionSend { cmd_id: Uuid::new_v4(), session, text, attachments: Vec::new() });
+            }
             Request::Shutdown => Ok(Response::Ack),
             Request::Unknown => Err(RpcError::new(ErrorCode::Invalid, "this daemon does not know that request")),
         })
@@ -643,6 +685,13 @@ impl Hub {
             permission_mode: live.state.permission_mode.clone(),
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             raw_log: Some(self.cfg.paths.raw_log(&session)),
+            tools: self.cfg.tools_bin.as_ref().map(|bin| photon_agent::backend::AgentTools {
+                command: bin.clone(),
+                env: vec![
+                    ("PHOTON_SESSION".into(), session.to_string()),
+                    ("PHOTON_HOME".into(), self.cfg.paths.home.to_string_lossy().into_owned()),
+                ],
+            }),
         };
         let spawned = self
             .backend

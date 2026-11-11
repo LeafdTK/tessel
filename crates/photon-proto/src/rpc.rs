@@ -217,6 +217,20 @@ pub enum Request {
         kinds: Vec<String>,
     },
     UiWindows,
+    // ---- surfaces: ui an agent draws ----------------------------------------
+    SurfaceOp {
+        session: SessionId,
+        op: crate::surface::SurfaceOp,
+    },
+    /// someone acted on a surface: the agent that drew it hears about it.
+    SurfaceEvent {
+        session: SessionId,
+        surface: String,
+        element: String,
+        act: String,
+        #[serde(default)]
+        value: serde_json::Value,
+    },
     Shutdown,
     #[serde(other)]
     Unknown,

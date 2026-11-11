@@ -831,3 +831,39 @@ async fn any_byte_stream_is_a_connection_so_a_remote_transport_only_has_to_carry
     }
     d.stop().await;
 }
+
+#[tokio::test]
+async fn an_agent_draws_a_surface_changes_it_in_place_and_hears_what_was_clicked() {
+    use photon_proto::surface::SurfaceOp;
+    let mut d = Daemon::start(&["plain", "plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    let node = serde_json::json!({"k": "column", "c": [{"k": "progress", "id": "bar", "p": {"value": 0.2}}, {"k": "button", "id": "go", "p": {"label": "Go"}}]});
+    c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Put { surface: "build".into(), node, region: "inline".into() } }).await.unwrap();
+    c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Set { surface: "build".into(), element: "bar".into(), props: serde_json::json!({"value": 0.8}) } }).await.unwrap();
+
+    let (_, snap) = subscribe(&c, false, Some(s.id)).await;
+    let items = snap.unwrap().items;
+    let drawn: Vec<_> = items.iter().filter(|i| matches!(i.body, ItemBody::Surface { .. })).collect();
+    assert_eq!(drawn.len(), 1, "changed in place, not drawn twice");
+    let ItemBody::Surface { node, .. } = &drawn[0].body else { unreachable!() };
+    assert_eq!(node["c"][0]["p"]["value"], 0.8);
+
+    // mistakes are refused with what's wrong.
+    let err = c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Put { surface: "x".into(), node: serde_json::json!({"k": "buton"}), region: "inline".into() } }).await.unwrap_err();
+    assert!(err.to_string().contains("isn't an element"), "{err}");
+    let err = c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Set { surface: "build".into(), element: "nope".into(), props: serde_json::json!({}) } }).await.unwrap_err();
+    assert!(err.to_string().contains("no element \"nope\""), "{err}");
+    let err = c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Remove { surface: "never".into() } }).await.unwrap_err();
+    assert!(err.to_string().contains("no surface"), "{err}");
+
+    // a click reaches the agent as a message in its own session.
+    c.request(Request::SurfaceEvent { session: s.id, surface: "build".into(), element: "go".into(), act: "click".into(), value: serde_json::Value::Null }).await.unwrap();
+    let wrote = d.written();
+    assert!(wrote.iter().any(|w| w.to_string().contains("surface-event") && w.to_string().contains("element=\\\"go\\\"")), "{wrote:?}");
+
+    c.request(Request::SurfaceOp { session: s.id, op: SurfaceOp::Remove { surface: "build".into() } }).await.unwrap();
+    let (_, snap) = subscribe(&c, false, Some(s.id)).await;
+    assert!(snap.unwrap().items.iter().any(|i| matches!(&i.body, ItemBody::Surface { node, .. } if node.is_null())), "removed, and the record says so");
+    d.stop().await;
+}

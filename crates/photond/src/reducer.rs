@@ -54,6 +54,8 @@ pub enum Input {
     /// the daemon came up and found this session in its store. whatever was
     /// running when it went down is gone.
     Recovered,
+    /// the agent drew, changed or removed a surface. checked by the hub first.
+    Surface(photon_proto::surface::SurfaceOp),
 }
 
 /// what changed, for the daemon to persist and broadcast.
@@ -455,6 +457,27 @@ impl SessionState {
                 if self.permission_mode.as_deref() != Some(&mode) {
                     self.permission_mode = Some(mode);
                     fx.summary_changed = true;
+                }
+            }
+            Input::Surface(op) => {
+                use photon_proto::surface::{SurfaceOp, set_props};
+                let id = ItemId::from(format!("surface/{}", op.surface()).as_str());
+                let body = match op {
+                    SurfaceOp::Put { surface, node, region } => Some(ItemBody::Surface { surface, node, region }),
+                    SurfaceOp::Set { surface, element, props } => match self.item(&id).map(|i| &i.body) {
+                        Some(ItemBody::Surface { node, region, .. }) => {
+                            let (mut node, region) = (node.clone(), region.clone());
+                            set_props(&mut node, &element, &props).then_some(ItemBody::Surface { surface, node, region })
+                        }
+                        _ => None,
+                    },
+                    SurfaceOp::Remove { surface } => match self.item(&id).map(|i| &i.body) {
+                        Some(ItemBody::Surface { region, .. }) => Some(ItemBody::Surface { surface, node: serde_json::Value::Null, region: region.clone() }),
+                        _ => None,
+                    },
+                };
+                if let Some(body) = body {
+                    self.upsert(id, None, body, now, &mut fx);
                 }
             }
             Input::UserSent { item_id, text, attachments } => {

@@ -15,6 +15,7 @@ pub mod item;
 pub mod local;
 pub mod rpc;
 pub mod state;
+pub mod surface;
 pub mod workspace;
 
 pub use agent::*;

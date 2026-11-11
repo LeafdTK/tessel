@@ -21,6 +21,17 @@ pub struct SpawnOpts {
     /// append every line the agent writes here, verbatim. this is the record
     /// of truth: everything else can be rebuilt from it.
     pub raw_log: Option<PathBuf>,
+    /// photon's own tools for this agent (the window, surfaces), if it gets them.
+    pub tools: Option<AgentTools>,
+}
+
+/// how to start photon's tool server for one agent.
+#[derive(Clone, Debug)]
+pub struct AgentTools {
+    /// the `photonctl` binary; it is run as `photonctl mcp`.
+    pub command: PathBuf,
+    /// what it needs to find the daemon and its session.
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Debug)]

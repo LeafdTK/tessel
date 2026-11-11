@@ -33,6 +33,10 @@ fn main() -> anyhow::Result<()> {
     if let Some(secs) = std::env::var("PHOTON_IDLE_REAP_SECS").ok().and_then(|s| s.parse().ok()) {
         cfg.idle_reap = Duration::from_secs(secs);
     }
+    // agents get photon's tools from the photonctl beside us, unless told not to.
+    if std::env::var("PHOTON_AGENT_TOOLS").as_deref() != Ok("0") {
+        cfg.tools_bin = std::env::current_exe().ok().and_then(|me| me.parent().map(|d| d.join("photonctl"))).filter(|p| p.is_file());
+    }
 
     let backend: Arc<dyn Backend> = match std::env::var("PHOTON_REPLAY") {
         Ok(list) if !list.is_empty() => {
