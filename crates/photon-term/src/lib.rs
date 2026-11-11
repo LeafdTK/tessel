@@ -23,6 +23,23 @@ use libghostty_vt::{Terminal, TerminalOptions};
 
 pub use libghostty_vt::key::{Action as KeyAction, Key, Mods};
 
+/// a mouse button, as a program hears it. the wheel is buttons too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseAct {
+    Press,
+    Release,
+    Motion,
+}
+
 /// what a terminal is called to the programs in it.
 pub const TERM: &str = "xterm-256color";
 
@@ -107,6 +124,8 @@ pub struct Term {
     cells: CellIterator<'static>,
     keys: key::Encoder<'static>,
     key_event: key::Event<'static>,
+    mouse: libghostty_vt::mouse::Encoder<'static>,
+    mouse_event: libghostty_vt::mouse::Event<'static>,
     /// where a drag-selection started, in screen (scrollback-inclusive) rows.
     anchor: Option<(u16, u32)>,
 }
@@ -127,6 +146,8 @@ impl Term {
             cells: CellIterator::new()?,
             keys: key::Encoder::new()?,
             key_event: key::Event::new()?,
+            mouse: libghostty_vt::mouse::Encoder::new()?,
+            mouse_event: libghostty_vt::mouse::Event::new()?,
             anchor: None,
         })
     }
@@ -157,6 +178,16 @@ impl Term {
         let _ = self.t.set_default_fg_color(c(fg));
         let _ = self.t.set_default_bg_color(c(bg));
         let _ = self.t.set_default_cursor_color(c(cursor));
+    }
+
+    /// the first 16 colours (the ones programs name: red, green, ...), the
+    /// rest of the 256 left as they are.
+    pub fn set_ansi(&mut self, colors: [Rgb; 16]) {
+        let Ok(mut palette) = self.t.default_color_palette() else { return };
+        for (i, c) in colors.iter().enumerate() {
+            palette.0[i] = RgbColor { r: c.0, g: c.1, b: c.2 };
+        }
+        let _ = self.t.set_default_color_palette(Some(palette));
     }
 
     /// forget everything on it (before it's drawn again from a dump).
@@ -278,6 +309,49 @@ impl Term {
         {
             out.extend_from_slice(t.as_bytes());
         }
+        out
+    }
+
+    /// a mouse event for a program that asked for the mouse, encoded as it
+    /// asked (x10, sgr, ...); nothing if it didn't ask. `x`, `y` are pixels
+    /// from the grid's top left; `cell` its cell size; `held` whether any
+    /// button is down (a drag, not a hover).
+    #[allow(clippy::too_many_arguments)]
+    pub fn mouse(&mut self, act: MouseAct, button: Option<MouseButton>, x: f32, y: f32, mods: Mods, held: bool, cell: (u32, u32)) -> Vec<u8> {
+        use libghostty_vt::mouse::{Action, Button, EncoderSize, Position};
+        if !self.mouse_tracking() {
+            return Vec::new();
+        }
+        let (cols, rows) = (u32::from(self.cols()), u32::from(self.rows()));
+        self.mouse
+            .set_options_from_terminal(&self.t)
+            .set_size(EncoderSize {
+                screen_width: cols * cell.0,
+                screen_height: rows * cell.1,
+                cell_width: cell.0.max(1),
+                cell_height: cell.1.max(1),
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_left: 0,
+                padding_right: 0,
+            })
+            .set_any_button_pressed(held)
+            .set_track_last_cell(true);
+        let button = button.map(|b| match b {
+            MouseButton::Left => Button::Left,
+            MouseButton::Middle => Button::Middle,
+            MouseButton::Right => Button::Right,
+            MouseButton::WheelUp => Button::Four,
+            MouseButton::WheelDown => Button::Five,
+        });
+        let action = match act {
+            MouseAct::Press => Action::Press,
+            MouseAct::Release => Action::Release,
+            MouseAct::Motion => Action::Motion,
+        };
+        self.mouse_event.set_action(action).set_button(button).set_mods(mods).set_position(Position { x, y });
+        let mut out = Vec::new();
+        let _ = self.mouse.encode_to_vec(&self.mouse_event, &mut out);
         out
     }
 
@@ -648,5 +722,38 @@ mod speed {
             t.update(&mut s).unwrap();
         }
         println!("feed 4k + update: {:.1} us", start.elapsed().as_secs_f64() * 1e3);
+    }
+}
+
+#[cfg(test)]
+mod ansi {
+    use super::*;
+
+    #[test]
+    fn a_program_s_red_is_the_red_it_was_given() {
+        let mut t = Term::new(20, 4, 10).unwrap();
+        let mut colors = [Rgb(0, 0, 0); 16];
+        colors[1] = Rgb(200, 10, 20);
+        t.set_ansi(colors);
+        t.feed(b"\x1b[31mred");
+        let mut s = Screen::default();
+        t.update(&mut s).unwrap();
+        assert_eq!(s.lines[0].spans[0].fg, Rgb(200, 10, 20));
+    }
+}
+
+#[cfg(test)]
+mod mouse {
+    use super::*;
+
+    #[test]
+    fn a_click_reaches_a_program_only_when_it_asked_and_in_its_format() {
+        let mut t = Term::new(80, 24, 10).unwrap();
+        assert!(t.mouse(MouseAct::Press, Some(MouseButton::Left), 25.0, 10.0, Mods::empty(), true, (10, 20)).is_empty(), "nobody asked");
+        t.feed(b"\x1b[?1000h\x1b[?1006h"); // clicks, sgr format
+        let press = t.mouse(MouseAct::Press, Some(MouseButton::Left), 25.0, 10.0, Mods::empty(), true, (10, 20));
+        assert_eq!(press, b"\x1b[<0;3;1M", "column 3, row 1, 1-based");
+        let wheel = t.mouse(MouseAct::Press, Some(MouseButton::WheelUp), 25.0, 10.0, Mods::empty(), false, (10, 20));
+        assert_eq!(wheel, b"\x1b[<64;3;1M");
     }
 }

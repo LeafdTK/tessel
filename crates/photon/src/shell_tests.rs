@@ -1472,3 +1472,32 @@ fn an_image_is_shown_and_markdown_is_read_as_a_document(cx: &mut TestAppContext)
     rig.click(cx, "file-render");
     assert!(!rig.exists(cx, "file-document") && rig.exists(cx, "file-save"), "and edited as source");
 }
+
+#[gpui_kit::test]
+fn a_terminal_takes_composed_text_and_gives_its_program_the_mouse_when_asked(cx: &mut TestAppContext) {
+    use gpui_kit::EntityInputHandler as _;
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "column", "children": [
+        {"module": "conversation"}, {"id": "t", "module": "terminal"}
+    ]}}}"#);
+    rig.feed(cx, vec![UiEvent::TermOpened { pane: "t".into(), session: Some(sid(1)), info: term_info(7, Some(sid(1))) }]);
+    rig.click(cx, "terminal-7");
+    rig.asked();
+    let typed = |rig: &mut Rig| -> Vec<u8> { rig.asked().into_iter().filter_map(|c| if let Cmd::TermInput(7, b) = c { Some(b) } else { None }).flatten().collect() };
+
+    // a dead key: the accent waits, the letter settles it.
+    let ime = rig.shell.read_with(cx, |s, _| s.term_ime_for_test(7));
+    cx.update_window(rig.window, |_, window, cx| ime.update(cx, |i, cx| i.replace_and_mark_text_in_range(None, "´", None, window, cx))).unwrap();
+    rig.settle(cx);
+    assert!(typed(&mut rig).is_empty(), "nothing is sent while composing");
+    cx.update_window(rig.window, |_, window, cx| ime.update(cx, |i, cx| i.replace_text_in_range(None, "é", window, cx))).unwrap();
+    rig.settle(cx);
+    assert_eq!(typed(&mut rig), "é".as_bytes());
+
+    // the program turns on mouse reporting: a click is its, not a selection.
+    rig.feed(cx, vec![UiEvent::TermOutput(7, b"\x1b[?1000h\x1b[?1006h".to_vec())]);
+    rig.click(cx, "terminal-7");
+    let sent = typed(&mut rig);
+    assert!(sent.starts_with(b"\x1b[<0;"), "{:?}", String::from_utf8_lossy(&sent));
+}

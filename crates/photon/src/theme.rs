@@ -465,18 +465,22 @@ impl Type {
 /// mac. (apple's sf mono is not installed under a name apps can ask for.)
 pub const MONO: &str = "Menlo";
 
-static MONO_FACE: std::sync::LazyLock<std::sync::RwLock<SharedString>> = std::sync::LazyLock::new(|| std::sync::RwLock::new(SharedString::new_static(MONO)));
-
-/// how big the interface is drawn: 1 is the default. text and the parts
-/// built from it (menus, rows, controls) are multiplied by it.
-static SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+// the interface size and the mono face belong to the window being drawn. a
+// window is drawn on one thread, so they are kept per thread: tests, each on
+// its own, can't change each other's.
+thread_local! {
+    static MONO_FACE: std::cell::RefCell<SharedString> = std::cell::RefCell::new(SharedString::new_static(MONO));
+    /// how big the interface is drawn: 1 is the default. text and the parts
+    /// built from it (menus, rows, controls) are multiplied by it.
+    static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
 
 pub fn scale() -> f32 {
-    f32::from_bits(SCALE.load(std::sync::atomic::Ordering::Relaxed))
+    SCALE.with(std::cell::Cell::get)
 }
 
 fn set_scale(v: f32) {
-    SCALE.store(v.clamp(0.75, 1.5).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    SCALE.with(|s| s.set(v.clamp(0.75, 1.5)));
 }
 
 /// points at the interface's scale.
@@ -489,15 +493,15 @@ pub const SCALES: [(&str, f32); 3] = [("compact", 0.9), ("default", 1.0), ("larg
 
 /// the monospace face in use.
 pub fn mono() -> SharedString {
-    MONO_FACE.read().map(|m| m.clone()).unwrap_or_else(|_| SharedString::new_static(MONO))
+    MONO_FACE.with(|m| m.borrow().clone())
 }
 
 fn set_mono(face: &str) {
-    if let Ok(mut m) = MONO_FACE.write()
-        && m.as_ref() != face
-    {
-        *m = SharedString::from(face.to_owned());
-    }
+    MONO_FACE.with(|m| {
+        if m.borrow().as_ref() != face {
+            *m.borrow_mut() = SharedString::from(face.to_owned());
+        }
+    });
 }
 
 pub trait Typeset: Styled + Sized {

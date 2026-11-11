@@ -13,7 +13,24 @@ use gpui_kit::{
     ShapedLine, StrikethroughStyle, TextAlign, TextRun, UnderlineStyle, canvas, fill, point,
 };
 use photon_proto::term::{TermId, TermInfo};
-use photon_term::{Key, KeyAction, Mods, Rgb, Screen, Term};
+use photon_term::{Key, KeyAction, Mods, MouseAct, MouseButton as TermButton, Rgb, Screen, Term};
+
+fn mods_of(m: gpui_kit::Modifiers) -> Mods {
+    let mut out = Mods::empty();
+    if m.shift {
+        out |= Mods::SHIFT;
+    }
+    if m.control {
+        out |= Mods::CTRL;
+    }
+    if m.alt {
+        out |= Mods::ALT;
+    }
+    if m.platform {
+        out |= Mods::SUPER;
+    }
+    out
+}
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -72,12 +89,112 @@ pub(crate) struct TermView {
     cell: (Pixels, Pixels),
     selecting: bool,
     scroll_acc: f32,
+    pub(crate) ime: Option<Entity<TermIme>>,
 }
 
 pub(crate) type TermCell = Rc<RefCell<TermView>>;
 
+/// typed text for a terminal, from the platform's text input: dead keys
+/// (option-e, e: é) and input methods (pinyin, kana) compose here, and what
+/// they settle on is sent to the program.
+pub(crate) struct TermIme {
+    id: TermId,
+    view: std::rc::Weak<RefCell<TermView>>,
+    cmds: tokio::sync::mpsc::UnboundedSender<Cmd>,
+    /// what is being composed, drawn at the cursor, not sent yet.
+    pub(crate) marked: String,
+}
+
+impl gpui_kit::EntityInputHandler for TermIme {
+    fn text_for_range(&mut self, _: std::ops::Range<usize>, _: &mut Option<std::ops::Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
+        Some(self.marked.clone())
+    }
+
+    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<gpui_kit::UTF16Selection> {
+        let n = self.marked.encode_utf16().count();
+        Some(gpui_kit::UTF16Selection { range: n..n, reversed: false })
+    }
+
+    fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<std::ops::Range<usize>> {
+        (!self.marked.is_empty()).then(|| 0..self.marked.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked.clear();
+        cx.notify();
+    }
+
+    fn replace_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked.clear();
+        if text.is_empty() {
+            return;
+        }
+        if let Some(view) = self.view.upgrade() {
+            let mut v = view.borrow_mut();
+            if v.info.exited.is_some() {
+                return;
+            }
+            v.term.scroll_to_bottom();
+            v.term.clear_selection();
+            v.fresh = true;
+        }
+        let _ = self.cmds.send(Cmd::TermInput(self.id, text.as_bytes().to_vec()));
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, _: Option<std::ops::Range<usize>>, _: &mut Window, cx: &mut Context<Self>) {
+        self.marked = text.to_owned();
+        cx.notify();
+    }
+
+    fn bounds_for_range(&mut self, _: std::ops::Range<usize>, element: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+        // where the cursor is: the input method puts its candidates beside it.
+        let view = self.view.upgrade()?;
+        let v = view.borrow();
+        let c = v.screen.cursor?;
+        let (cw, lh) = v.cell;
+        Some(Bounds::new(point(element.origin.x + px(PAD) + cw * f32::from(c.col), element.origin.y + px(PAD) + lh * f32::from(c.row)), gpui_kit::size(cw, lh)))
+    }
+
+    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+        None
+    }
+}
+
 fn rgb(c: Rgb) -> Hsla {
     Rgba { r: f32::from(c.0) / 255.0, g: f32::from(c.1) / 255.0, b: f32::from(c.2) / 255.0, a: 1.0 }.into()
+}
+
+/// the 16 colours programs name, for a terminal drawn on `bg`: the usual
+/// hues, each made readable on that background (yellow on white, blue on
+/// black). black and white stay what they are: programs use them as grounds.
+fn ansi_for(bg: Hsla, accent: Hsla) -> [Rgb; 16] {
+    let hue = |h: f32, s: f32, l: f32| gpui_kit::hsla(h / 360.0, s, l, 1.0);
+    let dark = theme::luminance(bg, bg) < 0.2;
+    let (l, lb) = if dark { (0.62, 0.72) } else { (0.42, 0.36) };
+    let named = [
+        (0.0, 0.70),   // red
+        (135.0, 0.50), // green
+        (42.0, 0.85),  // yellow
+        (215.0, 0.75), // blue
+        (300.0, 0.50), // magenta
+        (185.0, 0.65), // cyan
+    ];
+    let mut out = [Rgb::default(); 16];
+    let black = if dark { hue(0.0, 0.0, 0.16) } else { hue(0.0, 0.0, 0.12) };
+    let white = if dark { hue(0.0, 0.0, 0.86) } else { hue(0.0, 0.0, 0.72) };
+    out[0] = to_rgb(black);
+    out[7] = to_rgb(white);
+    out[8] = to_rgb(theme::readable(hue(0.0, 0.0, if dark { 0.5 } else { 0.48 }), bg, 3.0));
+    out[15] = to_rgb(if dark { hue(0.0, 0.0, 0.98) } else { hue(0.0, 0.0, 0.84) });
+    for (i, (h, s)) in named.iter().enumerate() {
+        // blue leans toward the theme's accent, so a terminal belongs to its window.
+        let base = if i == 3 { accent } else { hue(*h, *s, l) };
+        out[1 + i] = to_rgb(theme::readable(base, bg, 3.8));
+        let bright = if i == 3 { gpui_kit::Hsla { l: lb, ..accent } } else { hue(*h, *s, lb) };
+        out[9 + i] = to_rgb(theme::readable(bright, bg, 3.2));
+    }
+    out
 }
 
 fn to_rgb(c: Hsla) -> Rgb {
@@ -192,6 +309,7 @@ impl TermView {
             cell: (px(8.), px(16.)),
             selecting: false,
             scroll_acc: 0.0,
+            ime: None,
         }
     }
 
@@ -204,6 +322,13 @@ impl TermView {
         self.fresh = true;
     }
 
+    /// a point in the window as pixels from the grid's top left, with the cell size.
+    fn grid_point(&self, p: Point<Pixels>) -> (f32, f32, (u32, u32)) {
+        let x = f32::from(p.x - self.bounds.origin.x) - PAD;
+        let y = f32::from(p.y - self.bounds.origin.y) - PAD;
+        (x.max(0.0), y.max(0.0), (f32::from(self.cell.0).round() as u32, f32::from(self.cell.1).round() as u32))
+    }
+
     /// the cell under a point in the window.
     fn cell_at(&self, p: Point<Pixels>) -> (u16, u16) {
         let x = ((p.x - self.bounds.origin.x - px(PAD)) / self.cell.0).floor().max(0.0);
@@ -213,6 +338,20 @@ impl TermView {
 }
 
 impl Shell {
+    #[cfg(test)]
+    pub(crate) fn term_ime_for_test(&self, id: TermId) -> Entity<TermIme> {
+        self.terms[&id].borrow().ime.clone().expect("every view has its input")
+    }
+
+    /// a terminal's view, with its text input, kept by id.
+    fn add_term(&mut self, info: TermInfo, cx: &mut Context<Self>) {
+        let id = info.id;
+        let view = Rc::new(RefCell::new(TermView::new(info, cx)));
+        let ime = cx.new(|_| TermIme { id, view: Rc::downgrade(&view), cmds: self.bridge.cmds.clone(), marked: String::new() });
+        view.borrow_mut().ime = Some(ime);
+        self.terms.insert(id, view);
+    }
+
     /// the terminal a pane shows for the open session, if it has one yet.
     fn pane_term(&self, pane: &str) -> Option<TermId> {
         let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
@@ -292,10 +431,7 @@ impl Shell {
                             v.info = info;
                             v.reset();
                         }
-                        None => {
-                            let view = TermView::new(info.clone(), cx);
-                            self.terms.insert(info.id, Rc::new(RefCell::new(view)));
-                        }
+                        None => self.add_term(info, cx),
                     }
                 }
             }
@@ -304,8 +440,7 @@ impl Shell {
                 self.term_opening.remove(&key);
                 let id = info.id;
                 if !self.terms.contains_key(&id) {
-                    let view = TermView::new(info, cx);
-                    self.terms.insert(id, Rc::new(RefCell::new(view)));
+                    self.add_term(info, cx);
                 }
                 self.pane_terms.insert(key, id);
             }
@@ -318,10 +453,7 @@ impl Shell {
             }
             UiEvent::TermUpdated(info) => match self.terms.get(&info.id) {
                 Some(v) => v.borrow_mut().info = info,
-                None => {
-                    let view = TermView::new(info.clone(), cx);
-                    self.terms.insert(info.id, Rc::new(RefCell::new(view)));
-                }
+                None => self.add_term(info, cx),
             },
             UiEvent::TermRemoved(id) => {
                 self.terms.remove(&id);
@@ -401,6 +533,12 @@ impl Shell {
         if m.alt && !composed {
             mods |= Mods::ALT;
         }
+        // plain typing comes back as text from the platform's input, which
+        // knows dead keys and input methods; this handles everything else.
+        let printable = text.as_deref().is_some_and(|t| !t.is_empty() && t.chars().all(|c| !c.is_control()));
+        if printable && !m.control && !(m.alt && !composed) && !ev.is_held {
+            return;
+        }
         let action = if ev.is_held { KeyAction::Repeat } else { KeyAction::Press };
         let bytes = v.term.key(key, mods, text.as_deref(), unshifted, action);
         if !bytes.is_empty() {
@@ -414,6 +552,63 @@ impl Shell {
         let _ = window;
     }
 
+    fn term_press(&mut self, id: TermId, button: MouseButton, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(view) = self.terms.get(&id).cloned() else { return };
+        {
+            let v = view.borrow();
+            window.focus(&v.focus, cx);
+        }
+        let mut v = view.borrow_mut();
+        // a program that tracks the mouse gets the click; shift still selects.
+        if v.term.mouse_tracking() && !ev.modifiers.shift {
+            drop(v);
+            self.term_mouse(id, MouseAct::Press, Some(button), ev.position, ev.modifiers, cx);
+            return;
+        }
+        if button == MouseButton::Left {
+            let (c, r) = v.cell_at(ev.position);
+            v.term.select_start(c, r);
+            v.selecting = true;
+            v.fresh = true;
+        }
+        cx.notify();
+    }
+
+    /// a mouse move or release: to the program if it wants it, else the selection.
+    fn term_mouse(&mut self, id: TermId, act: MouseAct, button: Option<MouseButton>, at: Point<Pixels>, mods: gpui_kit::Modifiers, cx: &mut Context<Self>) {
+        let Some(view) = self.terms.get(&id).cloned() else { return };
+        let mut v = view.borrow_mut();
+        if v.selecting {
+            match act {
+                MouseAct::Motion if button == Some(MouseButton::Left) => {
+                    let (c, r) = v.cell_at(at);
+                    v.term.select_to(c, r);
+                    v.fresh = true;
+                    cx.notify();
+                }
+                MouseAct::Release => {
+                    v.selecting = false;
+                    v.term.select_end();
+                }
+                _ => {}
+            }
+            return;
+        }
+        if !v.term.mouse_tracking() {
+            return;
+        }
+        let (x, y, cell) = v.grid_point(at);
+        let b = button.map(|b| match b {
+            MouseButton::Middle => TermButton::Middle,
+            MouseButton::Right => TermButton::Right,
+            _ => TermButton::Left,
+        });
+        let bytes = v.term.mouse(act, b, x, y, mods_of(mods), button.is_some() && act != MouseAct::Release, cell);
+        if !bytes.is_empty() {
+            let _ = self.bridge.cmds.send(Cmd::TermInput(id, bytes));
+        }
+    }
+
     /// a terminal pane's body.
     pub(crate) fn terminal_el(&self, pane: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
@@ -424,18 +619,22 @@ impl Shell {
         let focus = view.borrow().focus.clone();
         let exited = view.borrow().info.exited;
         let colors = (to_rgb(p.label), to_rgb(p.window), to_rgb(p.accent));
+        let ansi = ansi_for(p.window, p.accent);
         let font_size = theme::z(13.0);
         let line_h = theme::z(18.0);
         let mono = theme::mono();
+        let mono_paint = mono.clone();
         let paint_view = view.clone();
         let bridge = self.bridge.cmds.clone();
         let focus_for_paint = focus.clone();
+        let ime = view.borrow().ime.clone();
         let surface = canvas(
             move |bounds, window, _cx| {
                 let mut v = paint_view.borrow_mut();
                 if v.colors != Some(colors) {
                     v.colors = Some(colors);
                     v.term.set_colors(colors.0, colors.1, colors.2);
+                    v.term.set_ansi(ansi);
                     v.fresh = true;
                     v.shaped.clear();
                 }
@@ -488,6 +687,10 @@ impl Shell {
                 }
             },
             move |bounds, (), window, cx| {
+                if let Some(ime) = &ime {
+                    window.handle_input(&focus_for_paint, gpui_kit::ElementInputHandler::new(bounds, ime.clone()), cx);
+                }
+                let marked = ime.as_ref().map(|i| i.read(cx).marked.clone()).unwrap_or_default();
                 let v = view.borrow();
                 let (cw, lh) = v.cell;
                 let origin = point(bounds.origin.x + px(PAD), bounds.origin.y + px(PAD));
@@ -502,6 +705,22 @@ impl Shell {
                     for r in runs {
                         let _ = r.line.paint(point(origin.x + cw * f32::from(r.col), y), lh, TextAlign::Left, None, window, cx);
                     }
+                }
+                // what an input method is composing, underlined at the cursor.
+                if let (false, Some(c)) = (marked.is_empty(), v.screen.cursor) {
+                    let at = point(origin.x + cw * f32::from(c.col), origin.y + lh * f32::from(c.row));
+                    let ink = rgb(v.screen.fg);
+                    let run = TextRun {
+                        len: marked.len(),
+                        font: term_font(mono_paint.clone(), false, false),
+                        color: ink,
+                        background_color: Some(rgb(v.screen.bg)),
+                        underline: Some(UnderlineStyle { thickness: px(1.), color: Some(ink), wavy: false }),
+                        strikethrough: None,
+                    };
+                    let line = window.text_system().shape_line(marked.clone().into(), font_size, &[run], None);
+                    let _ = line.paint(at, lh, TextAlign::Left, None, window, cx);
+                    return;
                 }
                 if let Some(c) = v.screen.cursor.filter(|_| v.screen.scrolled == 0) {
                     let at = point(origin.x + cw * f32::from(c.col), origin.y + lh * f32::from(c.row));
@@ -523,8 +742,8 @@ impl Shell {
         )
         .size_full();
 
-        let (down, moved, up, wheel) = (id, id, id, id);
-        div()
+        let wheel = id;
+        let pane = div()
             .id(SharedString::from(format!("terminal-{id}")))
             .test_support()
             .aria_label("Terminal")
@@ -534,41 +753,7 @@ impl Shell {
             .key_context("Terminal")
             .cursor(gpui_kit::CursorStyle::IBeam)
             .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| this.term_key(id, ev, window, cx)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                    let Some(v) = this.terms.get(&down).cloned() else { return };
-                    let mut v = v.borrow_mut();
-                    window.focus(&v.focus, cx);
-                    if !v.term.mouse_tracking() {
-                        let (c, r) = v.cell_at(ev.position);
-                        v.term.select_start(c, r);
-                        v.selecting = true;
-                        v.fresh = true;
-                    }
-                    cx.notify();
-                }),
-            )
-            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| {
-                let Some(v) = this.terms.get(&moved).cloned() else { return };
-                let mut v = v.borrow_mut();
-                if v.selecting && ev.pressed_button == Some(MouseButton::Left) {
-                    let (c, r) = v.cell_at(ev.position);
-                    v.term.select_to(c, r);
-                    v.fresh = true;
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, _| {
-                    if let Some(v) = this.terms.get(&up) {
-                        let mut v = v.borrow_mut();
-                        v.selecting = false;
-                        v.term.select_end();
-                    }
-                }),
-            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _, cx| this.term_mouse(id, MouseAct::Motion, ev.pressed_button, ev.position, ev.modifiers, cx)))
             .on_scroll(cx.listener(move |this, ev: &ScrollEvent, _, cx| {
                 let Some(view) = this.terms.get(&wheel).cloned() else { return };
                 let mut v = view.borrow_mut();
@@ -582,20 +767,37 @@ impl Shell {
                     return;
                 }
                 v.scroll_acc -= whole;
-                if v.term.alternate() {
+                let n = (whole.abs() as usize).min(20);
+                let mut bytes = Vec::new();
+                if v.term.mouse_tracking() {
+                    // a program that wants the mouse gets the wheel as its buttons.
+                    let (x, y, cell) = v.grid_point(ev.position);
+                    let b = if whole > 0.0 { TermButton::WheelUp } else { TermButton::WheelDown };
+                    for _ in 0..n {
+                        bytes.extend(v.term.mouse(MouseAct::Press, Some(b), x, y, mods_of(ev.modifiers), false, cell));
+                    }
+                } else if v.term.alternate() {
                     // a full-screen program has no history: the wheel is its arrows.
                     let key = if whole > 0.0 { Key::ArrowUp } else { Key::ArrowDown };
-                    let mut bytes = Vec::new();
-                    for _ in 0..(whole.abs() as usize).min(20) {
+                    for _ in 0..n {
                         bytes.extend(v.term.key(key, Mods::empty(), None, '\0', KeyAction::Press));
                     }
-                    let _ = this.bridge.cmds.send(Cmd::TermInput(wheel, bytes));
                 } else {
                     v.term.scroll(-(whole as isize));
                     v.fresh = true;
                     cx.notify();
                 }
-            }))
+                if !bytes.is_empty() {
+                    let _ = this.bridge.cmds.send(Cmd::TermInput(wheel, bytes));
+                }
+            }));
+        let mut pane = pane;
+        for button in [MouseButton::Left, MouseButton::Middle, MouseButton::Right] {
+            pane = pane
+                .on_mouse_down(button, cx.listener(move |this, ev: &MouseDownEvent, window, cx| this.term_press(id, button, ev, window, cx)))
+                .on_mouse_up(button, cx.listener(move |this, ev: &MouseUpEvent, _, cx| this.term_mouse(id, MouseAct::Release, Some(button), ev.position, ev.modifiers, cx)));
+        }
+        pane
             .child(surface)
             .when_some(exited, |d, code| {
                 d.child(
@@ -618,5 +820,20 @@ impl Shell {
                 )
             })
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_named_colour_reads_on_light_and_dark() {
+        for bg in [gpui_kit::hsla(0.0, 0.0, 1.0, 1.0), gpui_kit::hsla(0.0, 0.0, 0.08, 1.0), gpui_kit::hsla(0.12, 0.3, 0.96, 1.0)] {
+            let accent = gpui_kit::hsla(0.6, 0.8, 0.5, 1.0);
+            let ansi = super::ansi_for(bg, accent);
+            for i in (1..7).chain(9..15) {
+                let c = super::rgb(ansi[i]);
+                assert!(crate::theme::contrast(c, bg) >= 3.0, "colour {i} on {bg:?}: {:.2}", crate::theme::contrast(c, bg));
+            }
+        }
     }
 }
