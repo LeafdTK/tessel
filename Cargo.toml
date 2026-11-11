@@ -8,9 +8,9 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-photon-proto = { path = "crates/photon-proto" }
-photon-agent = { path = "crates/photon-agent" }
-photon-term = { path = "crates/photon-term" }
+tessel-proto = { path = "crates/tessel-proto" }
+tessel-agent = { path = "crates/tessel-agent" }
+tessel-term = { path = "crates/tessel-term" }
 
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -38,7 +38,7 @@ incremental = false
 
 # the app is built optimized even in dev, so frame-time measurements mean
 # something without needing a second (release) build of everything.
-[profile.dev.package.photon]
+[profile.dev.package.tessel]
 opt-level = 2
 
 [profile.dev.package."*"]

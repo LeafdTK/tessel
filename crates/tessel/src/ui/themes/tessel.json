@@ -1,0 +1,5 @@
+{
+  "name": "Tessel",
+  "about": "Follows macOS",
+  "base": "tessel"
+}

@@ -1,0 +1,32 @@
+[package]
+name = "tessel"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "tessel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tessel"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+tessel-proto.workspace = true
+tessel-term.workspace = true
+tessel-client = { path = "../tessel-client" }
+tokio.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+base64 = "0.22"
+# drawing mermaid diagrams and maths. on by default; it only exists as a
+# feature so the app can be built without the two renderer crates. switching
+# it changes a feature on hashbrown, which rebuilds the whole ui stack
+# (several GB), so pick one setting and always build with `--workspace`.
+tessel-rich = { path = "../tessel-rich", optional = true }
+
+[features]
+default = ["rich"]
+rich = ["dep:tessel-rich"]

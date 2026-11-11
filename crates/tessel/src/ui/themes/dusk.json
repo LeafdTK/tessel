@@ -1,0 +1,35 @@
+{
+  "name": "Dusk",
+  "about": "An evening violet",
+  "base": "tessel",
+  "light": {
+    "app": "#eceaf4",
+    "sheet": "#f8f7fc",
+    "raised": "#ffffff",
+    "sunken": "#e6e3f0",
+    "border": "#d9d5e6",
+    "text": "#1d1a2e",
+    "muted": "#5b5672",
+    "accent": "#6b5bd6",
+    "hover": "#e9e8ee",
+    "active": "#e1def6",
+    "faint": "#8a8895",
+    "ghost": "#bbb9c2",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#15131f",
+    "sheet": "#1c1a29",
+    "raised": "#242136",
+    "sunken": "#121019",
+    "border": "#2e2a42",
+    "text": "#ece9f7",
+    "muted": "#a29dba",
+    "accent": "#9a8cff",
+    "hover": "#2f2d3c",
+    "active": "#3f3a65",
+    "faint": "#848290",
+    "ghost": "#565463",
+    "on-accent": "#ffffff"
+  }
+}

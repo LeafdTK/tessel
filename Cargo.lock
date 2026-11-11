@@ -5643,105 +5643,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "photon"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "gpui-kit",
- "photon-client",
- "photon-proto",
- "photon-rich",
- "photon-term",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "photon-agent"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "photon-proto",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "photon-client"
-version = "0.1.0"
-dependencies = [
- "libc",
- "photon-proto",
- "serde_json",
- "thiserror 2.0.21",
- "tokio",
-]
-
-[[package]]
-name = "photon-proto"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.21",
- "uuid",
-]
-
-[[package]]
-name = "photon-rich"
-version = "0.1.0"
-dependencies = [
- "mathra",
- "merman",
- "resvg 0.46.0",
- "rustybuzz",
- "serde_json",
- "usvg 0.46.0",
-]
-
-[[package]]
-name = "photon-term"
-version = "0.1.0"
-dependencies = [
- "libghostty-vt",
-]
-
-[[package]]
-name = "photonctl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "photon-client",
- "photon-proto",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "photond"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "libc",
- "photon-agent",
- "photon-client",
- "photon-proto",
- "photon-term",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7569,6 +7470,106 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "tessel"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "gpui-kit",
+ "serde_json",
+ "tessel-client",
+ "tessel-proto",
+ "tessel-rich",
+ "tessel-term",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tessel-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "serde",
+ "serde_json",
+ "tessel-proto",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tessel-client"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tessel-proto",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "tessel-proto"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
+name = "tessel-rich"
+version = "0.1.0"
+dependencies = [
+ "mathra",
+ "merman",
+ "resvg 0.46.0",
+ "rustybuzz",
+ "serde_json",
+ "usvg 0.46.0",
+]
+
+[[package]]
+name = "tessel-term"
+version = "0.1.0"
+dependencies = [
+ "libghostty-vt",
+]
+
+[[package]]
+name = "tesselctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tessel-client",
+ "tessel-proto",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tesseld"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tessel-agent",
+ "tessel-client",
+ "tessel-proto",
+ "tessel-term",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
