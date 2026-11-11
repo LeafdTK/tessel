@@ -80,6 +80,9 @@ impl Client {
                     break;
                 }
             }
+            // the client was dropped: close our side, so the daemon hears it went
+            // (a split stream doesn't close until both halves are gone).
+            let _ = write.shutdown().await;
         });
 
         let waiting = pending.clone();
