@@ -69,7 +69,7 @@ impl Shell {
     }
 
     /// set one key inside an object at the top of the file, making the object if needed.
-    fn set_in(file: &mut Map<String, Value>, section: &str, key: &str, value: Option<Value>) {
+    pub(crate) fn set_in(file: &mut Map<String, Value>, section: &str, key: &str, value: Option<Value>) {
         let entry = file.entry(section.to_owned()).or_insert_with(|| json!({}));
         // `"theme": "orchard"` is shorthand for `{"base": "orchard"}`.
         if let Value::String(base) = entry {
@@ -90,7 +90,7 @@ impl Shell {
         }
     }
 
-    fn set_accent(&mut self, hex: Option<&'static str>, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn set_accent(&mut self, hex: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.edit_ui(
             |f| {
                 for appearance in ["light", "dark"] {
@@ -101,7 +101,7 @@ impl Shell {
                     if let Value::Object(t) = theme {
                         let colours = t.entry(appearance.to_owned()).or_insert_with(|| json!({}));
                         if let Value::Object(c) = colours {
-                            match hex {
+                            match &hex {
                                 Some(h) => {
                                     c.insert("accent".into(), json!(h));
                                 }
@@ -476,7 +476,7 @@ impl Shell {
                     .p(px(3.))
                     .border_2()
                     .border_color(if on { color } else { gpui_kit::transparent_black() })
-                    .on_click(cx.listener(move |this, _, window, cx| this.set_accent(hex, window, cx)))
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_accent(hex.map(str::to_owned), window, cx)))
                     .child(div().size_full().rounded_full().bg(color).when(hex.is_none(), |d| d.border_1().border_color(p.separator))),
             );
         }

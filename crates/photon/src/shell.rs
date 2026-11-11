@@ -11,6 +11,8 @@
 mod ask;
 mod compose;
 mod composer;
+mod exec;
+mod palette;
 mod panel;
 mod panes;
 mod projects;
@@ -142,6 +144,11 @@ pub struct Shell {
     pane_move: Option<panes::PaneMove>,
     /// the window's own focus, held when nothing inside has it, so keys always arrive.
     root_focus: FocusHandle,
+    /// window commands scripts sent, run on the next frame (they need the window).
+    ui_calls: Vec<(u64, String, serde_json::Value)>,
+    /// someone listens to what this window publishes.
+    ui_watched: bool,
+    pub(crate) palette_ui: palette::PaletteState,
     /// the pointer is over the transcript's message rail.
     rail_open: bool,
     // asking an agent to change the window.
@@ -281,6 +288,8 @@ impl Shell {
         let ask_input = cx.new(|cx| InputState::new(window, cx).placeholder("Describe a change to this window…"));
         let project_name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
+        let palette_ui = palette::PaletteState::new(window, cx);
+        let palette_input = palette_ui.input.clone();
         let projects_home = std::env::var("PHOTON_PROJECTS").unwrap_or_else(|_| "~/photon/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
@@ -300,6 +309,15 @@ impl Shell {
                 if let InputEvent::PressEnter { shift: false, .. } = ev {
                     this.ask(window, cx);
                 }
+            }),
+            // the palette: typing searches, return runs.
+            cx.subscribe_in(&palette_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
+                InputEvent::Change => {
+                    this.palette_ui_reset();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.palette_confirm(window, cx),
+                _ => {}
             }),
             cx.subscribe_in(&rename_input, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = ev
@@ -346,7 +364,7 @@ impl Shell {
 
         // the bridge thread hands us events; apply everything that has
         // arrived, then repaint once. a burst of tokens is one frame, not hundreds.
-        let pump = cx.spawn(async move |this, cx| {
+        let pump = cx.spawn_in(window, async move |this, cx| {
             while let Some(first) = events.recv().await {
                 let mut batch = vec![first];
                 while batch.len() < 4096
@@ -354,9 +372,13 @@ impl Shell {
                 {
                     batch.push(more);
                 }
-                let alive = this.update(cx, |this, cx| {
+                let alive = this.update_in(cx, |this, window, cx| {
                     for ev in batch {
                         this.apply(ev, cx);
+                    }
+                    // commands from scripts run as soon as they arrive, with the window to hand.
+                    if !this.ui_calls.is_empty() {
+                        this.run_ui_calls(window, cx);
                     }
                     cx.notify();
                 });
@@ -421,6 +443,9 @@ impl Shell {
             pane_zoom: None,
             pane_move: None,
             root_focus: cx.focus_handle(),
+            ui_calls: Vec::new(),
+            ui_watched: false,
+            palette_ui,
             rail_open: false,
             ask_open: false,
             focus_ask: false,
@@ -501,6 +526,11 @@ impl Shell {
     #[cfg(test)]
     pub(crate) fn composer_text(&self, cx: &App) -> String {
         self.composer.read(cx).value().to_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn overview_for_test(&self) -> bool {
+        self.overview
     }
 
     #[cfg(test)]
@@ -632,6 +662,8 @@ impl Shell {
                 }
             }
             UiEvent::Aside(id) => self.layout_agent = Some(id),
+            UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
+            UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::Created => {
                 self.show_new = false;
                 self.error = None;
@@ -1796,6 +1828,7 @@ impl Render for Shell {
             })
             .when(show_overview, |d| d.child(self.overview_layer(now, cx)))
             .when(self.ask_open, |d| d.child(self.ask_layer(now, cx)))
+            .when(self.palette_ui.open, |d| d.child(self.palette_layer(window, cx)))
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))
     }

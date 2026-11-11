@@ -986,7 +986,7 @@ fn asking_to_change_the_window_starts_an_agent_aside_that_knows_the_reference(cx
     let launch = Launch { ui: Some(dir.join("ui.json")), ..Launch::default() };
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions_launched(cx, idle.clone(), vec![], launch);
-    rig.press(cx, "cmd-k");
+    rig.press(cx, "shift-cmd-k");
     assert!(rig.exists(cx, "ask-bar"));
     rig.typed(cx, "put the changes under the conversation");
     rig.press(cx, "enter");
@@ -1203,4 +1203,66 @@ fn a_window_down_to_one_empty_pane_still_has_a_way_back(cx: &mut TestAppContext)
     assert!(rig.exists(cx, "empty-reset-layout"), "the only pane offers the default layout back");
     rig.click(cx, "pane-pane-1-sidebar");
     assert!(rig.exists(cx, sid(1).0), "and its corner opens the sidebar");
+}
+
+// ---- scripting and the palette ----------------------------------------------------
+
+#[gpui_kit::test]
+fn a_script_drives_the_window_through_the_same_commands_and_is_answered(cx: &mut TestAppContext) {
+    let dir = layout_dir("script");
+    let file = dir.join("ui.json");
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, idle.clone(), vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let answer = |rig: &mut Rig| {
+        rig.asked().into_iter().find_map(|c| match c {
+            Cmd::UiAnswer { call, result } => Some((call, result)),
+            _ => None,
+        })
+    };
+
+    rig.feed(cx, vec![UiEvent::Call { call: 1, cmd: "ui.ls".into(), args: serde_json::Value::Null }]);
+    let (call, result) = answer(&mut rig).expect("answered");
+    let ls = result.unwrap();
+    assert_eq!(call, 1);
+    assert_eq!(ls["session"]["goal"], "Fix login");
+    assert!(ls["panes"].as_array().unwrap().iter().any(|p| p["module"] == "conversation" && p["focused"] == true));
+
+    rig.feed(cx, vec![UiEvent::Call { call: 2, cmd: "pane.split".into(), args: serde_json::json!({"dir": "down"}) }]);
+    assert!(answer(&mut rig).unwrap().1.is_ok());
+    let layout: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(layout["root"]["children"][1]["layout"]["children"][0]["split"], "column", "written like a click would");
+
+    rig.feed(cx, vec![UiEvent::Call { call: 3, cmd: "pane.show".into(), args: serde_json::json!({"module": "nope"}) }]);
+    let err = answer(&mut rig).unwrap().1.unwrap_err();
+    assert!(err.contains("modules: conversation"), "{err}");
+    rig.feed(cx, vec![UiEvent::Call { call: 4, cmd: "pane.splt".into(), args: serde_json::json!({}) }]);
+    assert!(answer(&mut rig).unwrap().1.unwrap_err().contains("pane.split"), "suggests what was meant");
+
+    // nobody listening: nothing is published. someone listening: every command says so.
+    rig.feed(cx, vec![UiEvent::Call { call: 5, cmd: "theme.set".into(), args: serde_json::json!({"base": "tern"}) }]);
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::UiPublish { .. })));
+    rig.feed(cx, vec![UiEvent::Watched(true), UiEvent::Call { call: 6, cmd: "theme.size".into(), args: serde_json::json!({"size": "compact"}) }]);
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::UiPublish { kind, .. } if kind == "command_run")));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn the_palette_finds_a_command_by_a_few_letters_and_runs_it(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    rig.press(cx, "cmd-k");
+    assert!(rig.exists(cx, "palette"));
+    rig.typed(cx, "sessions");
+    assert!(rig.exists(cx, "palette-0"));
+    // the session list: the top hit is the "All sessions" command; arrows move, return runs.
+    rig.press(cx, "enter");
+    assert!(!rig.exists(cx, "palette"), "running closes it");
+    assert!(rig.shell.read_with(cx, |s, _| s.overview_for_test()), "and All sessions opened");
+    rig.press(cx, "escape");
+
+    // sessions are in it too.
+    rig.press(cx, "cmd-k");
+    rig.typed(cx, "split the auth");
+    rig.press(cx, "enter");
+    assert!(matches!(rig.asked().last(), Some(Cmd::Open(Some(id))) if *id == sid(2)));
 }

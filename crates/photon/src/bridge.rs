@@ -42,6 +42,10 @@ pub enum Cmd {
     Delete { session: SessionId, remove_worktree: bool },
     /// rename: the one-line "what is this".
     SetGoal { session: SessionId, goal: String },
+    /// the answer to a window command a script sent.
+    UiAnswer { call: u64, result: Result<serde_json::Value, String> },
+    /// something happened in the window, for whoever listens.
+    UiPublish { kind: String, data: serde_json::Value },
 }
 
 #[derive(Debug)]
@@ -64,6 +68,10 @@ pub enum UiEvent {
     Pr { session: SessionId, status: PrStatus },
     /// a session we asked for was created and is now the open one.
     Created,
+    /// a script wants a window command run.
+    Call { call: u64, cmd: String, args: serde_json::Value },
+    /// whether anyone listens to what the window publishes.
+    Watched(bool),
     /// a session started aside exists, with this id.
     Aside(SessionId),
     /// something the user did failed. shown, not fatal.
@@ -173,6 +181,12 @@ async fn session(
     if subscribe(client, ui, open).await.is_err() {
         return Ended::Lost;
     }
+    // this connection is the window: scripts and agents reach it through the daemon.
+    // an older daemon doesn't know how; the window works anyway, unscripted.
+    match client.request(Request::UiRegister { name: "main".into() }).await {
+        Ok(_) | Err(ClientError::Rpc(_)) => {}
+        Err(_) => return Ended::Lost,
+    }
     loop {
         tokio::select! {
             ev = events.recv() => {
@@ -190,7 +204,9 @@ async fn session(
                         }
                         continue;
                     }
-                    Event::Unknown => continue,
+                    Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
+                    Event::UiWatched { watched } => UiEvent::Watched(watched),
+                    Event::Ui { .. } | Event::Unknown => continue,
                 };
                 if ui.send(out).is_err() {
                     return Ended::UiGone;
@@ -250,6 +266,24 @@ async fn session(
                     }
                     Cmd::Send { session, text, attachments } => client.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session, text, attachments }).await.map(drop),
                     Cmd::SetModel { session, model } => client.request(Request::SessionSetModel { cmd_id: Uuid::new_v4(), session, model }).await.map(drop),
+                    Cmd::UiAnswer { call, result } => {
+                        let (ok, err) = match result {
+                            Ok(v) => (Some(v), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            let _ = client.request(Request::UiAnswer { call, ok, err }).await;
+                        });
+                        Ok(())
+                    }
+                    Cmd::UiPublish { kind, data } => {
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            let _ = client.request(Request::UiPublish { kind, data }).await;
+                        });
+                        Ok(())
+                    }
                     Cmd::SetGoal { session, goal } => client.request(Request::SessionSetGoal { cmd_id: Uuid::new_v4(), session, goal }).await.map(drop),
                     Cmd::SetMode { session, mode } => client.request(Request::SessionSetMode { cmd_id: Uuid::new_v4(), session, mode }).await.map(drop),
                     Cmd::RefreshMcp(session) => client.request(Request::SessionRefreshMcp { session }).await.map(drop),

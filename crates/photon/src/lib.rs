@@ -4,6 +4,7 @@
 //! benchmark harness can reach the same code the real app runs.
 
 pub mod bridge;
+pub mod commands;
 pub mod model;
 pub mod motion;
 pub mod rich;
@@ -33,6 +34,11 @@ actions!(
         CloseAsk,
         CloseSheet,
         ConfirmSheet,
+        OpenPalette,
+        PaletteClose,
+        PaletteUp,
+        PaletteDown,
+        PaletteScope,
         SplitRight,
         SplitDown,
         ClosePane,
@@ -69,7 +75,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-enter", AllowPending, None),
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
-        KeyBinding::new("cmd-k", OpenAsk, None),
+        KeyBinding::new("cmd-k", OpenPalette, None),
+        KeyBinding::new("shift-cmd-k", OpenAsk, None),
+        KeyBinding::new("escape", PaletteClose, Some("Palette")),
+        KeyBinding::new("up", PaletteUp, Some("Palette")),
+        KeyBinding::new("down", PaletteDown, Some("Palette")),
+        KeyBinding::new("ctrl-p", PaletteUp, Some("Palette")),
+        KeyBinding::new("ctrl-n", PaletteDown, Some("Palette")),
+        KeyBinding::new("tab", PaletteScope, Some("Palette")),
         // the pane last clicked in.
         KeyBinding::new("cmd-d", SplitRight, None),
         KeyBinding::new("shift-cmd-d", SplitDown, None),
@@ -103,6 +116,7 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Maximize Pane", MaximizePane),
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::separator(),
+                MenuItem::action("Command Palette…", OpenPalette),
                 MenuItem::action("Change This Window…", OpenAsk),
             ],
         ),
@@ -137,6 +151,7 @@ pub fn bind_actions(shell: WeakEntity<Shell>, cx: &mut App) {
     on::<AllowPending>(cx, &shell, Shell::allow_pending);
     on::<OpenSettings>(cx, &shell, Shell::open_settings);
     on::<OpenAsk>(cx, &shell, Shell::open_ask);
+    on::<OpenPalette>(cx, &shell, Shell::open_palette);
     on::<MaximizePane>(cx, &shell, Shell::zoom_focused);
     // splitting and closing panes change ui.json, which needs the window: the
     // window's root handles those (see `Shell::render`).

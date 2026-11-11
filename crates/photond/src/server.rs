@@ -9,9 +9,8 @@ use crate::hub::{CLIENT_QUEUE, ClientId, HubMsg};
 use photon_proto::frame::{self, Decoder, KIND_JSON};
 use photon_proto::{Envelope, Event};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixListener;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
@@ -26,24 +25,37 @@ pub async fn serve(listener: UnixListener, hub: mpsc::UnboundedSender<HubMsg>) {
                 continue;
             }
         };
-        let client: ClientId = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = mpsc::channel::<Envelope>(CLIENT_QUEUE);
-        if hub.send(HubMsg::Connected { client, tx }).is_err() {
+        if !serve_stream(stream, &hub) {
             return;
         }
-        let (read, write) = stream.into_split();
-        let hub = hub.clone();
-        tokio::spawn(async move {
-            let writer = tokio::spawn(write_loop(write, rx));
-            read_loop(read, client, &hub).await;
-            let _ = hub.send(HubMsg::Disconnected { client });
-            // the hub drops this client's sender on disconnect, which ends the writer.
-            let _ = writer.await;
-        });
     }
 }
 
-async fn read_loop(mut read: OwnedReadHalf, client: ClientId, hub: &mpsc::UnboundedSender<HubMsg>) {
+/// serve one client over any byte stream. every listener (the unix socket
+/// today; quic or websockets for remote clients later) hands its connections
+/// here, so a remote client is the same client. false once the hub is gone.
+pub fn serve_stream<S>(stream: S, hub: &mpsc::UnboundedSender<HubMsg>) -> bool
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let client: ClientId = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel::<Envelope>(CLIENT_QUEUE);
+    if hub.send(HubMsg::Connected { client, tx }).is_err() {
+        return false;
+    }
+    let (read, write) = tokio::io::split(stream);
+    let hub = hub.clone();
+    tokio::spawn(async move {
+        let writer = tokio::spawn(write_loop(write, rx));
+        read_loop(read, client, &hub).await;
+        let _ = hub.send(HubMsg::Disconnected { client });
+        // the hub drops this client's sender on disconnect, which ends the writer.
+        let _ = writer.await;
+    });
+    true
+}
+
+async fn read_loop(mut read: impl AsyncRead + Unpin, client: ClientId, hub: &mpsc::UnboundedSender<HubMsg>) {
     let mut decoder = Decoder::new();
     let mut buf = vec![0u8; 64 * 1024];
     loop {
@@ -73,7 +85,7 @@ async fn read_loop(mut read: OwnedReadHalf, client: ClientId, hub: &mpsc::Unboun
     }
 }
 
-async fn write_loop(mut write: OwnedWriteHalf, mut rx: mpsc::Receiver<Envelope>) {
+async fn write_loop(mut write: impl AsyncWrite + Unpin, mut rx: mpsc::Receiver<Envelope>) {
     let mut batch = Vec::with_capacity(256);
     let mut bytes = Vec::with_capacity(64 * 1024);
     loop {

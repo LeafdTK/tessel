@@ -179,6 +179,44 @@ pub enum Request {
     PrStatus {
         session: SessionId,
     },
+    // ---- windows -----------------------------------------------------------
+    //
+    // "if you can click it, you can script it": every window registers here and
+    // takes commands relayed through the daemon, so a cli, an agent's tools, or
+    // a client on another machine drive it through the one door they already use.
+    /// this connection is a window, known by `name`.
+    UiRegister {
+        name: String,
+    },
+    /// run a window command (`pane.split`, `theme.set`, ...). `window` picks
+    /// one by name; none is the most recently registered.
+    UiExec {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window: Option<String>,
+        cmd: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    /// a window's answer to a `UiCall`.
+    UiAnswer {
+        call: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ok: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        err: Option<String>,
+    },
+    /// a window says something happened (`layout_changed`, `pane_focused`, ...).
+    UiPublish {
+        kind: String,
+        #[serde(default)]
+        data: serde_json::Value,
+    },
+    /// hear what windows publish. an empty `kinds` is everything.
+    UiSubscribe {
+        #[serde(default)]
+        kinds: Vec<String>,
+    },
+    UiWindows,
     Shutdown,
     #[serde(other)]
     Unknown,
@@ -244,6 +282,13 @@ pub enum Response {
     },
     Models {
         models: Vec<crate::ModelInfo>,
+    },
+    /// what a window command answered.
+    UiResult {
+        value: serde_json::Value,
+    },
+    UiWindows {
+        windows: Vec<String>,
     },
     Ack,
     #[serde(other)]
@@ -314,6 +359,26 @@ pub enum Event {
     },
     /// this client fell too far behind and events were dropped. resubscribe.
     Lagged,
+    // ---- windows ------------------------------------------------------------
+    /// to a window: run this command and `UiAnswer` with `call`.
+    UiCall {
+        call: u64,
+        cmd: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    /// to subscribers: something happened in a window.
+    Ui {
+        window: String,
+        kind: String,
+        #[serde(default)]
+        data: serde_json::Value,
+    },
+    /// to a window: whether anyone is listening to what it publishes. it
+    /// builds no events while nobody is.
+    UiWatched {
+        watched: bool,
+    },
     #[serde(other)]
     Unknown,
 }

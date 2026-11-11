@@ -82,7 +82,22 @@ struct Client {
     /// we dropped events for this client and still owe it a `Lagged`.
     lagged: bool,
     dead: bool,
+    /// set when this connection is a window: its name, and when it registered.
+    window: Option<(String, u64)>,
+    /// set when it listens to what windows publish: the kinds it wants (empty: all).
+    ui_kinds: Option<Vec<String>>,
 }
+
+/// a window command on its way to a window and back.
+struct UiCall {
+    client: ClientId,
+    id: u64,
+    window: ClientId,
+    deadline: Millis,
+}
+
+/// how long a window has to answer a command before the caller is told it didn't.
+const UI_CALL_TIMEOUT_MS: Millis = 10_000;
 
 struct Live {
     state: SessionState,
@@ -105,6 +120,8 @@ pub struct Hub {
     clients: HashMap<ClientId, Client>,
     done: HashMap<Uuid, Response>,
     done_order: VecDeque<Uuid>,
+    ui_calls: HashMap<u64, UiCall>,
+    next_ui: u64,
 }
 
 pub fn now_ms() -> Millis {
@@ -129,6 +146,8 @@ impl Hub {
             clients: HashMap::new(),
             done: HashMap::new(),
             done_order: VecDeque::new(),
+            ui_calls: HashMap::new(),
+            next_ui: 1,
         };
         let now = now_ms();
         for p in hub.store.load_sessions().await? {
@@ -184,10 +203,22 @@ impl Hub {
     fn handle(&mut self, msg: HubMsg) -> bool {
         match msg {
             HubMsg::Connected { client, tx } => {
-                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: None, lagged: false, dead: false });
+                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: None, lagged: false, dead: false, window: None, ui_kinds: None });
             }
             HubMsg::Disconnected { client } => {
-                self.clients.remove(&client);
+                let gone = self.clients.remove(&client);
+                // a window that goes away answers nothing more: its callers hear so now.
+                if gone.as_ref().is_some_and(|c| c.window.is_some()) {
+                    let stranded: Vec<u64> = self.ui_calls.iter().filter(|(_, c)| c.window == client).map(|(k, _)| *k).collect();
+                    for call in stranded {
+                        if let Some(c) = self.ui_calls.remove(&call) {
+                            self.respond(c.client, c.id, Err(RpcError::new(ErrorCode::NotFound, "the window closed before it answered")));
+                        }
+                    }
+                }
+                if gone.is_some_and(|c| c.ui_kinds.is_some()) {
+                    self.tell_windows_if_watched();
+                }
             }
             HubMsg::Request { client, id, req } => {
                 let stop = matches!(req, Request::Shutdown);
@@ -427,6 +458,77 @@ impl Hub {
             }
             Request::PrStatus { session } => {
                 return self.in_workdir(client, id, session, |dir| async move { Ok(Response::Pr { status: workspace::pr_status(&dir).await }) });
+            }
+            Request::UiRegister { name } => {
+                let seq = self.next_ui;
+                self.next_ui += 1;
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.window = Some((name, seq));
+                }
+                let watched = self.clients.values().any(|c| c.ui_kinds.is_some());
+                self.send(client, Envelope::Ev { ev: Event::UiWatched { watched } });
+                Ok(Response::Ack)
+            }
+            Request::UiWindows => {
+                let mut windows: Vec<(u64, String)> = self.clients.values().filter_map(|c| c.window.as_ref().map(|(n, s)| (*s, n.clone()))).collect();
+                windows.sort();
+                Ok(Response::UiWindows { windows: windows.into_iter().map(|(_, n)| n).collect() })
+            }
+            Request::UiExec { window, cmd, args } => {
+                // by name, else the window that registered last: the one most likely in front.
+                let target = self
+                    .clients
+                    .iter()
+                    .filter_map(|(id, c)| c.window.as_ref().map(|(n, s)| (*id, n, *s)))
+                    .filter(|(_, n, _)| window.as_ref().is_none_or(|w| w == *n))
+                    .max_by_key(|(_, _, s)| *s)
+                    .map(|(id, _, _)| id);
+                let Some(target) = target else {
+                    return Some(Err(RpcError::new(
+                        ErrorCode::NotFound,
+                        match window {
+                            Some(w) => format!("no photon window called {w} is open"),
+                            None => "no photon window is open. start photon, then try again".into(),
+                        },
+                    )));
+                };
+                let call = self.next_ui;
+                self.next_ui += 1;
+                self.ui_calls.insert(call, UiCall { client, id, window: target, deadline: now_ms() + UI_CALL_TIMEOUT_MS });
+                self.respond_event(target, Event::UiCall { call, cmd, args });
+                return None;
+            }
+            Request::UiAnswer { call, ok, err } => {
+                if let Some(c) = self.ui_calls.remove(&call).filter(|c| c.window == client) {
+                    let result = match err {
+                        Some(e) => Err(RpcError::new(ErrorCode::Invalid, e)),
+                        None => Ok(Response::UiResult { value: ok.unwrap_or(serde_json::Value::Null) }),
+                    };
+                    self.respond(c.client, c.id, result);
+                }
+                Ok(Response::Ack)
+            }
+            Request::UiPublish { kind, data } => {
+                let Some(name) = self.clients.get(&client).and_then(|c| c.window.as_ref()).map(|(n, _)| n.clone()) else {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, "only a window can publish; register first")));
+                };
+                let targets: Vec<ClientId> = self
+                    .clients
+                    .iter()
+                    .filter(|(_, c)| c.ready && c.ui_kinds.as_ref().is_some_and(|k| k.is_empty() || k.iter().any(|k| *k == kind)))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for t in targets {
+                    self.send(t, Envelope::Ev { ev: Event::Ui { window: name.clone(), kind: kind.clone(), data: data.clone() } });
+                }
+                Ok(Response::Ack)
+            }
+            Request::UiSubscribe { kinds } => {
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.ui_kinds = Some(kinds);
+                }
+                self.tell_windows_if_watched();
+                Ok(Response::Ack)
             }
             Request::Shutdown => Ok(Response::Ack),
             Request::Unknown => Err(RpcError::new(ErrorCode::Invalid, "this daemon does not know that request")),
@@ -679,6 +781,13 @@ impl Hub {
                 agent.kill();
             }
         }
+        // a window that never answered: its caller is not left waiting forever.
+        let late: Vec<u64> = self.ui_calls.iter().filter(|(_, c)| now >= c.deadline).map(|(k, _)| *k).collect();
+        for call in late {
+            if let Some(c) = self.ui_calls.remove(&call) {
+                self.respond(c.client, c.id, Err(RpcError::new(ErrorCode::Internal, "the window didn't answer in time")));
+            }
+        }
         // a client we dropped events for is told so as soon as it has room.
         for c in self.clients.values_mut() {
             if c.lagged && c.tx.try_send(Envelope::Ev { ev: Event::Lagged }).is_ok() {
@@ -699,6 +808,23 @@ impl Hub {
         // is no room, the client is beyond saving; cut it loose to reconnect.
         if c.tx.try_send(env).is_err() {
             c.dead = true;
+        }
+    }
+
+    /// an event a client must not miss (a command for a window): sent like a response.
+    fn respond_event(&mut self, client: ClientId, ev: Event) {
+        let Some(c) = self.clients.get_mut(&client) else { return };
+        if c.tx.try_send(Envelope::Ev { ev }).is_err() {
+            c.dead = true;
+        }
+    }
+
+    /// windows build no events while nobody listens; tell them when that changes.
+    fn tell_windows_if_watched(&mut self) {
+        let watched = self.clients.values().any(|c| c.ui_kinds.is_some());
+        let windows: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.window.is_some()).map(|(id, _)| *id).collect();
+        for w in windows {
+            self.send(w, Envelope::Ev { ev: Event::UiWatched { watched } });
         }
     }
 

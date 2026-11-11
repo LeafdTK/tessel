@@ -344,6 +344,62 @@ A Stop button that only exists while the agent works:
 { "type": "button", "action": "stop", "icon": "square", "tooltip": "Stop", "when": "busy" }
 ```
 
+## Scripting: if you can click it, you can script it
+
+Every command the window takes is in one table. The palette (⌘K), the keys, the menus,
+`photonctl ui` and agents' tools all run the same entries, so anything you can click
+you can also run from a script or ask an agent to do.
+
+```
+photonctl ui ls                         what the window shows: panes, drawers, theme
+photonctl ui commands                   this table
+photonctl ui pane.split dir=down        any command, with key=value arguments
+photonctl ui show changes @focused      shorthands: split, close, zoom, show, focus, theme
+photonctl ui events --filter layout_changed,pane_focused
+```
+
+Panes are named by id, `@focused`, or the module they show. Sessions by `@open`, an id
+prefix, or part of their name. Commands go through the daemon, so they work the same
+from a terminal, an agent, or (later) another machine. Events a window publishes:
+`command_run`, `layout_changed`, `session_opened`, `pane_focused`.
+
+| command | what it does | keys | arguments |
+| --- | --- | --- | --- |
+| `app.palette` | Command palette | ⌘ K |  |
+| `app.ask` | Change this window… | ⇧ ⌘ K | text?: ask straight away |
+| `app.settings` | Settings | ⌘ , |  |
+| `app.overview` | All sessions | ⇧ ⌘ \\ |  |
+| `app.sidebar` | Show or hide the sidebar | ⌥ ⌘ S |  |
+| `app.workspace` | Show or hide the workspace | ⌥ ⌘ I |  |
+| `app.focus` | Focus on this session | ⇧ ⌘ F |  |
+| `session.new` | New session | ⌘ N | cwd?, prompt?, worktree?: with a prompt it starts at once |
+| `session.next` | Next session that needs you | ⌘ J |  |
+| `session.stop` | Stop the agent | ⌘ . | session? |
+| `session.allow` | Allow | ⌘ ↩ | session? |
+| `session.open` | Open a session |  | session: id prefix, @open, or part of its name |
+| `session.send` | Send a message |  | text, session? |
+| `session.rename` | Rename a session |  | name, session? |
+| `session.delete` | Delete a session |  | session |
+| `session.model` | Change the model |  | model, session? |
+| `session.mode` | Mode: Ask first |  | mode: default|acceptEdits|auto|plan, session? |
+| `pane.split` | Split right | ⌘ D | dir: right|down, pane? |
+| `pane.zoom` | Maximize or restore pane | ⇧ ⌘ ↩ | pane? |
+| `pane.close` | Close pane | ⌘ W | pane? |
+| `pane.show` | Show Conversation here |  | module, pane? |
+| `pane.focus` | Focus a pane |  | pane |
+| `pane.toggle` | Show or hide a pane |  | pane |
+| `pane.move` | Move a pane |  | pane, to, zone: left|right|top|bottom|swap |
+| `workspace.tab` | Workspace: Changes |  | tab: changes|files|checks|artifacts|info |
+| `theme.set` | Theme: Photon |  | base: photon|orchard|tern |
+| `theme.appearance` | Appearance: System |  | mode: system|light|dark |
+| `theme.size` | Interface size: Compact |  | size: compact|default|large |
+| `theme.accent` | Set the accent colour |  | hex: #rrggbb, or null for the theme's own |
+| `layout.reset` | Reset the layout |  |  |
+| `layout.get` | The layout file (ui.json) |  |  |
+| `layout.set` | Replace the layout file |  | json: the whole ui.json; answers with what check.txt says |
+| `ui.ls` | What the window shows |  |  |
+| `commands.list` | Every command |  |  |
+
 ## Guardrails
 
 A layout can say anything, but it can't look broken by accident. Before it is

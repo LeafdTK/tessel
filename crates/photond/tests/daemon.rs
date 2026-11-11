@@ -749,3 +749,85 @@ async fn refreshing_tool_servers_asks_the_running_agent() {
     c.request(Request::SessionRefreshMcp { session: s.id }).await.unwrap();
     assert!(d.written().iter().any(|w| w["request"]["subtype"] == "mcp_status"), "a refresh asks the running agent");
 }
+
+// ---- windows ---------------------------------------------------------------------
+
+/// next event of interest, skipping anything else.
+async fn next_ui(ev: &mut Events) -> Event {
+    loop {
+        let e = tokio::time::timeout(Duration::from_secs(5), ev.recv()).await.expect("no event in time").expect("connection closed");
+        if matches!(e, Event::UiCall { .. } | Event::Ui { .. } | Event::UiWatched { .. }) {
+            return e;
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_window_command_goes_through_the_daemon_and_its_answer_comes_back() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (cli, _) = d.client().await;
+
+    // no window yet: said plainly, not hung.
+    let err = cli.request(Request::UiExec { window: None, cmd: "pane.split".into(), args: serde_json::json!({}) }).await.unwrap_err();
+    assert!(err.to_string().contains("no photon window"), "{err}");
+
+    let (win, mut win_ev) = d.client().await;
+    win.request(Request::UiRegister { name: "main".into() }).await.unwrap();
+    assert!(matches!(next_ui(&mut win_ev).await, Event::UiWatched { watched: false }), "nobody listens yet");
+
+    // the window answers whatever it is asked, from its own task.
+    let answering = tokio::spawn(async move {
+        let Event::UiCall { call, cmd, args } = next_ui(&mut win_ev).await else { panic!("expected a call") };
+        assert_eq!((cmd.as_str(), args["dir"].as_str()), ("pane.split", Some("right")));
+        win.request(Request::UiAnswer { call, ok: Some(serde_json::json!({"pane": "pane-1"})), err: None }).await.unwrap();
+        (win, win_ev)
+    });
+    let reply = cli.request(Request::UiExec { window: None, cmd: "pane.split".into(), args: serde_json::json!({"dir": "right"}) }).await.unwrap();
+    assert_eq!(reply, Response::UiResult { value: serde_json::json!({"pane": "pane-1"}) });
+    let (win, mut win_ev) = answering.await.unwrap();
+
+    // a subscriber hears what the window publishes, and the window learns it is watched.
+    let (watcher, mut watch_ev) = d.client().await;
+    watcher.request(Request::UiSubscribe { kinds: vec!["layout_changed".into()] }).await.unwrap();
+    assert!(matches!(next_ui(&mut win_ev).await, Event::UiWatched { watched: true }));
+    win.request(Request::UiPublish { kind: "pane_focused".into(), data: serde_json::json!({}) }).await.unwrap();
+    win.request(Request::UiPublish { kind: "layout_changed".into(), data: serde_json::json!({"panes": 2}) }).await.unwrap();
+    match next_ui(&mut watch_ev).await {
+        Event::Ui { window, kind, data } => assert_eq!((window.as_str(), kind.as_str(), data["panes"].as_i64()), ("main", "layout_changed", Some(2)), "only the kinds asked for"),
+        other => panic!("{other:?}"),
+    }
+
+    // a window that errors: the caller gets the error.
+    let answering = tokio::spawn(async move {
+        let Event::UiCall { call, .. } = next_ui(&mut win_ev).await else { panic!() };
+        win.request(Request::UiAnswer { call, ok: None, err: Some("no pane called nope".into()) }).await.unwrap();
+        win
+    });
+    let err = cli.request(Request::UiExec { window: None, cmd: "pane.close".into(), args: serde_json::json!({"pane": "nope"}) }).await.unwrap_err();
+    assert!(err.to_string().contains("no pane called nope"), "{err}");
+    let win = answering.await.unwrap();
+
+    // and a window that goes away mid-call doesn't leave the caller hanging.
+    let pending = tokio::spawn(async move { cli.request(Request::UiExec { window: None, cmd: "ui.ls".into(), args: serde_json::Value::Null }).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(win);
+    let err = tokio::time::timeout(Duration::from_secs(5), pending).await.expect("caller left hanging").unwrap().unwrap_err();
+    assert!(err.to_string().contains("window closed"), "{err}");
+    d.stop().await;
+}
+
+#[tokio::test]
+async fn any_byte_stream_is_a_connection_so_a_remote_transport_only_has_to_carry_bytes() {
+    let mut d = Daemon::start(&["plain"]).await;
+    // an in-memory pipe stands in for a quic stream or a websocket.
+    let (near, far) = tokio::io::duplex(64 * 1024);
+    assert!(photond::server::serve_stream(far, &d.running.as_ref().unwrap().hub));
+    let (client, _events, welcome) = Client::over(near, "remote").await.unwrap();
+    assert_eq!(welcome.proto_major, PROTO_MAJOR);
+    let s = create(&client, &d.cwd(), None).await;
+    match client.request(Request::SessionList).await.unwrap() {
+        Response::Sessions { sessions } => assert!(sessions.iter().any(|x| x.id == s.id)),
+        other => panic!("{other:?}"),
+    }
+    d.stop().await;
+}

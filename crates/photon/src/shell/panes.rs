@@ -748,6 +748,11 @@ impl Shell {
         cx.notify();
     }
 
+    /// where a pane is heading on screen, in points: x, y, width, height.
+    pub(crate) fn pane_rect(&self, id: &str) -> Option<[f32; 4]> {
+        self.pane_fx.get(id).filter(|fx| !fx.leaving).map(|fx| fx.rect.each_ref().map(|s| s.target().round()))
+    }
+
     /// the pane keys act on: the one last clicked in, or the conversation.
     pub(crate) fn focused_pane(&self) -> Option<Pane> {
         let panes = self.ui.panes();
@@ -829,6 +834,11 @@ impl Shell {
             cx.notify();
             return;
         };
+        self.move_pane_to(from, to, zone, window, cx);
+    }
+
+    /// carry pane `from` to pane `to`: beside it on a side, or into its place.
+    pub(crate) fn move_pane_to(&mut self, from: String, to: String, zone: Zone, window: &mut Window, cx: &mut Context<Self>) {
         let ids: Vec<(Vec<usize>, String)> = self.ui.panes().iter().map(|p| (p.trail.clone(), p.id.clone())).collect();
         self.edit_panes(
             move |layout| {

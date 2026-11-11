@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
-    /// the daemon answered, and the answer was no.
-    #[error("{0}")]
+    /// the daemon answered, and the answer was no. said once: the error is its own message.
+    #[error(transparent)]
     Rpc(#[from] RpcError),
     #[error("the connection to the daemon closed")]
     Closed,
@@ -54,12 +54,22 @@ pub struct Welcome {
 }
 
 impl Client {
-    /// connect and shake hands.
+    /// connect to a daemon on this machine and shake hands.
     pub async fn connect(socket: &Path, name: &str) -> Result<(Self, Events, Welcome), ClientError> {
         let stream = UnixStream::connect(socket)
             .await
             .map_err(|source| ClientError::Connect { path: socket.to_owned(), source })?;
-        let (mut read, mut write) = stream.into_split();
+        Self::over(stream, name).await
+    }
+
+    /// shake hands over any byte stream. the protocol doesn't care what carries
+    /// it: a unix socket today, a quic stream or a websocket for a daemon on
+    /// another machine, each just another `connect` that ends here.
+    pub async fn over<S>(stream: S, name: &str) -> Result<(Self, Events, Welcome), ClientError>
+    where
+        S: AsyncRead + AsyncWrite + Send + 'static,
+    {
+        let (mut read, mut write) = tokio::io::split(stream);
         let (out, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let pending: Pending = Default::default();

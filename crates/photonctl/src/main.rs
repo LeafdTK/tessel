@@ -35,6 +35,21 @@ const HELP: &str = "photonctl: drive the photon daemon
   photonctl rm SESSION [--worktree]         delete (optionally with its worktree)
   photonctl daemon start|stop
 
+  the window: if you can click it, you can script it.
+  photonctl ui ls [--json]                  what the window shows: panes, drawers, theme
+  photonctl ui commands                     every command the window takes
+  photonctl ui COMMAND [key=value...]       run one, e.g. ui pane.show module=git pane=@focused
+      (values that read as json are json: worktree=true, hex=null)
+  photonctl ui split [right|down] [PANE]    split a pane (default: the focused one, to the right)
+  photonctl ui close|zoom [PANE]
+  photonctl ui show MODULE [PANE]           show a module in a pane
+  photonctl ui focus PANE
+  photonctl ui theme photon|orchard|tern
+  photonctl ui events [--filter KIND,...]   what windows do, as json lines
+  photonctl ui windows                      the open windows
+      --window NAME    which window (default: the one opened last)
+      PANE is a pane id, @focused, or the module it shows
+
 SESSION may be any unique prefix of a session id.
 global: --no-start   do not start a daemon if none is running
 env:    PHOTON_HOME  which daemon (default ~/.photon)";
@@ -170,6 +185,7 @@ async fn run() -> anyhow::Result<()> {
                 println!("{}", summary.id);
             }
         }
+        "ui" => ui(&client, &mut events, &mut args, json).await?,
         "send" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             let text = args.rest.join(" ");
@@ -283,6 +299,112 @@ async fn resolve(client: &Client, prefix: &str) -> anyhow::Result<SessionId> {
     }
 }
 
+/// `key=value` to json: a value that reads as json is json, anything else is text.
+fn ui_args(pairs: &[String]) -> anyhow::Result<serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    for p in pairs {
+        let Some((k, v)) = p.split_once('=') else { bail!("\"{p}\" should be key=value") };
+        let value = serde_json::from_str::<serde_json::Value>(v).unwrap_or_else(|_| serde_json::Value::String(v.to_owned()));
+        map.insert(k.to_owned(), value);
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
+async fn ui_exec(client: &Client, window: &Option<String>, cmd: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+    match client.request(Request::UiExec { window: window.clone(), cmd: cmd.to_owned(), args }).await? {
+        Response::UiResult { value } => Ok(value),
+        other => bail!("unexpected reply: {other:?}"),
+    }
+}
+
+async fn ui(client: &Client, events: &mut photon_client::Events, args: &mut Args, json: bool) -> anyhow::Result<()> {
+    let window = args.opt("--window")?;
+    let verb = args.next("a window command (see photonctl --help)")?;
+    let print = |v: &serde_json::Value| {
+        if !v.is_null() {
+            println!("{}", if json { v.to_string() } else { serde_json::to_string_pretty(v).unwrap_or_default() });
+        }
+    };
+    let rest = std::mem::take(&mut args.rest);
+    let positional = |i: usize| rest.get(i).cloned();
+    let pane = |i: usize| positional(i).map(|p| serde_json::json!({"pane": p})).unwrap_or(serde_json::json!({}));
+    let with = |mut base: serde_json::Value, key: &str, value: Option<String>| {
+        if let (Some(v), Some(o)) = (value, base.as_object_mut()) {
+            o.insert(key.to_owned(), serde_json::Value::String(v));
+        }
+        base
+    };
+    match verb.as_str() {
+        "windows" => match client.request(Request::UiWindows).await? {
+            Response::UiWindows { windows } if windows.is_empty() => println!("no windows open"),
+            Response::UiWindows { windows } => windows.iter().for_each(|w| println!("{w}")),
+            other => bail!("unexpected reply: {other:?}"),
+        },
+        "events" => {
+            let kinds = args.opt("--filter")?.map(|f| f.split(',').map(|k| k.trim().to_owned()).collect()).unwrap_or_default();
+            client.request(Request::UiSubscribe { kinds }).await?;
+            while let Some(ev) = events.recv().await {
+                if let Event::Ui { window, kind, data } = ev {
+                    println!("{}", serde_json::json!({"window": window, "kind": kind, "data": data}));
+                }
+            }
+        }
+        "ls" => {
+            let v = ui_exec(client, &window, "ui.ls", serde_json::json!({})).await?;
+            if json {
+                println!("{v}");
+            } else {
+                match v.get("session").filter(|s| !s.is_null()) {
+                    Some(s) => println!("session  {}  {}", s["goal"].as_str().unwrap_or(""), s["id"].as_str().unwrap_or("").get(..8).unwrap_or("")),
+                    None => println!("session  (none open)"),
+                }
+                for p in v["panes"].as_array().into_iter().flatten() {
+                    let flags = [("focused", "*"), ("zoomed", "maximized"), ("open", "")]
+                        .iter()
+                        .filter(|(k, _)| p[*k].as_bool() == Some(true) && !(*k == "open"))
+                        .map(|(_, f)| *f)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let shown = if p["open"].as_bool() == Some(false) { "folded" } else { "" };
+                    println!("pane     {:<14} {:<12} {} {}", p["id"].as_str().unwrap_or(""), p["module"].as_str().unwrap_or("(empty)"), flags, shown);
+                }
+                for d in v["drawers"].as_array().into_iter().flatten() {
+                    println!("drawer   {:<14} {}", d["id"].as_str().unwrap_or(""), if d["open"].as_bool() == Some(true) { "open" } else { "shut" });
+                }
+                println!("theme    {} {}", v["theme"]["base"].as_str().unwrap_or(""), if v["theme"]["dark"].as_bool() == Some(true) { "dark" } else { "light" });
+            }
+        }
+        "commands" => {
+            let v = ui_exec(client, &window, "commands.list", serde_json::json!({})).await?;
+            if json {
+                println!("{v}");
+            } else {
+                let mut seen = std::collections::HashSet::new();
+                for c in v.as_array().into_iter().flatten() {
+                    let id = c["id"].as_str().unwrap_or("");
+                    if seen.insert(id.to_owned()) {
+                        println!("{id:<18} {}", c["args"].as_str().filter(|a| !a.is_empty()).unwrap_or("-"));
+                    }
+                }
+            }
+        }
+        "split" => {
+            let (dir, at) = match positional(0).as_deref() {
+                Some("right" | "down") => (positional(0), 1),
+                _ => (Some("right".into()), 0),
+            };
+            print(&ui_exec(client, &window, "pane.split", with(pane(at), "dir", dir)).await?);
+        }
+        "close" => print(&ui_exec(client, &window, "pane.close", pane(0)).await?),
+        "zoom" => print(&ui_exec(client, &window, "pane.zoom", pane(0)).await?),
+        "focus" => print(&ui_exec(client, &window, "pane.focus", pane(0)).await?),
+        "show" => print(&ui_exec(client, &window, "pane.show", with(pane(1), "module", positional(0))).await?),
+        "theme" => print(&ui_exec(client, &window, "theme.set", with(serde_json::json!({}), "base", positional(0))).await?),
+        cmd => print(&ui_exec(client, &window, cmd, ui_args(&rest)?).await?),
+    }
+    Ok(())
+}
+
 async fn follow_events(events: &mut Events, json: bool) {
     while let Some(ev) = events.recv().await {
         if json {
@@ -305,7 +427,8 @@ async fn follow_events(events: &mut Events, json: bool) {
                 }
             }
             Event::Lagged => println!("!! fell behind; events were dropped. run again for a fresh view."),
-            Event::Unknown => {}
+            Event::Ui { window, kind, .. } => println!("window {window}: {kind}"),
+            Event::UiCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
         }
     }
     println!("connection closed");
