@@ -35,6 +35,7 @@ impl Shell {
         };
         let mut row = h_flex()
             .id(SharedString::from(format!("project-{title}")))
+            .test_support()
             .group(group.clone())
             .h(px(crate::model::HEADER_H))
             .mx_2()
@@ -65,6 +66,8 @@ impl Shell {
                     this.start_in(f1.clone(), window, cx);
                 })))
                 .child(
+                    // the menu's clicks stay the menu's: the row underneath folds the project on a click.
+                    div().id(SharedString::from(format!("project-{title}-menu-zone"))).on_click(|_, _, cx| cx.stop_propagation()).child(
                     Popover::new(SharedString::from(format!("project-{title}-menu")))
                         .p_0()
                         .anchor(Anchor::TopRight)
@@ -98,6 +101,7 @@ impl Shell {
                                 .child(theme::float_item(&p, "project-menu-fold", Some(if folded { "eye" } else { "eye-off" }), if folded { "Show its sessions" } else { "Hide its sessions" }, None, false).on_click(act(Box::new(move |this, _, cx| this.toggle_project(&n, cx)))))
                                 .into_any_element()
                         }),
+                    ),
                 );
             row = row.child(controls);
         }
@@ -109,7 +113,9 @@ impl Shell {
         let me = cx.entity().downgrade();
         let (sid, goal, folder) = (s.id, s.goal.clone(), s.cwd.clone());
         let rename = self.rename_input.clone();
-        div().invisible().group_hover(group, |st| st.visible()).child(
+        // clicks on the menu (opening it, closing it, choosing) are the menu's:
+        // they don't reach the row underneath, which would open the session.
+        div().id(SharedString::from(format!("session-{sid}-menu-zone"))).on_click(|_, _, cx| cx.stop_propagation()).invisible().group_hover(group, |st| st.visible()).child(
             Popover::new(SharedString::from(format!("session-{sid}-menu")))
                 .p_0()
                 .anchor(Anchor::TopRight)

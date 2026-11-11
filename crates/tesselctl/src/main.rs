@@ -132,6 +132,7 @@ impl Args {
 }
 
 async fn run() -> anyhow::Result<()> {
+    tessel_proto::local::move_from_photon(&tessel_proto::local::home()).map_err(anyhow::Error::msg)?;
     let mut args = Args { rest: std::env::args().skip(1).collect() };
     if args.rest.is_empty() || args.flag("--help") || args.flag("-h") {
         println!("{HELP}");

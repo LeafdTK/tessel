@@ -61,5 +61,11 @@ fn main() {
             }
         }
     }
+    // a home from before the rename moves first, before anything here can
+    // make the new one: the window writes its layout notes there at once.
+    if let Err(e) = tessel_proto::local::move_from_photon(&tessel_proto::local::home()) {
+        eprintln!("tessel: {e}");
+        std::process::exit(1);
+    }
     tessel::run(launch);
 }

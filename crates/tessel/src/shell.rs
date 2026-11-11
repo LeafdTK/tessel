@@ -1297,10 +1297,52 @@ impl Shell {
                     .flex()
                     .items_center()
                     .opacity(fade)
+                    .pr(px(12.))
                     .set(Type::Title)
                     .text_color(p.label)
-                    .child(title),
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    // always a way back, not only escape.
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap(px(6.))
+                            .child(theme::keycaps(&p, "esc"))
+                            .child(
+                                theme::button(&p, "overview-close", "Back", Some("arrow-left"), theme::ButtonKind::Secondary)
+                                    .test_support()
+                                    .aria_label("Back")
+                                    .on_click(cx.listener(|this, _, _, cx| this.close_overview(None, cx))),
+                            ),
+                    ),
             );
+        // nothing to show: say so, and offer the way to make one.
+        if self.card_order.is_empty() {
+            layer = layer.child(
+                v_flex()
+                    .id("overview-empty")
+                    .test_support()
+                    .absolute()
+                    .top(px(theme::TOOLBAR_H))
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .items_center()
+                    .justify_center()
+                    .gap(theme::z(10.))
+                    .opacity(fade)
+                    .child(gpui_kit::component::Icon::empty().path("icons/layout-grid.svg").size(theme::z(24.)).text_color(p.tertiary))
+                    .child(div().set(Type::Headline).text_color(p.label).child("No sessions yet"))
+                    .child(div().set(Type::Callout).text_color(p.secondary).child("Every session you start shows here, the ones that need you first."))
+                    .child(
+                        theme::button(&p, "overview-new", "New session", Some("square-pen"), theme::ButtonKind::Primary).on_click(cx.listener(|this, _, window, cx| {
+                            this.close_overview(None, cx);
+                            if let Err(e) = this.exec("session.new", &serde_json::json!({}), window, cx) {
+                                this.error = Some(e);
+                            }
+                        })),
+                    ),
+            );
+        }
         for (ix, id) in self.card_order.iter().enumerate() {
             let (Some(card), Some(s)) = (self.cards.get(id), self.model.summary(*id)) else { continue };
             let [x, y, w, h] = [card[0].value(), card[1].value(), card[2].value(), card[3].value()];

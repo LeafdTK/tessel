@@ -1533,3 +1533,37 @@ fn the_palette_finds_a_file_by_a_bit_of_its_name_and_opens_it(cx: &mut TestAppCo
     rig.press(cx, "enter");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Read { path, .. } if path == "crates/app/src/main.rs")), "the best match opens");
 }
+
+#[gpui_kit::test]
+fn opening_and_closing_a_row_s_menu_doesn_t_fold_or_open_what_s_under_it(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    let folded = |rig: &mut Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.model.collapsed.len());
+    let project = rig.shell.read_with(cx, |s, _| crate::model::project_name(&s.model.sessions[0]));
+    let more = format!("project-{project}-more");
+    let before = folded(&mut rig, cx);
+    for _ in 0..2 {
+        let row = ElementId::from(SharedString::from(format!("project-{project}")));
+        cx.update_window(rig.window, |_, window, cx| window.hover(row, cx)).unwrap();
+        rig.settle(cx);
+        rig.click(cx, ElementId::from(SharedString::from(more.clone())));
+    }
+    assert_eq!(folded(&mut rig, cx), before, "the project stays as it was");
+
+    rig.asked();
+    let sid2 = sid(2).to_string();
+    cx.update_window(rig.window, |_, window, cx| window.hover(ElementId::from(sid(2).0), cx)).unwrap();
+    rig.settle(cx);
+    rig.click(cx, ElementId::from(SharedString::from(format!("session-{sid2}-more"))));
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::Open(_))), "opening a session's menu doesn't open the session");
+}
+
+#[gpui_kit::test]
+fn all_sessions_always_has_a_way_back_and_says_when_there_are_none(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![])]);
+    rig.press(cx, "shift-cmd-\\");
+    assert!(rig.exists(cx, "overview-empty"), "an empty overview says so");
+    rig.click(cx, "overview-close");
+    assert!(!rig.shell.read_with(cx, |s, _| s.overview_for_test()), "and back is one click");
+}
