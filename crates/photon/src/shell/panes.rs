@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 
 /// the gap between tiles: orchard's 8.
 /// room between panes: islands float apart; compact panes sit a hairline apart.
-pub(crate) fn gap() -> f32 {
-    if theme::compact() { 1.0 } else { 8.0 }
+pub(crate) fn gap(compact: bool) -> f32 {
+    if compact { 1.0 } else { 8.0 }
 }
 /// the least a pane is given, side by side and stacked, while there is room for it.
 const MIN_W: f32 = 280.0;
@@ -160,7 +160,7 @@ impl Shell {
                 // a folded child keeps a place of no size, so it unfolds from where it lives.
                 let total: f32 = shown.iter().map(|(_, c)| c.size()).sum::<f32>().max(0.0001);
                 let along = if *axis == Axis::Row { area.w } else { area.h };
-                let gap = gap();
+                let gap = gap(self.ui.theme.compact.unwrap_or(false));
                 let room = (along - gap * shown.len().saturating_sub(1) as f32).max(0.0);
                 let mut at = if *axis == Axis::Row { area.x } else { area.y };
                 let mut prev: Option<(usize, f32)> = None;
@@ -539,7 +539,7 @@ impl Shell {
             Some(m) => self.module_el(m, pane, now, cx),
         };
         let fid = id.to_owned();
-        let compact = theme::compact();
+        let compact = self.ui.theme.compact.unwrap_or(false);
         v_flex()
             .group(group)
             .size_full()

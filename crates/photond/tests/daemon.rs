@@ -43,7 +43,19 @@ impl Daemon {
     /// (re)start the daemon on the same home with a fresh stand-in agent.
     async fn boot(&mut self, fixtures: &[&str]) {
         self.backend = Arc::new(ReplayBackend::new(fixtures.iter().map(|f| fixture(f)).collect()));
-        self.running = Some(photond::start(self.cfg.clone(), self.backend.clone()).await.unwrap());
+        // a daemon that has just stopped can still hold its lock for a moment;
+        // a restart waits for it, as a client starting one does.
+        let mut tries = 0;
+        loop {
+            match photond::start(self.cfg.clone(), self.backend.clone()).await {
+                Ok(r) => break self.running = Some(r),
+                Err(e) if tries < 100 && e.to_string().contains("already running") => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
     }
 
     async fn stop(&mut self) {

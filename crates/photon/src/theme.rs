@@ -351,18 +351,10 @@ pub fn readable(fg: Hsla, bg: Hsla, target: f32) -> Hsla {
 /// pick light or dark (a forced choice, then the theme's, then the system's),
 /// build the theme's palette for it, and make the library's own controls
 /// (buttons, fields) agree with it and with mac sizing.
-static COMPACT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// panes flush, with hairlines between them.
-pub fn compact() -> bool {
-    COMPACT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx: &mut App) -> Palette {
     let system_dark = matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark);
     let dark = force_dark.or(spec.dark.flatten()).unwrap_or(system_dark);
     let mut palette = spec.palette(dark);
-    COMPACT.store(spec.compact.unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
     // glass: the frame lets the desktop through, blurred. the sheets stay solid, so text never sits on it.
     let glass = spec.glass.unwrap_or(false);
     window.set_background_appearance(if glass { gpui_kit::WindowBackgroundAppearance::Blurred } else { gpui_kit::WindowBackgroundAppearance::Opaque });

@@ -1191,16 +1191,23 @@ fn keys_split_and_maximize_the_pane_you_last_clicked_in(cx: &mut TestAppContext)
     let layout = &read()["root"]["children"][1]["layout"]["children"][0];
     assert_eq!(layout["split"], "column", "the conversation split downwards: {layout}");
 
-    let width = |rig: &Rig, cx: &mut TestAppContext, id: &'static str| cx.update_window(rig.window, |_, window, _| window.find(id).bounds().size.width).unwrap();
+    fn width(rig: &Rig, cx: &mut TestAppContext, id: &'static str) -> gpui_kit::Pixels {
+        cx.update_window(rig.window, |_, window, _| window.find(id).bounds().size.width).unwrap()
+    }
     rig.press(cx, "alt-cmd-i");
     // the split took the focus; clicking the conversation brings it back.
     rig.click(cx, "pane-conversation-header");
-    let before = width(&rig, cx, "pane-conversation-header");
+    // sizes are read once the springs have come to rest.
+    let at_rest = |rig: &mut Rig, cx: &mut TestAppContext| {
+        rig.settle(cx);
+        width(rig, cx, "pane-conversation-header")
+    };
+    let before = at_rest(&mut rig, cx);
     rig.press(cx, "shift-cmd-enter");
-    let maximized = width(&rig, cx, "pane-conversation-header");
+    let maximized = at_rest(&mut rig, cx);
     assert!(maximized > before, "maximized: {before:?} -> {maximized:?}");
     rig.press(cx, "shift-cmd-enter");
-    let restored = width(&rig, cx, "pane-conversation-header");
+    let restored = at_rest(&mut rig, cx);
     assert!((restored - before).abs() < gpui_kit::px(2.), "and back: {before:?} {restored:?}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
@@ -1447,7 +1454,6 @@ fn the_git_pane_asks_for_history_and_the_work_tree_stages_and_shows_a_commit(cx:
 
 #[gpui_kit::test]
 fn an_image_is_shown_and_markdown_is_read_as_a_document(cx: &mut TestAppContext) {
-    use base64::Engine as _;
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
     rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
@@ -1459,7 +1465,6 @@ fn an_image_is_shown_and_markdown_is_read_as_a_document(cx: &mut TestAppContext)
     let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
     rig.feed(cx, vec![UiEvent::Answer { tag: "file.preview", result: Ok(Response::Preview { mime: "image/png".into(), data: png.into(), note: None }) }]);
     assert!(rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().is_some_and(|f| f.preview.is_some() && f.note.is_none())));
-    let _ = base64::engine::general_purpose::STANDARD;
 
     rig.feed(cx, vec![UiEvent::File { session: idle.id, file: FileContent { path: "README.md".into(), text: Some("# Hello\n\n- [ ] a task\n".into()), binary: false, truncated: false, size: 22 } }]);
     let state = rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().map(|f| (f.path.clone(), f.rendered, f.preview.is_some(), f.editor.is_some())));
