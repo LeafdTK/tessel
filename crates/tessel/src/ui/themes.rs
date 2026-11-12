@@ -8,10 +8,9 @@ use super::ThemeSpec;
 use serde_json::{Map, Value};
 use std::path::Path;
 
-pub const SHIPPED: [(&str, &str); 13] = [
+pub const SHIPPED: [(&str, &str); 12] = [
     ("tessel", include_str!("themes/tessel.json")),
     ("orchard", include_str!("themes/orchard.json")),
-    ("tern", include_str!("themes/tern.json")),
     ("dusk", include_str!("themes/dusk.json")),
     ("paper", include_str!("themes/paper.json")),
     ("moss", include_str!("themes/moss.json")),
@@ -122,7 +121,7 @@ mod tests {
     #[test]
     fn applying_a_theme_keeps_the_persons_own_settings() {
         let dusk = all(None).into_iter().find(|t| t.key == "dusk").unwrap();
-        let before = serde_json::json!({"base": "tern", "appearance": "dark", "size": "large", "density": "compact", "light": {"accent": "#ff0000"}});
+        let before = serde_json::json!({"base": "orchard", "appearance": "dark", "size": "large", "density": "compact", "light": {"accent": "#ff0000"}});
         let after = applied(Some(&before), &dusk);
         assert_eq!(after["appearance"], "dark");
         assert_eq!(after["size"], "large");
@@ -136,9 +135,9 @@ mod tests {
     fn a_theme_of_my_own_replaces_or_joins_and_a_bad_one_says_why() {
         let dir = std::env::temp_dir().join(format!("tessel-themes-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("mine.json"), r##"{"name": "Mine", "base": "tern", "light": {"accent": "#0a7"}}"##).unwrap();
+        std::fs::write(dir.join("mine.json"), r##"{"name": "Mine", "base": "orchard", "light": {"accent": "#0a7"}}"##).unwrap();
         std::fs::write(dir.join("paper.json"), r##"{"name": "My paper", "base": "orchard"}"##).unwrap();
-        std::fs::write(dir.join("broken.json"), r##"{"base": "tern", "size": "large"}"##).unwrap();
+        std::fs::write(dir.join("broken.json"), r##"{"base": "orchard", "size": "large"}"##).unwrap();
         let all = all(Some(&dir));
         assert!(all.iter().any(|t| t.key == "mine"));
         assert_eq!(all.iter().find(|t| t.key == "paper").unwrap().name, "My paper");

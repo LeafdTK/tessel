@@ -146,53 +146,6 @@ impl Palette {
         }
     }
 
-    /// tern's palette (stencil's terminal), from its own stylesheet: a warm
-    /// grey page, a near-white panel, inks as one colour at four strengths,
-    /// hairlines as that ink at a few percent.
-    pub fn tern_light() -> Self {
-        Self {
-            dark: false,
-            window: ink(0xfbfbfa, 1.0),
-            sidebar: ink(0xefefec, 1.0),
-            separator: ink(0x181a2c, 0.09),
-            label: ink(0x1b1c20, 1.0),
-            secondary: ink(0x1b1c20, 0.66),
-            tertiary: ink(0x1b1c20, 0.44),
-            quaternary: ink(0x1b1c20, 0.14),
-            selection: ink(0x181a2c, 0.09),
-            hover: ink(0x181a2c, 0.06),
-            fill: ink(0x000000, 0.035),
-            raised: ink(0xffffff, 1.0),
-            accent: ink(0x3d6fff, 1.0),
-            on_accent: ink(0xffffff, 1.0),
-            blocked: ink(0xd98a0b, 1.0),
-            failed: ink(0xe5484d, 1.0),
-            finished: ink(0x2fae74, 1.0),
-        }
-    }
-
-    pub fn tern_dark() -> Self {
-        Self {
-            dark: true,
-            window: ink(0x0f0f12, 1.0),
-            sidebar: ink(0x08080a, 1.0),
-            separator: ink(0xffffff, 0.1),
-            label: ink(0xededed, 1.0),
-            secondary: ink(0xededed, 0.7),
-            tertiary: ink(0xededed, 0.42),
-            quaternary: ink(0xededed, 0.14),
-            selection: ink(0xffffff, 0.1),
-            hover: ink(0xffffff, 0.07),
-            fill: ink(0xffffff, 0.03),
-            raised: ink(0x161619, 1.0),
-            accent: ink(0x5a8cff, 1.0),
-            on_accent: ink(0xffffff, 1.0),
-            blocked: ink(0xf5a524, 1.0),
-            failed: ink(0xff6166, 1.0),
-            finished: ink(0x3ecf8e, 1.0),
-        }
-    }
-
     /// a colour by the role name layouts use.
     pub fn get(&self, token: Token) -> Hsla {
         match token {
@@ -539,16 +492,16 @@ pub const R_CONTROL: f32 = 10.0;
 /// inner tiles: rows in a list, chips, segments in a tray.
 pub const R_TILE: f32 = 8.0;
 /// a floating menu's inset; its items are rounded `R_FLOAT - FLOAT_PAD`.
-pub const FLOAT_PAD: f32 = 5.0;
-/// a floating menu's corner: smaller than a pane's, as tern's are.
-pub const R_FLOAT: f32 = 14.0;
-/// a floating menu item: tern's 34.
-pub const FLOAT_ITEM_H: f32 = 34.0;
+pub const FLOAT_PAD: f32 = 4.0;
+/// a floating menu's corner: smaller than a pane's.
+pub const R_FLOAT: f32 = 12.0;
+/// a floating menu item: dense, as a developer tool's menus are.
+pub const FLOAT_ITEM_H: f32 = 28.0;
 
 /// the inside of a floating menu: inset so its items sit concentric in its corner.
 pub fn float_list(_p: &Palette) -> gpui_kit::Div {
     // a menu never takes the weight or size of what opened it.
-    gpui_kit::component::v_flex().p(z(FLOAT_PAD)).gap(px(1.)).font_weight(FontWeight::NORMAL).text_size(z(13.5))
+    gpui_kit::component::v_flex().p(z(FLOAT_PAD)).gap(px(1.)).font_weight(FontWeight::NORMAL).text_size(z(13.))
 }
 
 /// blue: waiting on someone (you, or a queue). orchard's status colour for it.
@@ -621,9 +574,9 @@ pub fn float_danger(p: &Palette, id: impl Into<SharedString>, icon: Option<&str>
     float_row(p, id, icon, name.into(), note, None, false, Some(p.failed))
 }
 
-/// a menu item, sized as tern sizes them: 34 tall (46 with a description),
-/// 10 in from the sides and between icon and label, 13.5 text, a 15 point
-/// icon in the muted ink, and a corner concentric with the menu's.
+/// a menu item, dense: 28 tall (40 with a description), 8 in from the sides
+/// and between icon and label, 13 text, a 14 point icon in the muted ink, and
+/// a corner concentric with the menu's.
 #[allow(clippy::too_many_arguments)]
 fn float_row(p: &Palette, id: impl Into<SharedString>, icon: Option<&str>, name: SharedString, note: Option<&str>, keys: Option<&str>, current: bool, danger: Option<Hsla>) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::component::{Icon, h_flex};
@@ -637,24 +590,24 @@ fn float_row(p: &Palette, id: impl Into<SharedString>, icon: Option<&str>, name:
     let rich = note.is_some();
     h_flex()
         .id(id.into())
-        .min_h(z(if rich { 46. } else { FLOAT_ITEM_H }))
+        .min_h(z(if rich { 40. } else { FLOAT_ITEM_H }))
         .w_full()
-        .px(z(10.))
-        .py(z(if rich { 6. } else { 0. }))
-        .gap(z(10.))
+        .px(z(8.))
+        .py(z(if rich { 5. } else { 0. }))
+        .gap(z(8.))
         .rounded(z(R_FLOAT - FLOAT_PAD))
         .font_weight(FontWeight::NORMAL)
         .text_color(ink)
         .when(current, |d| d.bg(p.selection))
         .hover(move |d| d.bg(if current { p.selection } else { wash }))
-        .children(icon.map(|i| div().flex_shrink_0().size(z(15.)).flex().items_center().justify_center().child(Icon::empty().path(format!("icons/{i}.svg")).size(z(15.)).text_color(icon_ink))))
+        .children(icon.map(|i| div().flex_shrink_0().size(z(14.)).flex().items_center().justify_center().child(Icon::empty().path(format!("icons/{i}.svg")).size(z(14.)).text_color(icon_ink))))
         .child(
             gpui_kit::component::v_flex()
                 .flex_1()
                 .min_w_0()
                 .gap(px(1.))
-                .child(div().text_size(z(13.5)).line_height(z(18.)).truncate().child(name))
-                .children(note.map(|n| div().text_size(z(12.)).line_height(z(16.)).text_color(p.tertiary).truncate().child(n))),
+                .child(div().text_size(z(13.)).line_height(z(17.)).truncate().child(name))
+                .children(note.map(|n| div().text_size(z(11.5)).line_height(z(15.)).text_color(p.tertiary).truncate().child(n))),
         )
         .children(keys.map(|k| div().pl(z(14.)).child(keycaps(&p, k))))
         .when(current, |d| d.child(div().flex_shrink_0().text_color(p.accent).child(Icon::empty().path("icons/check.svg").size(z(13.)))))
@@ -663,12 +616,12 @@ fn float_row(p: &Palette, id: impl Into<SharedString>, icon: Option<&str>, name:
 /// a quiet heading inside a menu, above a group of items.
 pub fn float_label(p: &Palette, text: impl Into<SharedString>) -> gpui_kit::Div {
     use gpui_kit::{ParentElement as _, div};
-    div().px(z(10.)).pt(z(8.)).pb(z(3.)).text_size(z(11.5)).line_height(z(16.)).font_weight(FontWeight::MEDIUM).text_color(p.tertiary).child(text.into())
+    div().px(z(8.)).pt(z(6.)).pb(z(2.)).text_size(z(11.)).line_height(z(15.)).font_weight(FontWeight::MEDIUM).text_color(p.tertiary).child(text.into())
 }
 
 /// the line between groups in a menu.
 pub fn float_sep(p: &Palette) -> gpui_kit::Div {
-    gpui_kit::div().h(px(1.)).mx(z(10.)).my(z(4.)).bg(p.separator)
+    gpui_kit::div().h(px(1.)).mx(z(8.)).my(z(3.)).bg(p.separator)
 }
 
 // ---- controls -----------------------------------------------------------------
@@ -776,7 +729,7 @@ mod tests {
 
     #[test]
     fn text_meets_apples_contrast_floor_on_every_surface() {
-        for p in [Palette::light(), Palette::dark(), Palette::orchard_light(), Palette::orchard_dark(), Palette::tern_light(), Palette::tern_dark()] {
+        for p in [Palette::light(), Palette::dark(), Palette::orchard_light(), Palette::orchard_dark()] {
             for (name, bg) in [("window", p.window), ("sidebar", p.sidebar)] {
                 // apple: 4.5:1 for text up to 17pt.
                 assert!(contrast(p.label, bg) >= 4.5, "label on {name} (dark={}): {:.2}", p.dark, contrast(p.label, bg));
@@ -799,7 +752,7 @@ mod tests {
 
     #[test]
     fn the_shipped_palettes_are_already_readable_so_keeping_them_readable_changes_nothing() {
-        for p in [Palette::light(), Palette::dark(), Palette::orchard_light(), Palette::orchard_dark(), Palette::tern_light(), Palette::tern_dark()] {
+        for p in [Palette::light(), Palette::dark(), Palette::orchard_light(), Palette::orchard_dark()] {
             let mut kept = p;
             kept.keep_readable();
             assert_eq!(kept, p, "dark={}", p.dark);

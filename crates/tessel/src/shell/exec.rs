@@ -316,8 +316,8 @@ impl Shell {
 
             "theme.set" => {
                 let base = need(args, "base", cmd)?;
-                if !["tessel", "orchard", "tern"].contains(&base) {
-                    return Err(format!("\"{base}\" isn't a theme. themes: tessel, orchard, tern"));
+                if !["tessel", "orchard"].contains(&base) {
+                    return Err(format!("\"{base}\" isn't a theme. themes: tessel, orchard"));
                 }
                 let b = base.to_owned();
                 self.edit_ui(|f| Self::set_in(f, "theme", "base", Some(json!(b))), window, cx);
@@ -437,7 +437,7 @@ impl Shell {
             "panes": panes,
             "drawers": drawers,
             "theme": {
-                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard", crate::ui::Base::Tern => "tern" },
+                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard" },
                 "dark": self.palette.get().dark,
                 "size": t.scale.unwrap_or(1.0),
             },

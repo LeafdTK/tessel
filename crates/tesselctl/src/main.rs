@@ -48,7 +48,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl ui close|zoom [PANE]
   tesselctl ui show MODULE [PANE]           show a module in a pane
   tesselctl ui focus PANE
-  tesselctl ui theme tessel|orchard|tern
+  tesselctl ui theme tessel|orchard
   tesselctl ui events [--filter KIND,...]   what windows do, as json lines
   tesselctl ui windows                      the open windows
 

@@ -92,9 +92,8 @@ pub static COMMANDS: &[Spec] = &[
     c("workspace.tab", "Workspace: Files", "folder", None, r#"{"tab":"files"}"#, ""),
     c("workspace.tab", "Workspace: Checks", "circle-check", None, r#"{"tab":"checks"}"#, ""),
     // look
-    c("theme.set", "Theme: Tessel", "palette", None, r#"{"base":"tessel"}"#, "base: tessel|orchard|tern"),
+    c("theme.set", "Theme: Tessel", "palette", None, r#"{"base":"tessel"}"#, "base: tessel|orchard"),
     c("theme.set", "Theme: Orchard", "palette", None, r#"{"base":"orchard"}"#, ""),
-    c("theme.set", "Theme: Tern", "palette", None, r#"{"base":"tern"}"#, ""),
     c("theme.appearance", "Appearance: System", "sun-moon", None, r#"{"mode":"system"}"#, "mode: system|light|dark"),
     c("theme.appearance", "Appearance: Light", "sun", None, r#"{"mode":"light"}"#, ""),
     c("theme.appearance", "Appearance: Dark", "moon", None, r#"{"mode":"dark"}"#, ""),
@@ -202,7 +201,7 @@ mod tests {
         assert!(score("split", "Split down").is_some());
         assert!(score("xyz", "Split right").is_none());
         assert!(score("", "anything") == Some(0));
-        assert!(score("thm", "Theme: Tern").is_some());
+        assert!(score("thm", "Theme: Orchard").is_some());
         assert!(score("sessions", "All sessions").unwrap() > score("sessions", "Show Sessions here").unwrap(), "whole and early wins");
     }
 }

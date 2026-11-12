@@ -305,8 +305,6 @@ and never the only way a state is shown. Everything else is neutral, with one ac
 
 - `base`: the palette to start from. `tessel` (default): apple's system colours.
   `orchard`: Hack Club Orchard's default palette, a warm tinted neutral with a red accent.
-  `tern`: Tern's palette, a warm grey page, a near-white panel and a blue accent, with
-  inks and hairlines drawn as one ink at a few strengths.
 - `appearance`: `system` (default) follows macOS, or always `light` or `dark`.
 - `size`: how big the interface is drawn: `compact`, `default` or `large`, or a number
   from 0.75 to 1.5. Text, menus and controls scale with it.
@@ -401,7 +399,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.size` | Pane: small |  | size: small|half|large, or a fraction like 0.75; dir?: width|height (default width); pane? |
 | `pane.move` | Move a pane |  | pane, to, zone: left|right|top|bottom|swap |
 | `workspace.tab` | Workspace: Changes |  | tab: changes|files|checks|artifacts|info |
-| `theme.set` | Theme: Tessel |  | base: tessel|orchard|tern |
+| `theme.set` | Theme: Tessel |  | base: tessel|orchard |
 | `theme.appearance` | Appearance: System |  | mode: system|light|dark |
 | `theme.size` | Interface size: Compact |  | size: compact|default|large |
 | `theme.accent` | Set the accent colour |  | hex: #rrggbb, or null for the theme's own |

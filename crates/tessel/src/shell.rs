@@ -479,7 +479,7 @@ impl Shell {
             composer,
             new_project: std::env::var("TESSEL_DEFAULT_CWD").ok().filter(|d| !d.is_empty()),
             new_prompt,
-            // each session in a workspace of its own, as Conductor does it, where the folder allows.
+            // each session in a workspace of its own, where the folder allows.
             new_worktree: true,
             folder_git: Default::default(),
             folder_asked: Default::default(),

@@ -1062,11 +1062,11 @@ fn settings_open_from_the_keyboard_and_write_what_you_pick_to_the_layout_file(cx
     assert!(read()["theme"].get("light").is_none(), "picking the theme's own accent takes the override out");
 
     // a layout of the file's own is put back to the default, keeping the theme.
-    std::fs::write(&file, format!(r#"{{"theme": {{"base": "tern"}}, "root": {}}}"#, &SIDEBAR_SHUT[9..SIDEBAR_SHUT.len() - 1])).unwrap();
+    std::fs::write(&file, format!(r#"{{"theme": {{"base": "orchard"}}, "root": {}}}"#, &SIDEBAR_SHUT[9..SIDEBAR_SHUT.len() - 1])).unwrap();
     rig.settle(cx);
     rig.click(cx, "settings-tab-customize");
     rig.click(cx, "settings-reset-layout");
-    assert!(read().get("root").is_none() && read()["theme"]["base"] == "tern");
+    assert!(read().get("root").is_none() && read()["theme"]["base"] == "orchard");
 
     // starting over takes two presses, and deletes the file.
     rig.click(cx, "settings-reset");
@@ -1550,7 +1550,7 @@ fn a_script_drives_the_window_through_the_same_commands_and_is_answered(cx: &mut
     assert!(answer(&mut rig).unwrap().1.unwrap_err().contains("pane.split"), "suggests what was meant");
 
     // nobody listening: nothing is published. someone listening: every command says so.
-    rig.feed(cx, vec![UiEvent::Call { call: 5, cmd: "theme.set".into(), args: serde_json::json!({"base": "tern"}) }]);
+    rig.feed(cx, vec![UiEvent::Call { call: 5, cmd: "theme.set".into(), args: serde_json::json!({"base": "orchard"}) }]);
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::UiPublish { .. })));
     rig.feed(cx, vec![UiEvent::Watched(true), UiEvent::Call { call: 6, cmd: "theme.size".into(), args: serde_json::json!({"size": "compact"}) }]);
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::UiPublish { kind, .. } if kind == "command_run")));

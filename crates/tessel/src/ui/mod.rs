@@ -385,8 +385,6 @@ pub enum Base {
     Tessel,
     /// hack club orchard's default palette.
     Orchard,
-    /// tern's palette.
-    Tern,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -415,11 +413,12 @@ pub struct ThemeSpec {
 impl ThemeSpec {
     pub(crate) fn parse(v: &Value) -> Result<Self, String> {
         // "photon" is tessel's old name: a layout written then still reads.
-        let bases = [("tessel", Base::Tessel), ("orchard", Base::Orchard), ("tern", Base::Tern), ("photon", Base::Tessel)];
+        // "photon" is tessel's old name, and "tern" a palette that's gone: both still read, as tessel.
+        let bases = [("tessel", Base::Tessel), ("orchard", Base::Orchard), ("photon", Base::Tessel), ("tern", Base::Tessel)];
         if v.is_string() {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
-        let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\", \"tern\") or an object")?;
+        let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\") or an object")?;
         keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop"])?;
         let mut t = Self::default();
         if let Some(b) = obj.get("base") {
@@ -493,8 +492,6 @@ impl ThemeSpec {
             (Base::Tessel, true) => Palette::dark(),
             (Base::Orchard, false) => Palette::orchard_light(),
             (Base::Orchard, true) => Palette::orchard_dark(),
-            (Base::Tern, false) => Palette::tern_light(),
-            (Base::Tern, true) => Palette::tern_dark(),
         };
         for (token, color) in if dark { &self.dark_tokens } else { &self.light } {
             p.set(*token, *color);

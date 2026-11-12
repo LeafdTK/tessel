@@ -173,7 +173,6 @@ impl Shell {
         let base = match theme.base.unwrap_or_default() {
             crate::ui::Base::Tessel => "tessel",
             crate::ui::Base::Orchard => "orchard",
-            crate::ui::Base::Tern => "tern",
         };
         let appearance = match theme.dark.flatten() {
             None => "system",
