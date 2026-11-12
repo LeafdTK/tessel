@@ -299,12 +299,23 @@ mod tests {
         std::env::var_os("CI").is_none()
     }
 
+    /// the best of three draws: a busy machine slows one, a slow drawing slows all.
+    fn fastest(key: &Key) -> (Vec<u8>, std::time::Duration) {
+        let mut best = None;
+        let mut px = Vec::new();
+        for _ in 0..3 {
+            let started = std::time::Instant::now();
+            px = draw(key);
+            let took = started.elapsed();
+            best = Some(best.map_or(took, |b: std::time::Duration| b.min(took)));
+        }
+        (px, best.unwrap_or_default())
+    }
+
     #[test]
     fn a_backdrop_is_dots_with_gaps_and_cheap_to_draw() {
         let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false };
-        let started = std::time::Instant::now();
-        let px = draw(&key);
-        let took = started.elapsed();
+        let (px, took) = fastest(&key);
         assert_eq!(px.len(), 2880 * 1800 * 4);
         // the last column and row of every dot are the gap, all one colour.
         let at = |x: usize, y: usize| &px[(y * 2880 + x) * 4..(y * 2880 + x) * 4 + 4];
@@ -319,9 +330,7 @@ mod tests {
     #[test]
     fn felt_stays_close_to_its_colour_and_is_cheap_to_draw() {
         let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true };
-        let started = std::time::Instant::now();
-        let px = draw(&key);
-        let took = started.elapsed();
+        let (px, took) = fastest(&key);
         assert_eq!(px.len(), 1440 * 900 * 4);
         // grain, not pattern: every pixel within a few steps of the cloth's colour.
         let red = px.chunks_exact(4).map(|p| i32::from(p[2]));
