@@ -75,6 +75,8 @@ pub enum HubMsg {
     TermExited { term: TermId, code: i32 },
     /// everything on a terminal, for a client that asked to attach.
     TermDump { term: TermId, client: ClientId, id: u64, bytes: Vec<u8> },
+    /// what the browser has to say: a frame, a page moving on, a pick.
+    Browser(Event),
     Stop,
 }
 
@@ -159,6 +161,9 @@ pub struct Hub {
     git_undo: GitUndoStacks,
     /// each workspace's ten ports.
     ports: crate::setup::Ports,
+    /// the browser, and who's watching each session's page.
+    browser: Arc<crate::browser::Browser>,
+    browser_watch: HashMap<SessionId, std::collections::HashSet<ClientId>>,
 }
 
 type GitUndoStacks = Arc<std::sync::Mutex<HashMap<SessionId, Vec<GitUndo>>>>;
@@ -210,6 +215,12 @@ impl Hub {
         tx: mpsc::UnboundedSender<HubMsg>,
     ) -> anyhow::Result<Self> {
         let ports_path = cfg.paths.home.join("ports.json");
+        let browser = {
+            let tx = tx.clone();
+            Arc::new(crate::browser::Browser::new(cfg.paths.home.clone(), Arc::new(move |ev| {
+                let _ = tx.send(HubMsg::Browser(ev));
+            })))
+        };
         let mut hub = Self {
             cfg,
             store,
@@ -226,6 +237,8 @@ impl Hub {
             next_term: 1,
             git_undo: Default::default(),
             ports: crate::setup::Ports::load(ports_path),
+            browser,
+            browser_watch: HashMap::new(),
         };
         hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
@@ -286,6 +299,18 @@ impl Hub {
             }
             HubMsg::Disconnected { client } => {
                 let gone = self.clients.remove(&client);
+                // pages nobody watches any more stop sending frames.
+                let unwatched: Vec<SessionId> = self
+                    .browser_watch
+                    .iter_mut()
+                    .filter_map(|(s, w)| (w.remove(&client) && w.is_empty()).then_some(*s))
+                    .collect();
+                for s in unwatched {
+                    let b = self.browser.clone();
+                    tokio::spawn(async move {
+                        let _ = b.act(s, tessel_proto::BrowserAct::Watch { on: false }, false, "about:blank").await;
+                    });
+                }
                 for t in self.terms.values_mut() {
                     t.attached.remove(&client);
                 }
@@ -327,6 +352,16 @@ impl Hub {
                 }
                 self.respond(client, id, result);
             }
+            HubMsg::Browser(ev) => match &ev {
+                // frames only to those watching that page.
+                Event::BrowserFrame { session, .. } => {
+                    let to: Vec<ClientId> = self.browser_watch.get(session).map(|w| w.iter().copied().collect()).unwrap_or_default();
+                    for c in to {
+                        self.send(c, Envelope::Ev { ev: ev.clone() });
+                    }
+                }
+                _ => self.tell_everyone(ev),
+            },
             HubMsg::TermInput { payload } => {
                 if let Some((term, bytes)) = tessel_proto::term::decode(&payload)
                     && let Some(t) = self.terms.get(&term)
@@ -544,6 +579,9 @@ impl Hub {
                         agent.kill();
                     }
                     self.store.delete(session);
+                    self.browser_watch.remove(&session);
+                    let b = self.browser.clone();
+                    tokio::spawn(async move { b.close(session).await });
                     let dir = self.cfg.paths.session_dir(&session);
                     let wt = live.state.meta.worktree.clone().filter(|_| remove_worktree);
                     let path = live.state.meta.cwd.clone();
@@ -817,6 +855,44 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     let scripts = tokio::task::spawn_blocking(move || crate::setup::load(&dir, std::path::Path::new(&root))).await.unwrap_or_default();
                     Ok(Response::Scripts { scripts, port })
                 });
+            }
+            Request::Browser { session, act, agent } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let cwd = live.state.meta.cwd.clone();
+                // a new page starts at what the workspace serves.
+                let first = format!("http://localhost:{}", self.ports.of(&cwd));
+                // watching is per window; the page sends frames while anyone watches.
+                let act = match act {
+                    tessel_proto::BrowserAct::Watch { on } => {
+                        let w = self.browser_watch.entry(session).or_default();
+                        if on {
+                            w.insert(client);
+                        } else {
+                            w.remove(&client);
+                        }
+                        tessel_proto::BrowserAct::Watch { on: !w.is_empty() }
+                    }
+                    other => other,
+                };
+                let (b, tx) = (self.browser.clone(), self.tx.clone());
+                tokio::spawn(async move {
+                    let result = b
+                        .act(session, act, agent, &first)
+                        .await
+                        .map(|(state, text, image)| Response::Browser { state, text, image })
+                        .map_err(|e| RpcError::new(ErrorCode::Invalid, e));
+                    let _ = tx.send(HubMsg::Reply { client, id, result });
+                });
+                return None;
+            }
+            Request::BrowserEngine => Ok(Response::BrowserEngine { engine: self.browser.engine() }),
+            Request::BrowserInstall => {
+                let (b, tx) = (self.browser.clone(), self.tx.clone());
+                tokio::spawn(async move {
+                    let result = b.install().await.map(|engine| Response::BrowserEngine { engine }).map_err(|e| RpcError::new(ErrorCode::Internal, e));
+                    let _ = tx.send(HubMsg::Reply { client, id, result });
+                });
+                return None;
             }
             Request::ScriptsSave { session, scripts, local } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };

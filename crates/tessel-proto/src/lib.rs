@@ -13,6 +13,7 @@ pub mod frame;
 pub mod ids;
 pub mod item;
 pub mod local;
+pub mod browser;
 pub mod rpc;
 pub mod state;
 pub mod surface;
@@ -20,6 +21,7 @@ pub mod term;
 pub mod workspace;
 
 pub use agent::*;
+pub use browser::*;
 pub use ids::*;
 pub use item::*;
 pub use rpc::*;
@@ -28,7 +30,7 @@ pub use workspace::*;
 
 /// bump major on a breaking wire change, minor on an additive one.
 pub const PROTO_MAJOR: u16 = 0;
-pub const PROTO_MINOR: u16 = 15;
+pub const PROTO_MINOR: u16 = 16;
 
 /// milliseconds since the unix epoch.
 pub type Millis = u64;

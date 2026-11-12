@@ -173,6 +173,18 @@ pub enum Request {
     Scripts {
         session: SessionId,
     },
+    /// do something to a session's page (see `BrowserAct`). `agent`: the
+    /// agent did it, so watchers are shown.
+    Browser {
+        session: SessionId,
+        act: crate::BrowserAct,
+        #[serde(default)]
+        agent: bool,
+    },
+    /// which browser engine the daemon would drive, if any.
+    BrowserEngine,
+    /// download one (Chrome for Testing) into tessel's own folder.
+    BrowserInstall,
     /// write a repository's scripts. `local`: in the main checkout's
     /// `.tessel/settings.local.toml`, for this machine only; otherwise in the
     /// workspace's `.tessel/settings.toml`, to be committed and shared.
@@ -545,6 +557,18 @@ pub enum Response {
         /// the first of the ten ports the workspace has (`$TESSEL_PORT`).
         port: u16,
     },
+    Browser {
+        state: crate::BrowserState,
+        /// what reading the page found.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        /// a screenshot, PNG, base64.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        image: Option<String>,
+    },
+    BrowserEngine {
+        engine: crate::BrowserEngine,
+    },
     Followed {
         /// the sessions newly followed, as they are now.
         snapshots: Vec<SessionSnapshot>,
@@ -722,6 +746,36 @@ pub enum Event {
     /// the daemon's settings changed (to everyone connected).
     Settings {
         settings: DaemonSettings,
+    },
+    /// a frame of a session's page, to those watching it. JPEG, base64.
+    BrowserFrame {
+        session: SessionId,
+        jpeg: String,
+        width: u32,
+        height: u32,
+    },
+    /// where a session's page is now (to everyone).
+    BrowserState {
+        session: SessionId,
+        state: crate::BrowserState,
+    },
+    /// the person pointed at an element (to everyone).
+    BrowserPicked {
+        session: SessionId,
+        picked: crate::Picked,
+    },
+    /// the agent did something to the page: what, and where (to everyone).
+    BrowserActivity {
+        session: SessionId,
+        what: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        y: Option<f64>,
+    },
+    /// the engine changed: found, installing, installed (to everyone).
+    BrowserEngine {
+        engine: crate::BrowserEngine,
     },
     /// a terminal opened or changed: title, folder, size, exit (to everyone).
     TermUpdated {
