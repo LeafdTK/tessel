@@ -90,7 +90,7 @@ fn draw_felt(key: &Key) -> Vec<u8> {
     let (w, h) = (key.w as usize, key.h as usize);
     let mut out = vec![0u8; w * h * 4];
     let base = key.bg.map(|c| c as f32 / 255.0);
-    let (grain, nap, sheen) = if key.dark { (0.055, 0.035, 0.07) } else { (0.022, 0.014, 0.035) };
+    let (grain, nap, sheen) = if key.dark { (0.11, 0.07, 0.16) } else { (0.05, 0.035, 0.08) };
     let span = (w + h) as f32;
     for y in 0..h {
         let row = &mut out[y * w * 4..(y + 1) * w * 4];
@@ -185,9 +185,14 @@ pub(crate) fn project_hue(name: &str) -> f32 {
 }
 
 impl Shell {
-    /// whether to draw it: only when the theme asks for it.
+    /// what's behind the panes: nothing, unless the theme asks.
+    pub(crate) fn backdrop_kind(&self) -> crate::ui::Backdrop {
+        self.ui.theme.backdrop.unwrap_or_default()
+    }
+
+    /// whether there's anything behind the panes.
     pub(crate) fn backdrop_on(&self) -> bool {
-        self.ui.theme.backdrop.unwrap_or(false)
+        self.backdrop_kind() != crate::ui::Backdrop::None
     }
 
     /// the hue for the room: the open session's project, else the one a new session would start in.
@@ -315,7 +320,7 @@ mod tests {
         // grain, not pattern: every pixel within a few steps of the cloth's colour.
         let red = px.chunks_exact(4).map(|p| i32::from(p[2]));
         let (lo, hi) = red.fold((255, 0), |(lo, hi), r| (lo.min(r), hi.max(r)));
-        assert!(lo >= 58 - 12 && hi <= 58 + 12, "the red channel stays near 58: {lo}..{hi}");
+        assert!(lo >= 58 - 16 && hi <= 58 + 16, "the red channel stays near 58: {lo}..{hi}");
         assert!(hi > lo, "and it isn't flat");
         assert!(took.as_millis() < 250, "drawing it took {took:?}");
     }

@@ -356,6 +356,27 @@ pub const TOKENS: [(&str, Token); 16] = [
     ("success", Token::Success),
 ];
 
+/// what's behind the panes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Backdrop {
+    #[default]
+    None,
+    /// a dithered band in the project's colours.
+    Dither,
+    /// a photograph from NASA's image library.
+    Space,
+}
+
+impl Backdrop {
+    pub fn name(self) -> &'static str {
+        match self {
+            Backdrop::None => "none",
+            Backdrop::Dither => "dither",
+            Backdrop::Space => "space",
+        }
+    }
+}
+
 /// which built-in palette a theme starts from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Base {
@@ -387,8 +408,8 @@ pub struct ThemeSpec {
     pub glass: Option<bool>,
     /// the frame is felt: a fine grain with a soft sheen, the panes set into it.
     pub felt: Option<bool>,
-    /// the dithered backdrop behind the panes: off unless it's "dither".
-    pub backdrop: Option<bool>,
+    /// what's behind the panes: nothing unless asked for.
+    pub backdrop: Option<Backdrop>,
 }
 
 impl ThemeSpec {
@@ -434,7 +455,7 @@ impl ThemeSpec {
             t.felt = Some(felt);
         }
         if let Some(b) = obj.get("backdrop") {
-            t.backdrop = Some(one_of(b, "theme.backdrop", &[("dither", true), ("none", false)])?);
+            t.backdrop = Some(one_of(b, "theme.backdrop", &[("none", Backdrop::None), ("dither", Backdrop::Dither), ("space", Backdrop::Space)])?);
         }
         for (key, out) in [("light", &mut t.light), ("dark", &mut t.dark_tokens)] {
             let Some(m) = obj.get(key) else { continue };
@@ -1471,8 +1492,9 @@ mod tests {
     #[test]
     fn the_backdrop_is_off_unless_asked_for() {
         assert_eq!(parse(r#"{"theme": "tessel"}"#).unwrap().theme.backdrop, None, "unsaid: the app's default, off");
-        assert_eq!(parse(r#"{"theme": {"backdrop": "none"}}"#).unwrap().theme.backdrop, Some(false));
-        assert_eq!(parse(r#"{"theme": {"backdrop": "dither"}}"#).unwrap().theme.backdrop, Some(true));
+        assert_eq!(parse(r#"{"theme": {"backdrop": "none"}}"#).unwrap().theme.backdrop, Some(Backdrop::None));
+        assert_eq!(parse(r#"{"theme": {"backdrop": "dither"}}"#).unwrap().theme.backdrop, Some(Backdrop::Dither));
+        assert_eq!(parse(r#"{"theme": {"backdrop": "space"}}"#).unwrap().theme.backdrop, Some(Backdrop::Space));
         assert!(parse(r#"{"theme": {"backdrop": "plaid"}}"#).unwrap_err().contains("theme.backdrop"));
     }
 

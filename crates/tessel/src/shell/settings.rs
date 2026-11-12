@@ -195,41 +195,79 @@ impl Shell {
         } else {
             "solid"
         };
-        let backdrop = if theme.backdrop.unwrap_or(false) { "dither" } else { "none" };
+        let backdrop = theme.backdrop.unwrap_or_default().name();
         let themes_rows = v_flex()
+            .child(self.picture_row(
+                "Material",
+                "What the frame around the panes is made of. Text always sits on solid panes.",
+                self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt)], material, cx, |this, v, w, cx| {
+                    let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
+                }),
+            ))
+            .child(self.picture_row(
+                "Backdrop",
+                "Behind the panes, and filling an empty conversation.",
+                self.pictures("backdrop", &[("none", "None", pic_no_backdrop), ("dither", "Dither", pic_dither), ("space", "Space", pic_space)], backdrop, cx, |this, v, w, cx| {
+                    let _ = this.exec("theme.backdrop", &json!({"backdrop": v}), w, cx);
+                }),
+            ))
+            .when(backdrop == "space", |d| {
+                let st = self.space.borrow();
+                let status = if st.loading {
+                    "Fetching a photo from NASA's library…".to_owned()
+                } else if let Some(e) = &st.error {
+                    format!("Couldn't get one: {e}")
+                } else if let Some(ph) = &st.photo {
+                    if ph.title.is_empty() { "A photo from NASA.".to_owned() } else { format!("Showing \u{201c}{}\u{201d}, from NASA.", ph.title) }
+                } else {
+                    String::new()
+                };
+                d.child(
+                    h_flex()
+                        .px_4()
+                        .pb_3()
+                        .gap_3()
+                        .child(div().flex_1().min_w_0().set(Type::Subheadline).text_color(p.secondary).truncate().child(status))
+                        .child(theme::button(&p, "backdrop-next", "Next photo", Some("refresh-cw"), theme::ButtonKind::Secondary).on_click(cx.listener(|this, _, w, cx| {
+                            let _ = this.exec("backdrop.next", &json!({}), w, cx);
+                        }))),
+                )
+            })
+            .child(self.picture_row(
+                "Density",
+                "How the panes sit in the window: floating apart, or flush against each other.",
+                self.pictures("density", &[("islands", "Islands", pic_islands), ("compact", "Compact", pic_compact)], density, cx, |this, v, w, cx| {
+                    let _ = this.exec("theme.density", &json!({"density": v}), w, cx);
+                }),
+            ))
             .child(
                 v_flex()
+                    .border_t_1()
+                    .border_color(p.separator)
                     .child(
                         v_flex()
                             .px_4()
                             .pt_3()
                             .gap(px(2.))
-                            .child(div().set(Type::Body).child("Theme"))
-                            .child(div().set(Type::Subheadline).text_color(p.secondary).child("Hover to try one on. Your own go in ~/.tessel/themes.")),
+                            .child(
+                                h_flex()
+                                    .gap_4()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap(px(2.))
+                                            .child(div().set(Type::Body).child("Theme"))
+                                            .child(div().set(Type::Subheadline).text_color(p.secondary).child("Every theme comes light and dark. Hover one to try it on; your own go in ~/.tessel/themes.")),
+                                    )
+                                    // right by the themes: which of their two looks you see.
+                                    .child(div().flex_shrink_0().child(self.segmented("theme-mode", &[("system", "System"), ("light", "Light"), ("dark", "Dark")], appearance, cx, |this, v, w, cx| {
+                                        this.edit_ui(|f| Self::set_in(f, "theme", "appearance", (v != "system").then(|| json!(v))), w, cx)
+                                    }))),
+                            ),
                     )
                     .child(self.theme_gallery(cx)),
-            )
-            .child(self.setting_row(
-                "Density",
-                "Islands float apart. Compact sits flush, a hairline between.",
-                self.segmented("density", &[("islands", "Islands"), ("compact", "Compact")], density, cx, |this, v, w, cx| {
-                    let _ = this.exec("theme.density", &json!({"density": v}), w, cx);
-                }),
-            ))
-            .child(self.setting_row(
-                "Material",
-                "Glass lets the desktop through, blurred. Felt gives the frame a fine grain and a soft sheen.",
-                self.segmented("material", &[("solid", "Solid"), ("glass", "Glass"), ("felt", "Felt")], material, cx, |this, v, w, cx| {
-                    let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
-                }),
-            ))
-            .child(self.setting_row(
-                "Backdrop",
-                "A dithered sky behind the panes, in the colours of the project you're in.",
-                self.segmented("backdrop", &[("dither", "Dither"), ("none", "None")], backdrop, cx, |this, v, w, cx| {
-                    let _ = this.exec("theme.backdrop", &json!({"backdrop": v}), w, cx);
-                }),
-            ));
+            );
         let appearance_rows = v_flex()
             .child(self.setting_row(
                 "Appearance",
@@ -503,6 +541,61 @@ impl Shell {
             .child(div().flex_shrink_0().child(control))
     }
 
+    /// a setting whose options are easier seen than said: a row with its name
+    /// and hint above, and below it a small picture of each option.
+    fn picture_row(&self, label: &'static str, hint: &'static str, pictures: impl IntoElement) -> Div {
+        let p = self.palette.get();
+        v_flex()
+            .px_4()
+            .py_3()
+            .gap_3()
+            .border_t_1()
+            .border_color(p.separator)
+            .child(
+                v_flex()
+                    .gap(px(2.))
+                    .child(div().set(Type::Body).child(label))
+                    .when(!hint.is_empty(), |d| d.child(div().set(Type::Subheadline).text_color(p.secondary).child(hint))),
+            )
+            .child(pictures)
+    }
+
+    /// the options as pictures, the chosen one ringed in the accent.
+    fn pictures(
+        &self,
+        name: &'static str,
+        options: &[(&'static str, &'static str, Picture)],
+        selected: &str,
+        cx: &mut Context<Self>,
+        pick: fn(&mut Shell, &'static str, &mut Window, &mut Context<Shell>),
+    ) -> impl IntoElement {
+        let p = self.palette.get();
+        let mut row = h_flex().gap_3().flex_wrap();
+        for (value, label, picture) in options.iter().copied() {
+            let on = value == selected;
+            row = row.child(
+                v_flex()
+                    .id(SharedString::from(format!("{name}-{value}")))
+                    .test_support()
+                    .aria_label(SharedString::from(format!("{label}{}", if on { ", selected" } else { "" })))
+                    .gap(px(6.))
+                    .items_center()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, window, cx| pick(this, value, window, cx)))
+                    .child(
+                        div()
+                            .p(px(3.))
+                            .rounded(px(theme::R_CARD + 3.))
+                            .border_2()
+                            .border_color(if on { p.accent } else { gpui_kit::transparent_black() })
+                            .child(div().w(px(128.)).h(px(80.)).rounded(px(theme::R_CARD)).overflow_hidden().border_1().border_color(p.separator).child(picture(&p))),
+                    )
+                    .child(div().set(Type::Callout).text_color(if on { p.label } else { p.secondary }).child(label)),
+            );
+        }
+        row
+    }
+
     /// one of a few: a sunken tray with the chosen option raised in it.
     fn segmented(
         &self,
@@ -550,4 +643,93 @@ impl Shell {
         }
         row
     }
+}
+
+/// a small drawing of what a setting does.
+type Picture = fn(&theme::Palette) -> Div;
+
+/// a little window: a sidebar on the left and two panes, drawn `how`.
+fn mini_window(p: &theme::Palette, frame: Hsla, islands: bool, under: Option<Div>, grain: bool) -> Div {
+    let pane = |p: &theme::Palette| {
+        div().flex_1().h_full().bg(p.window).when(islands, |d| d.rounded(px(4.)).border_1().border_color(p.separator)).child(
+            v_flex().p(px(5.)).gap(px(3.)).child(div().w(px(22.)).h(px(3.)).rounded_full().bg(p.tertiary)).child(div().w(px(16.)).h(px(3.)).rounded_full().bg(p.quaternary)),
+        )
+    };
+    let mut body = h_flex().size_full().bg(frame).when(islands, |d| d.p(px(5.)).gap(px(5.))).when(!islands, |d| d.gap(px(1.)));
+    body = body
+        .child(div().w(px(28.)).h_full().child(v_flex().pt(px(10.)).pl(px(4.)).gap(px(3.)).child(div().w(px(16.)).h(px(3.)).rounded_full().bg(p.tertiary)).child(div().w(px(12.)).h(px(3.)).rounded_full().bg(p.quaternary))))
+        .child(pane(p))
+        .child(pane(p));
+    let mut room = div().relative().size_full();
+    if let Some(under) = under {
+        room = room.child(under.absolute().inset_0());
+    }
+    if grain {
+        // a scatter of lighter and darker specks: the cloth, small.
+        let mut specks = div().absolute().inset_0();
+        for i in 0..90u32 {
+            let h = i.wrapping_mul(2_654_435_761);
+            let (x, y) = ((h % 128) as f32, ((h / 128) % 80) as f32);
+            let ink = if h & 1 == 0 { gpui_kit::white().opacity(0.10) } else { gpui_kit::black().opacity(0.18) };
+            specks = specks.child(div().absolute().left(px(x)).top(px(y)).size(px(1.5)).bg(ink));
+        }
+        return room.child(body).child(specks);
+    }
+    room.child(body)
+}
+
+fn frame_of(p: &theme::Palette) -> Hsla {
+    p.sidebar.opacity(1.0)
+}
+
+fn pic_islands(p: &theme::Palette) -> Div {
+    mini_window(p, frame_of(p), true, None, false)
+}
+
+fn pic_compact(p: &theme::Palette) -> Div {
+    mini_window(p, p.separator, false, None, false)
+}
+
+fn pic_solid(p: &theme::Palette) -> Div {
+    mini_window(p, frame_of(p), true, None, false)
+}
+
+fn pic_glass(p: &theme::Palette) -> Div {
+    // the desktop behind, seen through a thin frame.
+    let desktop = h_flex().size_full().child(div().flex_1().h_full().bg(gpui_kit::rgb(0x4f7fe3))).child(div().flex_1().h_full().bg(gpui_kit::rgb(0xd9541e))).child(div().flex_1().h_full().bg(gpui_kit::rgb(0x2a9d9a)));
+    mini_window(p, frame_of(p).opacity(0.45), true, Some(desktop), false)
+}
+
+fn pic_felt(p: &theme::Palette) -> Div {
+    mini_window(p, frame_of(p), true, None, true)
+}
+
+fn pic_no_backdrop(p: &theme::Palette) -> Div {
+    mini_window(p, frame_of(p), true, None, false)
+}
+
+fn pic_dither(p: &theme::Palette) -> Div {
+    let mut dots = div().size_full().bg(p.window);
+    for i in 0..220u32 {
+        let h = i.wrapping_mul(2_246_822_519);
+        let (x, y) = ((h % 128) as f32, ((h / 128) % 80) as f32);
+        let band = ((x + y) - 70.0).abs() < 22.0;
+        if band || h % 7 == 0 {
+            let c = if (x + y) < 70.0 { gpui_kit::rgb(0x4f7fe3) } else { gpui_kit::rgb(0xd9541e) };
+            dots = dots.child(div().absolute().left(px(x)).top(px(y)).size(px(2.)).bg(c));
+        }
+    }
+    dots.relative()
+}
+
+fn pic_space(_: &theme::Palette) -> Div {
+    // a planet's limb against the dark, as the photos tend to be.
+    div()
+        .size_full()
+        .relative()
+        .bg(gpui_kit::rgb(0x05070d))
+        .child(div().absolute().left(px(-40.)).top(px(36.)).size(px(150.)).rounded_full().bg(gpui_kit::rgb(0x1d4f8f)).border_2().border_color(gpui_kit::rgb(0x8fc1ec)))
+        .child(div().absolute().left(px(96.)).top(px(12.)).size(px(2.)).rounded_full().bg(gpui_kit::white()))
+        .child(div().absolute().left(px(70.)).top(px(24.)).size(px(1.5)).rounded_full().bg(gpui_kit::white().opacity(0.7)))
+        .child(div().absolute().left(px(114.)).top(px(40.)).size(px(1.5)).rounded_full().bg(gpui_kit::white().opacity(0.6)))
 }

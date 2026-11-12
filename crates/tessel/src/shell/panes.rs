@@ -402,7 +402,11 @@ impl Shell {
             .relative()
             .size_full()
             .child(measure)
-            .when(self.backdrop_on(), |d| d.child(self.backdrop_el(cx)));
+            .children(match self.backdrop_kind() {
+                crate::ui::Backdrop::None => None,
+                crate::ui::Backdrop::Dither => Some(self.backdrop_el(cx)),
+                crate::ui::Backdrop::Space => Some(self.space_el(cx)),
+            });
         let Some(area) = self.pane_area.get() else { return layer.into_any_element() };
         let origin = area.origin;
         let Some(tree) = tree else { return layer.into_any_element() };

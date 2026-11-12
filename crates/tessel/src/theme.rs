@@ -359,7 +359,7 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     let glass = spec.glass.unwrap_or(false);
     window.set_background_appearance(if glass { gpui_kit::WindowBackgroundAppearance::Blurred } else { gpui_kit::WindowBackgroundAppearance::Opaque });
     if glass {
-        palette.sidebar = palette.sidebar.opacity(0.62);
+        palette.sidebar = palette.sidebar.opacity(0.45);
     }
     // felt: the frame's colour is drawn as cloth underneath (see `shell::backdrop`),
     // so the frame itself is left clear over it.

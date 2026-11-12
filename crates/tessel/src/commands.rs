@@ -35,7 +35,7 @@ const fn q(id: &'static str, title: &'static str, args: &'static str) -> Spec {
 pub static COMMANDS: &[Spec] = &[
     // the window
     c("app.palette", "Command palette", "command", Some("⌘ K"), "{}", ""),
-    c("app.settings", "Settings", "settings", Some("⌘ ,"), "{}", ""),
+    c("app.settings", "Settings", "settings", Some("⌘ ,"), "{}", "section?: appearance, themes, models… opens there"),
     c("app.overview", "All sessions", "layout-grid", Some("⇧ ⌘ \\"), "{}", ""),
     c("app.sidebar", "Show or hide the sidebar", "panel-left", Some("⌥ ⌘ S"), "{}", ""),
     c("app.workspace", "Show or hide the workspace", "panel-right", Some("⌥ ⌘ I"), "{}", ""),
@@ -106,8 +106,10 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.material", "Material: Solid", "square", None, r#"{"material":"solid"}"#, "material: solid|glass|felt"),
     c("theme.material", "Material: Glass", "app-window", None, r#"{"material":"glass"}"#, ""),
     c("theme.material", "Material: Felt", "layers", None, r#"{"material":"felt"}"#, ""),
-    c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, "backdrop: dither|none"),
-    c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, ""),
+    c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, "backdrop: none|dither|space"),
+    c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, ""),
+    c("theme.backdrop", "Backdrop: Space", "orbit", None, r#"{"backdrop":"space"}"#, ""),
+    c("backdrop.next", "Next space photo", "refresh-cw", None, "{}", "another photograph from NASA's library, for the Space backdrop"),
     c("layout.use", "Layout: Studio", "panels-top-left", None, r#"{"name":"studio"}"#, "name: studio|focus|tiles|rail"),
     c("layout.use", "Layout: Focus", "focus", None, r#"{"name":"focus"}"#, ""),
     c("layout.use", "Layout: Tiles", "layout-dashboard", None, r#"{"name":"tiles"}"#, ""),

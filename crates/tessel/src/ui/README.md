@@ -369,7 +369,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | command | what it does | keys | arguments |
 | --- | --- | --- | --- |
 | `app.palette` | Command palette | ⌘ K |  |
-| `app.settings` | Settings | ⌘ , |  |
+| `app.settings` | Settings | ⌘ , | section?: appearance, themes, models… opens there |
 | `app.overview` | All sessions | ⇧ ⌘ \\ |  |
 | `app.sidebar` | Show or hide the sidebar | ⌥ ⌘ S |  |
 | `app.workspace` | Show or hide the workspace | ⌥ ⌘ I |  |
@@ -409,7 +409,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.list` | Every theme |  |  |
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
-| `theme.backdrop` | Backdrop: Dither |  | backdrop: dither|none |
+| `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
+| `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |

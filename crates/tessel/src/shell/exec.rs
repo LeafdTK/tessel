@@ -24,6 +24,14 @@ impl Shell {
                 done
             }
             "app.settings" => {
+                if let Some(section) = arg(args, "section") {
+                    let found = super::settings::SECTIONS.iter().find(|(id, title, _)| *id == section || title.eq_ignore_ascii_case(section));
+                    let Some((id, ..)) = found else {
+                        let names: Vec<&str> = super::settings::SECTIONS.iter().map(|(id, ..)| *id).collect();
+                        return Err(format!("there's no section \"{section}\". sections: {}", names.join(", ")));
+                    };
+                    self.settings_section = id;
+                }
                 self.open_settings(cx);
                 done
             }
@@ -182,12 +190,16 @@ impl Shell {
                 done
             }
             "theme.backdrop" => {
-                let b = arg(args, "backdrop").ok_or("backdrop: dither or none")?;
-                if !matches!(b, "dither" | "none") {
-                    return Err(format!("\"{b}\" isn't a backdrop. use dither or none"));
+                let b = arg(args, "backdrop").ok_or("backdrop: none, dither or space")?;
+                if !matches!(b, "none" | "dither" | "space") {
+                    return Err(format!("\"{b}\" isn't a backdrop. use none, dither or space"));
                 }
                 let v = (b != "none").then(|| json!(b));
                 self.edit_ui(|f| Self::set_in(f, "theme", "backdrop", v), window, cx);
+                done
+            }
+            "backdrop.next" => {
+                self.next_space_photo(cx);
                 done
             }
             "layout.use" => {

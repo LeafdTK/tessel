@@ -13,6 +13,7 @@ mod composer;
 mod exec;
 mod mentions;
 mod backdrop;
+mod space;
 mod models;
 mod looks;
 mod files;
@@ -211,6 +212,8 @@ pub struct Shell {
     pub(crate) backdrop: backdrop::Shared,
     /// the felt under the window, once drawn.
     pub(crate) felt: backdrop::Shared,
+    /// the space backdrop's photo.
+    pub(crate) space: space::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
     pub(crate) thumbs: std::cell::RefCell<HashMap<(usize, usize), Arc<Image>>>,
     /// how many images have been pasted, to name the next one.
@@ -521,6 +524,7 @@ impl Shell {
             attachments: Vec::new(),
             backdrop: Default::default(),
             felt: Default::default(),
+            space: Default::default(),
             thumbs: Default::default(),
             pasted: 0,
             models: Vec::new(),

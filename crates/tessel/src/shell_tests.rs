@@ -1030,6 +1030,9 @@ fn settings_open_from_the_keyboard_and_write_what_you_pick_to_the_layout_file(cx
 
     // hovering a theme tries it on without writing anything; clicking keeps it.
     rig.click(cx, "settings-tab-themes");
+    // the gallery is below how the window is built: scroll to it.
+    cx.update_window(rig.window, |_, window, cx| window.scroll("settings-body", gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-700.))), cx)).unwrap();
+    rig.settle(cx);
     let before = read();
     cx.update_window(rig.window, |_, window, cx| window.hover("theme-dusk", cx)).unwrap();
     rig.settle(cx);
@@ -1236,9 +1239,6 @@ fn the_backdrop_switches_on_from_settings_and_says_so_in_the_file(cx: &mut TestA
         s.settings_section = "themes";
         s.open_settings(cx);
     });
-    rig.settle(cx);
-    // it's below the theme gallery.
-    cx.update_window(rig.window, |_, window, cx| window.scroll("settings-body", gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-5000.))), cx)).unwrap();
     rig.settle(cx);
     rig.click(cx, "backdrop-dither");
     let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
