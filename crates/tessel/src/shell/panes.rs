@@ -625,6 +625,10 @@ impl Shell {
                 if self.model.open_summary().is_some_and(|s| s.run_state.is_busy()) && !self.show_new {
                     out.push(Button::new("toolbar-stop").xsmall().outline().label("Stop").tooltip("Stop the Agent").on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))).into_any_element());
                 }
+                // the workspace's scripts: the dev server a click away.
+                if !self.views.contains_key(pane_id) {
+                    out.extend(self.run_button(cx));
+                }
                 out.push(Button::new("toolbar-overview").ghost().small().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());
                 if !self.show_new && self.model.open_summary().is_some() && self.has_pane("inspector") {
                     out.push(

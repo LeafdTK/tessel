@@ -25,6 +25,7 @@ mod panel;
 mod panes;
 mod projects;
 mod settings;
+mod scripts;
 mod sidebar;
 mod surface;
 mod terminal;
@@ -172,6 +173,11 @@ pub struct Shell {
     pub(crate) followed: Vec<SessionId>,
     /// the chat the focused pane is waiting on a snapshot of.
     pub(crate) awaiting: Option<SessionId>,
+    /// each workspace's scripts and first port, by folder, as the daemon said.
+    pub(crate) scripts: HashMap<String, (tessel_proto::WorkspaceScripts, u16)>,
+    /// workspaces asked about already, and the one being asked about now.
+    pub(crate) scripts_tried: HashSet<String>,
+    pub(crate) scripts_asked: Option<String>,
     /// what each desktop you aren't looking at had on it.
     pub(crate) stashed: HashMap<String, desktops::Stashed>,
     /// a desktop's panes arriving: 1 just switched, fading to 0.
@@ -574,6 +580,9 @@ impl Shell {
             followed: Vec::new(),
             awaiting: None,
             stashed: HashMap::new(),
+            scripts: HashMap::new(),
+            scripts_tried: HashSet::new(),
+            scripts_asked: None,
             desktop_slide: Spring::unit(0.0),
             swipe: (0.0, false, None),
             pane_zoom: None,
@@ -749,6 +758,11 @@ impl Shell {
                 if is_open && was_busy && !summary.run_state.is_busy() {
                     self.workspace_touched();
                 }
+                // a turn ending may have changed its workspace's scripts (an agent asked to write them).
+                if was_busy && !summary.run_state.is_busy() {
+                    self.scripts.remove(&summary.cwd);
+                    self.scripts_tried.remove(&summary.cwd);
+                }
                 let newly = self.model.update_session(summary);
                 self.reflow_sidebar();
                 if is_open && self.window_active {
@@ -869,6 +883,7 @@ impl Shell {
                     self.folder_git.borrow_mut().insert(path, git);
                 }
             }
+            UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {

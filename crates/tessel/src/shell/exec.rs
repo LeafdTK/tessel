@@ -35,6 +35,34 @@ impl Shell {
                 self.open_settings(cx);
                 done
             }
+            "workspace.run" | "workspace.stop" => {
+                let (scripts, _) = self.open_scripts().cloned().ok_or("this workspace's scripts aren't known yet (or no chat is open)")?;
+                let action = match arg(args, "script") {
+                    Some(name) => scripts.actions.iter().find(|a| a.id == name).cloned().ok_or_else(|| {
+                        format!("there's no script \"{name}\". scripts: {}", scripts.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(", "))
+                    })?,
+                    None => scripts.actions.iter().find(|a| a.default).cloned().ok_or("this workspace has no run scripts. workspace.write_scripts sets some up")?,
+                };
+                if cmd == "workspace.run" {
+                    self.run_script(action.command, window, cx);
+                } else if let Some(id) = self.running_script(&action.command) {
+                    self.cmd(crate::bridge::Cmd::TermClose(id));
+                }
+                Ok(json!({"script": action.id}))
+            }
+            "workspace.setup" => {
+                let setup = self.open_scripts().and_then(|(s, _)| s.setup.clone()).ok_or("this workspace has no setup script")?;
+                self.run_script(setup, window, cx);
+                done
+            }
+            "workspace.write_scripts" => {
+                self.setup_scripts_with_ai(cx);
+                done
+            }
+            "workspace.scripts" => {
+                let (scripts, port) = self.open_scripts().cloned().ok_or("this workspace's scripts aren't known yet (or no chat is open)")?;
+                Ok(json!({"scripts": scripts, "port": port}))
+            }
             "desktop.next" | "desktop.prev" => {
                 let n = self.ui.desktops.len().max(1);
                 let to = if cmd == "desktop.next" { (self.ui.desktop + 1) % n } else { (self.ui.desktop + n - 1) % n };

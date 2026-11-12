@@ -56,7 +56,7 @@ pub enum Cmd {
     /// change some of the daemon's settings (a partial object).
     SetSettings(serde_json::Value),
     /// start a terminal for a pane.
-    TermOpen { pane: String, session: Option<SessionId>, cwd: Option<String>, cols: u16, rows: u16 },
+    TermOpen { pane: String, session: Option<SessionId>, cwd: Option<String>, command: Vec<String>, cols: u16, rows: u16 },
     TermAttach(TermId),
     /// keys, as the terminal encoded them: sent as a binary frame.
     TermInput(TermId, Vec<u8>),
@@ -379,8 +379,8 @@ async fn session(
                         });
                         Ok(())
                     }
-                    Cmd::TermOpen { pane, session, cwd, cols, rows } => {
-                        ask(client, ui, Request::TermOpen { session, cwd, command: Vec::new(), cols, rows }, move |r| match r {
+                    Cmd::TermOpen { pane, session, cwd, command, cols, rows } => {
+                        ask(client, ui, Request::TermOpen { session, cwd, command, cols, rows }, move |r| match r {
                             Response::Term { info } => Some(UiEvent::TermOpened { pane, session, info }),
                             _ => None,
                         });

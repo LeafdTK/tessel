@@ -415,6 +415,11 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
 | `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
+| `workspace.run` | Run the workspace's script |  | script?: its name (the default one if not given) |
+| `workspace.stop` | Stop the workspace's script |  | script?: its name (the default one if not given) |
+| `workspace.setup` | Run the workspace's setup again |  |  |
+| `workspace.write_scripts` | Set up scripts with an agent |  | a new chat that writes .tessel/settings.toml |
+| `workspace.scripts` | The workspace's scripts and ports |  |  |
 | `desktop.next` | Next desktop | ⌥ ⌘ → |  |
 | `desktop.prev` | Previous desktop | ⌥ ⌘ ← |  |
 | `desktop.new` | New desktop |  | name?; preset?: default|studio|focus|tiles|rail; copy?: true to start from the layout showing; scope?: project names its sidebar lists |

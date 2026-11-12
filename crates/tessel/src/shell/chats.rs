@@ -28,6 +28,8 @@ impl Shell {
     /// that has just appeared shows the focused chat, one that has gone takes
     /// its chat with it, and the daemon is told what to follow.
     pub(crate) fn sync_views(&mut self, cx: &mut Context<Self>) {
+        // the open workspace's scripts, for its run button.
+        self.ask_scripts(false);
         let panes: Vec<String> = self.ui.panes().iter().filter(|p| p.module == Some(Module::Conversation)).map(|p| p.id.clone()).collect();
         if !self.chat_pane.as_ref().is_some_and(|c| panes.contains(c)) {
             let next = self.pane_focus.clone().filter(|f| panes.contains(f)).or_else(|| panes.first().cloned());

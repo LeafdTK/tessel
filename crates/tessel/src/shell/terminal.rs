@@ -397,7 +397,7 @@ impl Shell {
                         }
                         None => {
                             self.term_opening.insert(key);
-                            self.cmd(Cmd::TermOpen { pane, session, cwd: None, cols: 100, rows: 30 });
+                            self.cmd(Cmd::TermOpen { pane, session, cwd: None, command: Vec::new(), cols: 100, rows: 30 });
                             continue;
                         }
                     }

@@ -163,7 +163,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info", .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "scripts", .. }) {
                 out.push(c);
             }
         }
@@ -2197,5 +2197,48 @@ fn the_sidebar_stays_while_desktops_change_their_panes_and_a_swipe_switches(cx: 
     swipe(&mut rig, cx, TouchPhase::Started, 30.);
     swipe(&mut rig, cx, TouchPhase::Moved, 40.);
     assert_eq!(showing(&rig, cx), 0);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
+    let dir = layout_dir("run-button");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    // nothing set up: the button asks an agent to set it up.
+    rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts: tessel_proto::WorkspaceScripts::default(), port: 41000 }) }]);
+    rig.click(cx, "run-default");
+    match rig.asked().as_slice() {
+        [Cmd::Create { cwd, worktree: false, prompt }] => assert!(*cwd == a.cwd && prompt.contains(".tessel/settings.toml") && prompt.contains("$TESSEL_PORT")),
+        other => panic!("{other:?}"),
+    }
+
+    // a dev script: the button starts it, in a terminal pane of its own.
+    let scripts = tessel_proto::WorkspaceScripts {
+        actions: vec![tessel_proto::ScriptAction { id: "dev".into(), command: "npm run dev".into(), icon: None, default: true }],
+        from: Some(".tessel/settings.toml".into()),
+        ..Default::default()
+    };
+    rig.shell.update(cx, |s, _| {
+        s.scripts.clear();
+        s.scripts_tried.clear();
+    });
+    rig.settle(cx);
+    rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts, port: 41000 }) }]);
+    rig.click(cx, "run-default");
+    let pane = match rig.asked().as_slice() {
+        [Cmd::TermOpen { pane, session, command, .. }] => {
+            assert_eq!((*session, command.as_slice()), (Some(a.id), &["npm run dev".to_owned()][..]));
+            pane.clone()
+        }
+        other => panic!("{other:?}"),
+    };
+    assert!(rig.shell.read_with(cx, |s, _| s.ui.panes().iter().any(|p| p.id == pane && p.module == Some(crate::ui::Module::Terminal))), "a terminal pane to watch it in");
+
+    // running: the same button stops it.
+    let info = tessel_proto::term::TermInfo { id: 7, title: String::new(), cwd: a.cwd.clone(), cols: 100, rows: 30, session: Some(a.id), command: vec!["npm run dev".into()], exited: None };
+    rig.feed(cx, vec![UiEvent::TermOpened { pane, session: Some(a.id), info }]);
+    rig.click(cx, "run-default");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::TermClose(7))));
     std::fs::remove_dir_all(&dir).unwrap();
 }

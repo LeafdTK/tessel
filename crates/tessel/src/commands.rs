@@ -114,6 +114,12 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, "backdrop: none|dither|space"),
     c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, ""),
     c("theme.backdrop", "Backdrop: Space", "orbit", None, r#"{"backdrop":"space"}"#, ""),
+    // the workspace's scripts
+    c("workspace.run", "Run the workspace's script", "play", None, "{}", "script?: its name (the default one if not given)"),
+    c("workspace.stop", "Stop the workspace's script", "square", None, "{}", "script?: its name (the default one if not given)"),
+    c("workspace.setup", "Run the workspace's setup again", "rotate-ccw", None, "{}", ""),
+    c("workspace.write_scripts", "Set up scripts with an agent", "sparkles", None, "{}", "a new chat that writes .tessel/settings.toml"),
+    q("workspace.scripts", "The workspace's scripts and ports", ""),
     // desktops
     c("desktop.next", "Next desktop", "chevron-right", Some("⌥ ⌘ →"), "{}", ""),
     c("desktop.prev", "Previous desktop", "chevron-left", Some("⌥ ⌘ ←"), "{}", ""),
