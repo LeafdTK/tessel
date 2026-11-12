@@ -37,6 +37,9 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl link SESSION DIR                let the agent work in another folder too
   tesselctl models                          the models the agent offers
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
+  tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
+                                            --wait returns once each is closed (0 saved or
+                                            clean, 1 edits thrown away), so EDITOR='tesselctl open --wait'
   tesselctl daemon start|stop
   tesselctl daemon restart [--now] [--wait SECS]   a new daemon (the binary on disk now)
                                             takes over: terminals and agents keep running
@@ -292,6 +295,57 @@ async fn run() -> anyhow::Result<()> {
                 }
             }
         }
+        "open" => {
+            let wait = args.flag("--wait");
+            if args.rest.is_empty() {
+                bail!("open needs a file: tesselctl open PATH[:LINE[:COL]]");
+            }
+            let Response::Sessions { sessions } = client.request(Request::SessionList).await? else { bail!("unexpected reply") };
+            let here = std::env::var("TESSEL_SESSION").ok().and_then(|s| s.parse::<tessel_proto::SessionId>().ok());
+            if wait {
+                client.request(Request::UiSubscribe { kinds: vec!["file_closed".into()] }).await?;
+            }
+            let mut code = 0;
+            for spec in std::mem::take(&mut args.rest) {
+                let (path, line, col) = file_spec(&spec);
+                let full = std::fs::canonicalize(&path).map_err(|e| anyhow::anyhow!("{path}: {e}"))?;
+                // the session whose folder it's in: this terminal's own first, else the closest.
+                let within = |cwd: &str| std::fs::canonicalize(cwd).ok().and_then(|c| full.strip_prefix(&c).ok().map(|r| (c.components().count(), r.to_string_lossy().into_owned())));
+                let found = here
+                    .and_then(|h| sessions.iter().find(|s| s.id == h))
+                    .and_then(|s| within(&s.cwd).map(|(_, rel)| (s.id, rel)))
+                    .or_else(|| sessions.iter().filter_map(|s| within(&s.cwd).map(|(depth, rel)| (depth, s.id, rel))).max_by_key(|(d, ..)| *d).map(|(_, id, rel)| (id, rel)));
+                let Some((session, rel)) = found else {
+                    bail!("{} isn't in any session's folder; tessel opens files where its sessions work", full.display());
+                };
+                let mut a = serde_json::json!({"path": rel, "session": session.to_string()});
+                if let Some(l) = line {
+                    a["line"] = l.into();
+                    a["col"] = col.unwrap_or(1).into();
+                }
+                ui_exec(&client, &None, "files.open", a).await?;
+                if !wait {
+                    continue;
+                }
+                // until it's closed in the window: 1 if edits were thrown away, as editors say.
+                loop {
+                    let Some(ev) = events.recv().await else { bail!("the daemon went away") };
+                    if let Event::Ui { kind, data, .. } = ev
+                        && kind == "file_closed"
+                        && data["path"] == rel
+                        && data["session"] == session.to_string()
+                    {
+                        if data["discarded"].as_bool() == Some(true) {
+                            code = 1;
+                        }
+                        break;
+                    }
+                }
+            }
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
         "send" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             let text = args.rest.join(" ");
@@ -430,6 +484,21 @@ fn ui_args(pairs: &[String]) -> anyhow::Result<serde_json::Value> {
         map.insert(k.to_owned(), value);
     }
     Ok(serde_json::Value::Object(map))
+}
+
+/// `PATH[:LINE[:COL]]`, where a path that exists as written wins (colons and all).
+fn file_spec(spec: &str) -> (String, Option<u32>, Option<u32>) {
+    if std::path::Path::new(spec).exists() {
+        return (spec.to_owned(), None, None);
+    }
+    let mut parts = spec.rsplitn(3, ':').collect::<Vec<_>>();
+    parts.reverse();
+    match parts.as_slice() {
+        [p, l, c] if l.parse::<u32>().is_ok() && c.parse::<u32>().is_ok() => ((*p).to_owned(), l.parse().ok(), c.parse().ok()),
+        [p, l, c] if c.parse::<u32>().is_ok() => (format!("{p}:{l}"), c.parse().ok(), None),
+        [p, l] if l.parse::<u32>().is_ok() => ((*p).to_owned(), l.parse().ok(), None),
+        _ => (spec.to_owned(), None, None),
+    }
 }
 
 async fn ui_exec(client: &Client, window: &Option<String>, cmd: &str, args: serde_json::Value) -> anyhow::Result<serde_json::Value> {
@@ -802,4 +871,15 @@ fn one_line(s: &str, max: usize) -> String {
         return flat;
     }
     flat.chars().take(max).collect::<String>() + "…"
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_file_is_named_with_its_line_and_column_after_colons() {
+        assert_eq!(super::file_spec("/nowhere/src/main.rs:12:4"), ("/nowhere/src/main.rs".into(), Some(12), Some(4)));
+        assert_eq!(super::file_spec("/nowhere/a.rs:7"), ("/nowhere/a.rs".into(), Some(7), None));
+        assert_eq!(super::file_spec("/nowhere/notes"), ("/nowhere/notes".into(), None, None));
+        assert_eq!(super::file_spec("/nowhere/a:b.rs:3"), ("/nowhere/a:b.rs".into(), Some(3), None), "a colon in the name stays in the name");
+    }
 }

@@ -737,6 +737,31 @@ fn files_can_be_browsed_edited_and_saved_and_unsaved_edits_are_never_dropped(cx:
 }
 
 #[gpui_kit::test]
+fn a_file_opened_at_a_line_has_the_caret_there_and_closing_it_is_announced(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    // someone waits on it (`tesselctl open --wait`).
+    rig.feed(cx, vec![UiEvent::Watched(true)]);
+    rig.asked();
+    let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("files.open", &serde_json::json!({"path": "src/main.rs", "line": 3, "col": 5}), window, cx))).unwrap().unwrap();
+    assert_eq!(r["opening"], "src/main.rs");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Read { path, .. } if path == "src/main.rs")));
+    let file = FileContent { path: "src/main.rs".into(), text: Some("fn main() {\n    let a = 1;\n    let b = 2;\n}\n".into()), binary: false, truncated: false, size: 40 };
+    rig.feed(cx, vec![UiEvent::File { session: idle.id, file }]);
+    let editor = rig.shell.read_with(cx, |s, _| s.ws.file.as_ref().unwrap().editor.clone().unwrap());
+    let at = cx.update_window(rig.window, |_, _, cx| editor.read(cx).cursor_position()).unwrap();
+    assert_eq!((at.line, at.character), (2, 4), "line 3, column 5, counted from 1");
+
+    rig.shell.update(cx, |s, cx| s.close_file(cx));
+    let closed = rig.asked().into_iter().find_map(|c| match c {
+        Cmd::UiPublish { kind, data } if kind == "file_closed" => Some(data),
+        _ => None,
+    });
+    let closed = closed.expect("closing is announced");
+    assert_eq!((closed["path"].as_str(), closed["saved"].as_bool(), closed["discarded"].as_bool()), (Some("src/main.rs"), Some(false), Some(false)));
+}
+
+#[gpui_kit::test]
 fn each_session_keeps_its_own_open_file_and_edits(cx: &mut TestAppContext) {
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);

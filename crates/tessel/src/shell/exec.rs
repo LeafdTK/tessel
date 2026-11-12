@@ -395,11 +395,39 @@ impl Shell {
             }
             "files.open" => {
                 let path = arg(args, "path").ok_or("say which file: path, relative to the session's folder")?.trim_start_matches("./").to_owned();
-                if self.ws_session.is_none() {
-                    return Err("open a session first: files are in its folder".into());
+                // in another session's folder: that session comes up first.
+                if let Some(s) = arg(args, "session") {
+                    let id = self.find_session(s)?;
+                    if self.model.open.as_ref().map(|o| o.id) != Some(id) {
+                        self.open(id, cx);
+                    }
+                    self.ws_session = Some(id);
+                }
+                let Some(session) = self.ws_session else { return Err("open a session first: files are in its folder".into()) };
+                let num = |k: &str| args.get(k).and_then(Value::as_u64).map(|n| n as u32);
+                if let Some(line) = num("line") {
+                    self.file_caret = Some((session, path.clone(), line, num("col").unwrap_or(1)));
+                }
+                // the files show where it's opened.
+                if !self.ui.panes().iter().any(|p| p.module == Some(crate::ui::Module::Workspace) && self.pane_open(p)) {
+                    if let Some(p) = self.ui.panes().into_iter().find(|p| p.module == Some(crate::ui::Module::Workspace)).cloned() {
+                        self.toggle_pane(&p.id, cx);
+                    }
                 }
                 self.open_file(path.clone(), cx);
-                Ok(json!({"opening": path}))
+                self.place_caret(window, cx);
+                Ok(json!({"opening": path, "session": session}))
+            }
+            "files.close" => {
+                let open = self.ws.file.as_ref().map(|f| (f.path.clone(), f.dirty));
+                match open {
+                    None => Err("no file is open".into()),
+                    Some((path, true)) => Err(format!("{path} has unsaved changes: save or revert them first")),
+                    Some((path, false)) => {
+                        self.close_file(cx);
+                        Ok(json!({"closed": path}))
+                    }
+                }
             }
             "terminal.new" => {
                 let pane = self.new_terminal(window, cx).ok_or("there's no pane to put a terminal beside")?;

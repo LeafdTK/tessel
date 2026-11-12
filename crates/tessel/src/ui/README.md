@@ -403,7 +403,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.pip` | Float pane as picture in picture |  | pane?, corner?: tl, tr, bl or br (default br) |
 | `pane.dock` | Put pane back in the layout |  | pane? |
 | `pane.show` | Show Conversation here |  | module, pane? |
-| `files.open` | Open a file |  | path: relative to the session's folder |
+| `files.open` | Open a file |  | path: relative to the session's folder, line?, col?, session? |
+| `files.close` | Close the open file |  |  |
 | `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |
 | `pane.focus` | Focus a pane |  | pane |
 | `pane.toggle` | Show or hide a pane |  | pane |

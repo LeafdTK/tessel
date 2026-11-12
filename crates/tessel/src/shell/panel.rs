@@ -66,6 +66,10 @@ pub(crate) struct OpenFile {
     pub(crate) marks: Option<gpui_kit::component::input::GutterDecorationCollection>,
     /// markdown read as a document rather than edited as source.
     pub(crate) rendered: bool,
+    /// saved while open, and edits thrown away: what closing it says to
+    /// whoever waits on it (`tesselctl open --wait`).
+    pub(crate) saved_once: bool,
+    pub(crate) reverted: bool,
 }
 
 /// everything the panel shows for one session. kept per session, so going
@@ -405,10 +409,34 @@ impl Shell {
             });
             (Some(editor), Some(watch))
         };
-        let rendered = super::files::is_markdown(&f.path) && editor.is_some();
+        let rendered = super::files::is_markdown(&f.path) && editor.is_some() && self.file_caret.is_none();
         let note = if f.binary { Some("Looking at it…".to_owned()) } else { note };
-        self.ws.file = Some(OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch, preview: None, marks: None, rendered });
+        let next = OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch, preview: None, marks: None, rendered, saved_once: false, reverted: false };
+        if let Some(old) = self.ws.file.replace(next).filter(|o| self.ws.file.as_ref().is_some_and(|n| n.path != o.path)) {
+            self.file_closed(&old);
+        }
         self.file_opened(f.binary);
+        self.place_caret(window, cx);
+    }
+
+    /// whoever waits on a file hears it was closed, and how.
+    fn file_closed(&self, f: &OpenFile) {
+        let Some(session) = self.ws_session else { return };
+        self.publish("file_closed", serde_json::json!({"session": session, "path": f.path, "saved": f.saved_once, "discarded": f.reverted && !f.saved_once}));
+    }
+
+    /// a file asked for at a line (`files.open`, `tesselctl open`): the caret goes there, once it's open.
+    pub(crate) fn place_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((session, path, line, col)) = self.file_caret.clone() else { return };
+        if self.ws_session != Some(session) {
+            return;
+        }
+        let Some(editor) = self.ws.file.as_ref().filter(|f| f.path == path).and_then(|f| f.editor.clone()) else { return };
+        self.file_caret = None;
+        editor.update(cx, |e, cx| {
+            e.set_cursor_position(gpui_kit::component::input::Position { line: line.saturating_sub(1), character: col.saturating_sub(1) }, window, cx);
+            e.focus(window, cx);
+        });
     }
 
     pub(crate) fn select_change(&mut self, path: String, cx: &mut Context<Self>) {
@@ -472,6 +500,7 @@ impl Shell {
         let content = editor.read(cx).value().to_string();
         file.saving = Some(content.clone());
         file.dirty = false;
+        file.saved_once = true;
         let path = file.path.clone();
         self.cmd(Cmd::Write { session, path, content });
         cx.notify();
@@ -483,6 +512,7 @@ impl Shell {
         {
             let saved = file.saved.clone();
             editor.update(cx, |e, cx| e.set_value(saved, window, cx));
+            file.reverted |= file.dirty;
             file.dirty = false;
         }
         cx.notify();
@@ -491,7 +521,11 @@ impl Shell {
     pub(crate) fn close_file(&mut self, cx: &mut Context<Self>) {
         match &self.ws.file {
             Some(f) if f.dirty => self.error = Some(format!("Save or revert your changes to {} first.", split_path(&f.path).0)),
-            _ => self.ws.file = None,
+            _ => {
+                if let Some(old) = self.ws.file.take() {
+                    self.file_closed(&old);
+                }
+            }
         }
         cx.notify();
     }

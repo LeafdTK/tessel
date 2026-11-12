@@ -197,6 +197,8 @@ pub struct Shell {
     pub(crate) browser_url_next: Option<String>,
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
+    /// a file to put the caret in when it opens: the session, its path, line and column (from 1).
+    pub(crate) file_caret: Option<(SessionId, String, u32, u32)>,
     /// the window's own view, when pages are shown natively in it (see `webview`).
     pub(crate) native_view: Option<usize>,
     /// what's to be done to pages at the next frame, and pages being made.
@@ -645,6 +647,7 @@ impl Shell {
             browser_url_next: None,
             browser_focus: cx.focus_handle(),
             browser_show_next: false,
+            file_caret: None,
             native_view: browser::native_host(window),
             page_calls: Vec::new(),
             page_opening: HashSet::new(),
@@ -2399,6 +2402,7 @@ impl Render for Shell {
         // the panel follows the open session, and a file that has arrived gets its editor.
         self.switch_workspace();
         self.materialize_file(window, cx);
+        self.place_caret(window, cx);
 
         let animating = self.animate(cx);
         if animating {
