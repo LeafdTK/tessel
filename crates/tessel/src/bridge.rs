@@ -171,6 +171,21 @@ async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Un
             }
             Ok((client, events, welcome)) => {
                 let client = Arc::new(client);
+                // the daemon on disk is newer than the one running: it takes over,
+                // with every terminal and agent carrying on, once no turn is mid-way.
+                let bin = tessel_client::daemon_binary();
+                let newer = bin.is_absolute()
+                    && welcome.capabilities.iter().any(|c| c == "handoff")
+                    && tessel_proto::local::binary_stamp(&bin).is_some_and(|s| tessel_proto::local::build_stamp(&welcome.build) != Some(s.as_str()));
+                if newer && !ASKED_RESTART.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    let c = client.clone();
+                    tokio::spawn(async move {
+                        match c.request(Request::DaemonRestart { now: false, wait_secs: None, bin: Some(bin.to_string_lossy().into_owned()) }).await {
+                            Ok(r) => eprintln!("tessel: the daemon was updated: {r:?}"),
+                            Err(e) => eprintln!("tessel: couldn't update the daemon: {e}"),
+                        }
+                    });
+                }
                 open.many = welcome.proto_minor >= 13;
                 backoff = Duration::from_millis(100);
                 if ui.send(UiEvent::Connected).is_err() {
@@ -562,6 +577,9 @@ async fn session(
         }
     }
 }
+
+/// asked the daemon to hand over to the one on disk, once per run.
+static ASKED_RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// set once the window shows pages natively: the daemon hears it on each connection.
 static HOSTS_PAGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

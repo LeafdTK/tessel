@@ -194,6 +194,19 @@ pub enum Request {
         #[serde(default)]
         agent: bool,
     },
+    /// restart the daemon without stopping what it runs: terminals and idle
+    /// agents carry on under a new daemon (`bin`, else the same binary, as it
+    /// is on disk now). agents mid-turn are waited for, up to `wait_secs`
+    /// (ten minutes when not given); `now` cuts them short instead, as a
+    /// crash would. answered once the new daemon has everything.
+    DaemonRestart {
+        #[serde(default)]
+        now: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_secs: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bin: Option<String>,
+    },
     /// this window shows pages itself, natively: what agents do in a
     /// session's browser is relayed to it (`Event::BrowserCall`) while it's
     /// open, and the daemon's own engine is only for when no window is.
@@ -595,6 +608,14 @@ pub enum Response {
     },
     BrowserEngine {
         engine: crate::BrowserEngine,
+    },
+    /// the daemon handed over to a new one: its pid, and what carried on.
+    Restarted {
+        pid: u32,
+        terminals: u32,
+        agents: u32,
+        /// agents that were mid-turn and were cut short.
+        cut_short: u32,
     },
     Usage {
         windows: Vec<crate::UsageWindow>,

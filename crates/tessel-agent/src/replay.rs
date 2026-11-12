@@ -162,6 +162,6 @@ impl Backend for ReplayBackend {
             killed.store(true, Ordering::SeqCst);
             wake.notify_one();
         });
-        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid: None, kill }, opts.raw_log))
+        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid: None, kill, releaser: None }, opts.raw_log))
     }
 }

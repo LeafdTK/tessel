@@ -27,9 +27,24 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // started by a daemon handing over: take what it sends before anything else.
+    let taken = match std::env::var(tesseld::handoff::ENV) {
+        Ok(fd) => {
+            use std::os::fd::FromRawFd;
+            let fd: i32 = fd.parse()?;
+            let sock = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+            let got = tesseld::handoff::recv(&sock)?;
+            unsafe { std::env::remove_var(tesseld::handoff::ENV) };
+            Some(got)
+        }
+        Err(_) => None,
+    };
     let paths = Paths::from_env();
     tessel_proto::local::move_from_photon(&paths.home).map_err(anyhow::Error::msg)?;
     let mut cfg = Config::new(paths);
+    if let Some(stamp) = std::env::current_exe().ok().and_then(|me| tessel_proto::local::binary_stamp(&me)) {
+        cfg.build = format!("{} {stamp}", env!("CARGO_PKG_VERSION"));
+    }
     if let Some(secs) = std::env::var("TESSEL_IDLE_REAP_SECS").ok().and_then(|s| s.parse().ok()) {
         cfg.idle_reap = Duration::from_secs(secs);
     }
@@ -50,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
         let home = cfg.paths.home.clone();
-        let running = tesseld::start(cfg, backend).await?;
+        let running = tesseld::start_with(cfg, backend, taken).await?;
         eprintln!("tesseld: pid {} serving {}", std::process::id(), home.display());
         let hub = running.hub.clone();
         tokio::spawn(async move {

@@ -58,6 +58,9 @@ pub enum Input {
     Recovered,
     /// the agent drew, changed or removed a surface. checked by the hub first.
     Surface(tessel_proto::surface::SurfaceOp),
+    /// a running agent was taken over from the previous daemon. `cost_process`:
+    /// what this process had cost so far, already in the stored total.
+    Adopted { cost_process: f64 },
 }
 
 /// what changed, for the daemon to persist and broadcast.
@@ -283,6 +286,17 @@ impl SessionState {
         self.turn_open
     }
 
+    /// in the middle of something only this daemon's memory knows: a turn, a
+    /// message being written, a question waiting on an answer.
+    pub fn mid_turn(&self) -> bool {
+        self.turn_open || self.has_open_items() || !self.pending.is_empty()
+    }
+
+    /// what the running process has cost so far.
+    pub fn cost_process(&self) -> f64 {
+        self.cost_process
+    }
+
     pub fn cost_usd(&self) -> f64 {
         self.cost_base + self.cost_process
     }
@@ -457,6 +471,14 @@ impl SessionState {
         let mut fx = Effects::default();
         let before = (self.seq, self.attention.clone());
         match input {
+            Input::Adopted { cost_process } => {
+                self.alive = true;
+                self.starting = false;
+                self.cost_base = (self.cost_base - cost_process).max(0.0);
+                self.cost_process = cost_process;
+                self.last_output_ms = now;
+                fx.summary_changed = true;
+            }
             Input::Spawning => {
                 self.starting = true;
                 self.alive = true;

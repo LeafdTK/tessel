@@ -5,6 +5,7 @@
 pub use tessel_proto::activity;
 pub mod browser;
 pub mod checkpoint;
+pub mod handoff;
 pub mod hub;
 pub mod orphans;
 pub mod paths;
@@ -49,7 +50,31 @@ pub struct Running {
 
 /// start serving on the socket in `cfg.paths`. returns once it is accepting connections.
 pub async fn start(cfg: hub::Config, backend: Arc<dyn Backend>) -> anyhow::Result<Running> {
-    let lock = lock_instance(&cfg.paths)?;
+    start_with(cfg, backend, None).await
+}
+
+/// what a previous daemon handed over: terminals and agents to carry on with.
+pub type Handoff = (handoff::Manifest, Vec<std::os::fd::OwnedFd>);
+
+/// start, carrying on with what the previous daemon handed over: once it has
+/// let go of the lock, and before anyone can connect.
+pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, taken: Option<Handoff>) -> anyhow::Result<Running> {
+    let lock = match &taken {
+        None => lock_instance(&cfg.paths)?,
+        Some(_) => {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                match lock_instance(&cfg.paths) {
+                    Ok(l) => break l,
+                    Err(e) if std::time::Instant::now() >= deadline => return Err(e.context("the previous daemon never let go")),
+                    Err(_) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+                }
+            }
+        }
+    };
+    if let Some((m, _)) = &taken {
+        cfg.adopted = m.agents.iter().map(|a| a.session).collect();
+    }
     let socket = cfg.paths.socket();
     paths::check_socket_path(&socket)?;
     // we hold the lock, so any socket file here was left by a daemon that is gone.
@@ -58,7 +83,10 @@ pub async fn start(cfg: hub::Config, backend: Arc<dyn Backend>) -> anyhow::Resul
 
     let store = store::Store::open(&cfg.paths.db())?;
     let (tx, rx) = mpsc::unbounded_channel();
-    let hub = hub::Hub::load(cfg, store, backend, tx.clone()).await?;
+    let mut hub = hub::Hub::load(cfg, store, backend, tx.clone()).await?;
+    if let Some((m, fds)) = taken {
+        hub.adopt(m, fds);
+    }
     let server = tokio::spawn(server::serve(listener, tx.clone()));
     let done = tokio::spawn(async move {
         hub.run(rx).await;

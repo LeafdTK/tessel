@@ -38,6 +38,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl models                          the models the agent offers
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl daemon start|stop
+  tesselctl daemon restart [--now] [--wait SECS]   a new daemon (the binary on disk now)
+                                            takes over: terminals and agents keep running
 
   the window: if you can click it, you can script it.
   tesselctl ui ls [--json]                  what the window shows: panes, drawers, theme
@@ -151,7 +153,37 @@ async fn run() -> anyhow::Result<()> {
     }
 
     if cmd == "daemon" {
-        return match args.next("start or stop")?.as_str() {
+        return match args.next("start, stop or restart")?.as_str() {
+            "restart" => {
+                let now = args.flag("--now");
+                let wait_secs = args.opt("--wait")?.map(|s| s.parse()).transpose()?;
+                let (c, _, w) = Client::connect(&tessel_proto::local::socket(&home), "tesselctl").await?;
+                if !w.capabilities.iter().any(|c| c == "handoff") {
+                    bail!("this daemon (pid {}) can't hand over to a new one; `tesselctl daemon stop` stops it, and what it runs with it", w.daemon_pid);
+                }
+                // agents mid-turn are waited for: say so, so a wait isn't a mystery.
+                if !now
+                    && let Ok(Response::Sessions { sessions }) = c.request(Request::SessionList).await
+                {
+                    let busy = sessions.iter().filter(|s| matches!(s.run_state, tessel_proto::RunState::Working | tessel_proto::RunState::Starting) || s.attention.as_ref().is_some_and(|a| matches!(a.reason, tessel_proto::AttentionReason::NeedsPermission | tessel_proto::AttentionReason::NeedsInput))).count();
+                    if busy > 0 {
+                        eprintln!("waiting for {busy} agent(s) to finish their turn (--now cuts them short)");
+                    }
+                }
+                let bin = tessel_client::daemon_binary();
+                let bin = bin.is_absolute().then(|| bin.to_string_lossy().into_owned());
+                match c.request(Request::DaemonRestart { now, wait_secs, bin }).await? {
+                    Response::Restarted { pid, terminals, agents, cut_short } => {
+                        println!("restarted: tesseld pid {} took over from pid {}", pid, w.daemon_pid);
+                        println!("  kept running: {terminals} terminal(s), {agents} agent(s)");
+                        if cut_short > 0 {
+                            println!("  cut short mid-turn: {cut_short} agent(s); they pick up again from their conversations");
+                        }
+                    }
+                    other => bail!("unexpected reply {other:?}"),
+                }
+                Ok(())
+            }
             "start" => {
                 let (_, _, w) = tessel_client::connect_or_start(&home, "tesselctl").await?;
                 println!("tesseld {} running, pid {}", w.build, w.daemon_pid);

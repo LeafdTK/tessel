@@ -6,7 +6,8 @@
 
 use super::normalize::{ClaudeNormalizer, unhandled_control_request};
 use super::wire;
-use crate::backend::{Agent, AgentOutput, Backend, SpawnOpts, Spawned};
+use crate::backend::{Agent, AgentOutput, Backend, Released, SpawnOpts, Spawned};
+use std::os::fd::OwnedFd;
 use anyhow::Context;
 use tessel_proto::{Attachment, ModelInfo, PermissionDecision, PermissionRequest};
 use std::io::Write;
@@ -23,10 +24,37 @@ pub struct Transport {
     pub stdin: mpsc::UnboundedSender<String>,
     /// lines the agent writes. closes when the agent's output ends.
     pub stdout: mpsc::UnboundedReceiver<String>,
-    /// resolves after stdout closes.
+    /// resolves after stdout closes; dropped unanswered when the process was
+    /// let go of rather than ended.
     pub exit: oneshot::Receiver<Option<i32>>,
     pub pid: Option<u32>,
     pub kill: Arc<dyn Fn() + Send + Sync>,
+    /// how to let go of the process, when it can be.
+    pub releaser: Option<Releaser>,
+}
+
+type Give<T> = oneshot::Sender<oneshot::Sender<Option<T>>>;
+
+/// asks each of the tasks around a process to stop and give back its pipe.
+pub struct Releaser {
+    pid: u32,
+    stdin: Give<OwnedFd>,
+    stdout: Give<(OwnedFd, Vec<u8>)>,
+    stderr: Give<OwnedFd>,
+}
+
+impl Releaser {
+    async fn release(self) -> Option<Released> {
+        async fn ask<T>(give: Give<T>) -> Option<T> {
+            let (tx, rx) = oneshot::channel();
+            give.send(tx).ok()?;
+            rx.await.ok().flatten()
+        }
+        let stdin = ask(self.stdin).await?;
+        let (stdout, unread) = ask(self.stdout).await?;
+        let stderr = ask(self.stderr).await?;
+        Some(Released { pid: self.pid, stdin, stdout, stderr, unread })
+    }
 }
 
 struct ClaudeAgent {
@@ -34,6 +62,7 @@ struct ClaudeAgent {
     kill: Arc<dyn Fn() + Send + Sync>,
     pid: Option<u32>,
     next_request: AtomicU64,
+    releaser: std::sync::Mutex<Option<Releaser>>,
 }
 
 impl ClaudeAgent {
@@ -84,6 +113,11 @@ impl Agent for ClaudeAgent {
     fn pid(&self) -> Option<u32> {
         self.pid
     }
+
+    fn release(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Released>> + Send>> {
+        let releaser = self.releaser.lock().unwrap().take();
+        Box::pin(async move { releaser?.release().await })
+    }
 }
 
 /// speak the claude protocol over a transport.
@@ -95,6 +129,7 @@ pub fn drive(mut transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
         kill: transport.kill,
         pid: transport.pid,
         next_request: AtomicU64::new(1),
+        releaser: std::sync::Mutex::new(transport.releaser),
     };
     tokio::spawn(async move {
         let mut normalizer = ClaudeNormalizer::new();
@@ -122,8 +157,10 @@ pub fn drive(mut transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
                 break;
             }
         }
-        let code = transport.exit.await.ok().flatten();
-        let _ = out_tx.send(AgentOutput::Exited { code });
+        // let go of rather than ended: the next daemon carries on, and nothing is said.
+        if let Ok(code) = transport.exit.await {
+            let _ = out_tx.send(AgentOutput::Exited { code });
+        }
     });
     Spawned { agent: Box::new(agent), output: out_rx }
 }
@@ -301,6 +338,20 @@ impl Backend for ClaudeBackend {
         })
     }
 
+    fn adopt(&self, r: Released, raw_log: Option<PathBuf>) -> anyhow::Result<Spawned> {
+        use tokio::net::unix::pipe;
+        let stdin = pipe::Sender::from_owned_fd(r.stdin).context("the agent's input")?;
+        let stdout = pipe::Receiver::from_owned_fd(r.stdout).context("the agent's output")?;
+        let stderr = pipe::Receiver::from_owned_fd(r.stderr).context("the agent's errors")?;
+        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
+        let stderr_log = raw_log.as_ref().map(|p| p.with_file_name("stderr.log"));
+        // what was written before the handover is read first.
+        let stdout = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(r.unread), stdout);
+        let (releaser, exit_rx, exited, stdout_rx) = pipes(r.pid, stdin, stdout, stderr, stdin_rx, stderr_log, None);
+        let kill = killer(Some(r.pid), exited);
+        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid: Some(r.pid), kill, releaser: Some(releaser) }, raw_log))
+    }
+
     fn spawn(&self, opts: SpawnOpts) -> anyhow::Result<Spawned> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(Self::args(&opts))
@@ -319,71 +370,184 @@ impl Backend for ClaudeBackend {
             .spawn()
             .with_context(|| format!("could not start {} in {}", self.program.display(), opts.cwd.display()))?;
         let pid = child.id();
-        let mut child_stdin = child.stdin.take().context("no stdin")?;
+        let child_stdin = child.stdin.take().context("no stdin")?;
         let child_stdout = child.stdout.take().context("no stdout")?;
         let child_stderr = child.stderr.take().context("no stderr")?;
 
-        let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
+        let (stdin_tx, stdin_rx) = mpsc::unbounded_channel::<String>();
         for line in Self::first_lines(&opts) {
             let _ = stdin_tx.send(line);
         }
-        let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
-        let (exit_tx, exit_rx) = oneshot::channel();
-        let exited = Arc::new(AtomicBool::new(false));
-
-        tokio::spawn(async move {
-            while let Some(line) = stdin_rx.recv().await {
-                let mut buf = line.into_bytes();
-                buf.push(b'\n');
-                if child_stdin.write_all(&buf).await.is_err() || child_stdin.flush().await.is_err() {
-                    break;
-                }
-            }
-        });
-
-        // stderr must be drained or a chatty agent blocks. keep it beside the raw log.
         let stderr_log = opts.raw_log.as_ref().map(|p| p.with_file_name("stderr.log"));
-        tokio::spawn(async move {
-            let mut file = stderr_log.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
-            let mut lines = BufReader::new(child_stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Some(f) = file.as_mut() {
-                    let _ = writeln!(f, "{line}");
-                }
-            }
-        });
-
-        let exited_flag = exited.clone();
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(child_stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if stdout_tx.send(line).is_err() {
-                    break;
-                }
-            }
-            drop(stdout_tx);
-            let code = child.wait().await.ok().and_then(|s| s.code());
-            exited_flag.store(true, Ordering::SeqCst);
-            let _ = exit_tx.send(code);
-        });
-
-        let kill: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            let Some(pid) = pid else { return };
-            if exited.load(Ordering::SeqCst) {
-                return;
-            }
-            signal_group(pid, libc::SIGTERM);
-            let exited = exited.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(5));
-                if !exited.load(Ordering::SeqCst) {
-                    signal_group(pid, libc::SIGKILL);
-                }
-            });
-        });
-
-        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid, kill }, opts.raw_log))
+        let (releaser, exit_rx, exited, stdout_rx) = pipes(pid.unwrap_or(0), child_stdin, child_stdout, child_stderr, stdin_rx, stderr_log, Some(child));
+        let kill = killer(pid, exited);
+        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid, kill, releaser: pid.map(|_| releaser) }, opts.raw_log))
     }
+}
+
+/// a pipe that can be given back as a file descriptor.
+trait IntoFd {
+    fn into_fd(self) -> Option<OwnedFd>;
+}
+impl IntoFd for tokio::process::ChildStdin {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_owned_fd().ok()
+    }
+}
+impl IntoFd for tokio::process::ChildStdout {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_owned_fd().ok()
+    }
+}
+impl IntoFd for tokio::process::ChildStderr {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_owned_fd().ok()
+    }
+}
+impl IntoFd for tokio::net::unix::pipe::Sender {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_blocking_fd().ok()
+    }
+}
+impl IntoFd for tokio::net::unix::pipe::Receiver {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_blocking_fd().ok()
+    }
+}
+impl<R: IntoFd + tokio::io::AsyncRead> IntoFd for tokio::io::Chain<std::io::Cursor<Vec<u8>>, R> {
+    fn into_fd(self) -> Option<OwnedFd> {
+        self.into_inner().1.into_fd()
+    }
+}
+
+type Pipes = (Releaser, oneshot::Receiver<Option<i32>>, Arc<AtomicBool>, mpsc::UnboundedReceiver<String>);
+
+/// the three tasks around an agent's pipes: lines in, lines out, errors to
+/// the log. each stops and gives its pipe back when asked, for a handover.
+/// `child`: when it's ours, waited on for its exit code; when it was taken
+/// over, its end is seen as its output ending and the process going.
+fn pipes<I, O, E>(
+    pid: u32,
+    mut stdin: I,
+    stdout: O,
+    stderr: E,
+    mut lines_in: mpsc::UnboundedReceiver<String>,
+    stderr_log: Option<PathBuf>,
+    child: Option<tokio::process::Child>,
+) -> Pipes
+where
+    I: tokio::io::AsyncWrite + IntoFd + Unpin + Send + 'static,
+    O: tokio::io::AsyncRead + IntoFd + Unpin + Send + 'static,
+    E: tokio::io::AsyncRead + IntoFd + Unpin + Send + 'static,
+{
+    let (give_in, mut want_in) = oneshot::channel::<oneshot::Sender<Option<OwnedFd>>>();
+    let (give_out, mut want_out) = oneshot::channel::<oneshot::Sender<Option<(OwnedFd, Vec<u8>)>>>();
+    let (give_err, mut want_err) = oneshot::channel::<oneshot::Sender<Option<OwnedFd>>>();
+    let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
+    let (exit_tx, exit_rx) = oneshot::channel();
+    let exited = Arc::new(AtomicBool::new(false));
+
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                line = lines_in.recv() => {
+                    let Some(line) = line else { return };
+                    let mut buf = line.into_bytes();
+                    buf.push(b'\n');
+                    if stdin.write_all(&buf).await.is_err() || stdin.flush().await.is_err() {
+                        return;
+                    }
+                }
+                Ok(back) = &mut want_in => {
+                    let _ = back.send(stdin.into_fd());
+                    return;
+                }
+            }
+        }
+    });
+
+    // stderr must be drained or a chatty agent blocks. kept beside the raw log.
+    tokio::spawn(async move {
+        let mut file = stderr_log.and_then(|p| std::fs::OpenOptions::new().create(true).append(true).open(p).ok());
+        let mut lines = BufReader::new(stderr).lines();
+        loop {
+            tokio::select! {
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => {
+                        if let Some(f) = file.as_mut() {
+                            let _ = writeln!(f, "{line}");
+                        }
+                    }
+                    _ => return,
+                },
+                Ok(back) = &mut want_err => {
+                    let _ = back.send(lines.into_inner().into_inner().into_fd());
+                    return;
+                }
+            }
+        }
+    });
+
+    let exited_flag = exited.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+        loop {
+            tokio::select! {
+                line = lines.next_line() => match line {
+                    Ok(Some(line)) => {
+                        if stdout_tx.send(line).is_err() {
+                            break;
+                        }
+                    }
+                    _ => break,
+                },
+                // `next_line` is cancel safe: a line half read stays in the buffer, and goes along.
+                Ok(back) = &mut want_out => {
+                    let buf = lines.into_inner();
+                    let unread = buf.buffer().to_vec();
+                    let _ = back.send(buf.into_inner().into_fd().map(|fd| (fd, unread)));
+                    // exit_tx is dropped unanswered: let go of, not ended.
+                    return;
+                }
+            }
+        }
+        drop(stdout_tx);
+        let code = match child {
+            Some(mut child) => child.wait().await.ok().and_then(|s| s.code()),
+            None => {
+                // not ours to wait on: its output ending is the sign; give it a moment to go.
+                for _ in 0..50 {
+                    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                None
+            }
+        };
+        exited_flag.store(true, Ordering::SeqCst);
+        let _ = exit_tx.send(code);
+    });
+
+    (Releaser { pid, stdin: give_in, stdout: give_out, stderr: give_err }, exit_rx, exited, stdout_rx)
+}
+
+/// stop a process and everything it started: politely, then not.
+fn killer(pid: Option<u32>, exited: Arc<AtomicBool>) -> Arc<dyn Fn() + Send + Sync> {
+    Arc::new(move || {
+        let Some(pid) = pid else { return };
+        if exited.load(Ordering::SeqCst) {
+            return;
+        }
+        signal_group(pid, libc::SIGTERM);
+        let exited = exited.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(5));
+            if !exited.load(Ordering::SeqCst) {
+                signal_group(pid, libc::SIGKILL);
+            }
+        });
+    })
 }
 
 fn signal_group(pid: u32, signal: i32) {
@@ -396,6 +560,52 @@ fn signal_group(pid: u32, signal: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// a stand-in agent that says back every line it's given.
+    fn echo_agent(dir: &std::path::Path) -> ClaudeBackend {
+        let script = dir.join("echo-agent");
+        std::fs::write(&script, "#!/bin/sh\nwhile IFS= read -r l; do printf '%s\\n' \"$l\"; done\n").unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        ClaudeBackend { program: script, env: None, extra_args: vec![] }
+    }
+
+    async fn next(out: &mut mpsc::UnboundedReceiver<AgentOutput>) -> Option<AgentOutput> {
+        tokio::time::timeout(Duration::from_secs(5), out.recv()).await.ok().flatten()
+    }
+
+    #[tokio::test]
+    async fn a_running_agent_is_let_go_of_and_taken_over_without_noticing() {
+        let dir = std::env::temp_dir().join(format!("tessel-handoff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let backend = echo_agent(&dir);
+        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
+        let Spawned { agent, mut output } = backend.spawn(opts).unwrap();
+        agent.send_user("before", &[]);
+        assert!(matches!(next(&mut output).await, Some(AgentOutput::Events(_) | AgentOutput::Alive)), "it talks");
+        let pid = agent.pid().unwrap();
+
+        let released = agent.release().await.expect("let go of");
+        assert_eq!(released.pid, pid);
+        drop(agent);
+        // the old side goes quiet without saying it ended, and the process lives on.
+        assert!(next(&mut output).await.is_none(), "no exit is reported for a handover");
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0, "still running");
+
+        let Spawned { agent, mut output } = backend.adopt(released, None).unwrap();
+        assert_eq!(agent.pid(), Some(pid));
+        agent.send_user("after", &[]);
+        assert!(matches!(next(&mut output).await, Some(AgentOutput::Events(_) | AgentOutput::Alive)), "the same process answers the new side");
+
+        agent.kill();
+        loop {
+            match next(&mut output).await {
+                Some(AgentOutput::Exited { .. }) => break,
+                Some(_) => continue,
+                None => panic!("its end is seen even though it isn't ours to wait on"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_model_list_is_read_from_the_handshake_and_nothing_else() {

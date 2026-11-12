@@ -104,3 +104,17 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 }
+
+/// which build of a binary is on disk: when it was written. a daemon says
+/// its own in its welcome (`build`, after the version), so a client can tell
+/// the daemon on disk is newer than the one running.
+pub fn binary_stamp(path: &Path) -> Option<String> {
+    let t = std::fs::metadata(path).ok()?.modified().ok()?;
+    let d = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+    Some(format!("{}.{:09}", d.as_secs(), d.subsec_nanos()))
+}
+
+/// the stamp in a daemon's `build`, if it gave one.
+pub fn build_stamp(build: &str) -> Option<&str> {
+    build.split_whitespace().nth(1)
+}

@@ -16,7 +16,8 @@ use tessel_proto::{Attachment,
     AgentEvent, Envelope, ErrorCode, Event, ItemId, Millis, PROTO_MAJOR, PROTO_MINOR, Request, Response, RpcError,
     SessionId, SessionSummary, WorktreeInfo, WorktreeSpec, compatible,
 };
-use std::collections::{HashMap, VecDeque};
+use base64::Engine as _;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,6 +44,8 @@ pub struct Config {
     pub tick: Duration,
     /// `tesselctl`, to give every agent tessel's tools. none: agents get none.
     pub tools_bin: Option<std::path::PathBuf>,
+    /// sessions whose agents the previous daemon handed over: theirs aren't leftovers to stop.
+    pub adopted: HashSet<SessionId>,
 }
 
 impl Config {
@@ -54,6 +57,7 @@ impl Config {
             interrupt_grace: Duration::from_secs(8),
             tick: Duration::from_millis(500),
             tools_bin: None,
+            adopted: HashSet::new(),
         }
     }
 }
@@ -122,6 +126,15 @@ struct Client {
     hosts_pages: bool,
 }
 
+/// a restart that was asked for: who to answer, until when to wait for
+/// turns to end, and the daemon to hand over to.
+struct Restart {
+    client: ClientId,
+    id: u64,
+    deadline: Millis,
+    bin: std::path::PathBuf,
+}
+
 /// a window command on its way to a window and back.
 struct UiCall {
     client: ClientId,
@@ -165,6 +178,8 @@ pub struct Hub {
     settings: tessel_proto::DaemonSettings,
     terms: std::collections::BTreeMap<TermId, crate::term::Handle>,
     next_term: TermId,
+    /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
+    restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
     git_undo: GitUndoStacks,
     /// each workspace's ten ports.
@@ -245,6 +260,7 @@ impl Hub {
             settings: tessel_proto::DaemonSettings::default(),
             terms: Default::default(),
             next_term: 1,
+            restart: None,
             git_undo: Default::default(),
             ports: crate::setup::Ports::load(ports_path),
             browser,
@@ -262,7 +278,9 @@ impl Hub {
             let dir = hub.cfg.paths.session_dir(&id);
             let sid = id.to_string();
             let markers = [sid.as_str(), p.agent_session_id.as_deref().unwrap_or("")];
-            if let Some(pid) = crate::orphans::reap(&dir, &markers) {
+            if hub.cfg.adopted.contains(&id) {
+                // its agent is still running, handed over: ours now.
+            } else if let Some(pid) = crate::orphans::reap(&dir, &markers) {
                 eprintln!("tesseld: stopped agent {pid} left over from a previous daemon (session {id})");
             }
             let mut state = SessionState::restore(p, items);
@@ -290,8 +308,146 @@ impl Hub {
                 },
                 _ = tick.tick() => self.tick(),
             }
+            if self.restart_due() {
+                break;
+            }
         }
-        self.shutdown().await;
+        let due = self.restart_due();
+        match self.restart.take().filter(|_| due) {
+            Some(r) => {
+                if let Err((r, e)) = self.hand_off(r).await {
+                    // the new daemon never started: nothing was let go of, so carry on as we were.
+                    self.respond(r.client, r.id, Err(RpcError::new(ErrorCode::Internal, format!("couldn't restart: {e}"))));
+                    Box::pin(self.run(rx)).await;
+                    return;
+                }
+            }
+            None => self.shutdown().await,
+        }
+    }
+
+    /// asked to restart, and nothing is mid-turn any more (or the wait is over).
+    fn restart_due(&self) -> bool {
+        let Some(r) = &self.restart else { return false };
+        now_ms() >= r.deadline || !self.sessions.values().any(|l| l.agent.is_some() && l.state.mid_turn())
+    }
+
+    /// start the new daemon, then give it every terminal and every idle agent,
+    /// still running. agents mid-turn (only when the wait ran out) are cut
+    /// short, as a crash would; their conversations pick up again.
+    async fn hand_off(&mut self, r: Restart) -> Result<(), (Restart, String)> {
+        use std::os::fd::{AsRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+        let (ours, theirs) = match std::os::unix::net::UnixStream::pair() {
+            Ok(p) => p,
+            Err(e) => return Err((r, e.to_string())),
+        };
+        // the new daemon gets its end; nothing else does.
+        unsafe { libc::fcntl(theirs.as_raw_fd(), libc::F_SETFD, 0) };
+        let mut cmd = std::process::Command::new(&r.bin);
+        cmd.env(crate::handoff::ENV, theirs.as_raw_fd().to_string()).env("TESSEL_HOME", &self.cfg.paths.home).stdin(std::process::Stdio::null());
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let why = format!("running {}: {e}", r.bin.display());
+                return Err((r, why));
+            }
+        };
+        drop(theirs);
+        let pid = child.id();
+
+        let mut manifest = crate::handoff::Manifest { next_term: self.next_term, ..Default::default() };
+        let mut fds: Vec<OwnedFd> = Vec::new();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+        for (id, handle) in std::mem::take(&mut self.terms) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            handle.send(crate::term::Cmd::Handoff(tx));
+            match tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(5))).await {
+                Ok(Ok(t)) => {
+                    manifest.terms.push(crate::handoff::Term { info: t.info, pid: t.pid, screen: b64(&t.screen) });
+                    fds.push(t.master);
+                }
+                _ => eprintln!("tesseld: terminal {id} didn't let go; it stops with this daemon"),
+            }
+            drop(handle);
+        }
+        let mut cut_short = 0;
+        let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+        for s in ids {
+            let Some(live) = self.sessions.get_mut(&s) else { continue };
+            let Some(agent) = live.agent.take() else { continue };
+            if live.state.mid_turn() {
+                agent.kill();
+                cut_short += 1;
+                continue;
+            }
+            let cost_process = live.state.cost_process();
+            match agent.release().await {
+                Some(a) => {
+                    manifest.agents.push(crate::handoff::Agent { session: s, pid: a.pid, unread: b64(&a.unread), cost_process });
+                    fds.extend([a.stdin, a.stdout, a.stderr]);
+                }
+                None => agent.kill(),
+            }
+        }
+        for live in self.sessions.values() {
+            self.store.save(live.state.persisted(), Vec::new());
+        }
+        self.store.flush().await;
+        let (terminals, agents) = (manifest.terms.len() as u32, manifest.agents.len() as u32);
+        let sent = tokio::task::spawn_blocking(move || crate::handoff::send(&ours, &manifest, &fds).map(|()| ours)).await;
+        match sent {
+            Ok(Ok(_sock)) => eprintln!("tesseld: handed {terminals} terminal(s) and {agents} agent(s) to pid {pid}"),
+            Ok(Err(e)) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
+            Err(e) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
+        }
+        self.respond(r.client, r.id, Ok(Response::Restarted { pid, terminals, agents, cut_short }));
+        // let the answer reach whoever asked before the socket goes.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        Ok(())
+    }
+
+    /// carry on with what the previous daemon handed over.
+    pub fn adopt(&mut self, m: crate::handoff::Manifest, fds: Vec<std::os::fd::OwnedFd>) {
+        let mut fds = fds.into_iter();
+        let unb64 = |s: &str| base64::engine::general_purpose::STANDARD.decode(s).unwrap_or_default();
+        self.next_term = self.next_term.max(m.next_term);
+        for t in m.terms {
+            let Some(master) = fds.next() else { break };
+            let id = t.info.id;
+            match crate::term::adopt(crate::term::Released { info: t.info, pid: t.pid, master, screen: unb64(&t.screen) }, self.tx.clone()) {
+                Ok(handle) => {
+                    self.terms.insert(id, handle);
+                }
+                Err(e) => eprintln!("tesseld: taking over terminal {id}: {e}"),
+            }
+        }
+        for a in m.agents {
+            let (Some(stdin), Some(stdout), Some(stderr)) = (fds.next(), fds.next(), fds.next()) else { break };
+            let released = tessel_agent::backend::Released { pid: a.pid, stdin, stdout, stderr, unread: unb64(&a.unread) };
+            match self.backend.adopt(released, Some(self.cfg.paths.raw_log(&a.session))) {
+                Ok(spawned) if self.sessions.contains_key(&a.session) => {
+                    self.wire_agent(a.session, spawned);
+                    let _ = self.apply(a.session, Input::Adopted { cost_process: a.cost_process });
+                }
+                Ok(spawned) => spawned.agent.kill(),
+                Err(e) => {
+                    eprintln!("tesseld: taking over the agent of {}: {e}", a.session);
+                    unsafe { libc::kill(-(a.pid as i32), libc::SIGTERM) };
+                }
+            }
+        }
+        if !self.terms.is_empty() || !self.cfg.adopted.is_empty() {
+            eprintln!("tesseld: carried on with {} terminal(s) and {} agent(s)", self.terms.len(), self.cfg.adopted.len());
+        }
     }
 
     async fn shutdown(&mut self) {
@@ -464,7 +620,7 @@ impl Hub {
                         proto_minor: PROTO_MINOR,
                         build: self.cfg.build.clone(),
                         daemon_pid: std::process::id(),
-                        capabilities: vec!["worktrees".into(), "replay-user".into()],
+                        capabilities: vec!["worktrees".into(), "replay-user".into(), "handoff".into()],
                     })
                 }
             }
@@ -957,6 +1113,28 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 });
                 return None;
             }
+            Request::DaemonRestart { now, wait_secs, bin } => {
+                if self.restart.is_some() {
+                    return Some(Err(RpcError::new(ErrorCode::Conflict, "already restarting")));
+                }
+                let bin = match bin {
+                    // only a daemon: this isn't a way to run anything else.
+                    Some(b) => {
+                        let p = std::path::PathBuf::from(b);
+                        if p.file_name().and_then(|n| n.to_str()) != Some("tesseld") || !p.is_file() {
+                            return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{} isn't a tesseld", p.display()))));
+                        }
+                        p
+                    }
+                    None => match std::env::current_exe() {
+                        Ok(p) => p,
+                        Err(e) => return Some(Err(RpcError::new(ErrorCode::Internal, e.to_string()))),
+                    },
+                };
+                let wait = if now { 0 } else { wait_secs.unwrap_or(600) * 1000 };
+                self.restart = Some(Restart { client, id, deadline: now_ms() + wait, bin });
+                return None;
+            }
             Request::BrowserHost { on } => {
                 if let Some(c) = self.clients.get_mut(&client) {
                     c.hosts_pages = on;
@@ -1425,6 +1603,14 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             .backend
             .spawn(opts)
             .map_err(|e| RpcError::new(ErrorCode::Internal, format!("could not start the agent: {e:#}")))?;
+        self.wire_agent(session, spawned);
+        self.apply(session, Input::Spawning)?;
+        Ok(())
+    }
+
+    /// a running agent, now this session's: its output comes to the hub.
+    fn wire_agent(&mut self, session: SessionId, spawned: tessel_agent::Spawned) {
+        let Some(live) = self.sessions.get_mut(&session) else { return };
         live.generation += 1;
         live.restart_when_idle = false;
         let generation = live.generation;
@@ -1441,8 +1627,6 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 }
             }
         });
-        self.apply(session, Input::Spawning)?;
-        Ok(())
     }
 
     fn agent_output(&mut self, session: SessionId, generation: u64, output: AgentOutput) {

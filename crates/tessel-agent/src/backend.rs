@@ -66,6 +66,22 @@ pub trait Agent: Send {
     /// stop the process and everything it started. polite first, then not.
     fn kill(&self);
     fn pid(&self) -> Option<u32>;
+    /// stop talking to the process and hand over its pipes, leaving it
+    /// running. none: this agent can't be handed over (it is then stopped).
+    fn release(&self) -> Pin<Box<dyn Future<Output = Option<Released>> + Send>> {
+        Box::pin(async { None })
+    }
+}
+
+/// an agent process one daemon lets go of for the next to take over: its
+/// pid, the pipes to it, and what it had written that hadn't been read yet.
+/// the process never notices.
+pub struct Released {
+    pub pid: u32,
+    pub stdin: std::os::fd::OwnedFd,
+    pub stdout: std::os::fd::OwnedFd,
+    pub stderr: std::os::fd::OwnedFd,
+    pub unread: Vec<u8>,
 }
 
 pub struct Spawned {
@@ -83,5 +99,10 @@ pub trait Backend: Send + Sync + 'static {
     fn one_shot(&self, prompt: String, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>> {
         let _ = (prompt, model);
         Box::pin(async { anyhow::bail!("this agent can't answer one-off questions") })
+    }
+    /// take over an agent another daemon let go of, carrying on where it was.
+    fn adopt(&self, released: Released, raw_log: Option<PathBuf>) -> anyhow::Result<Spawned> {
+        let _ = (released, raw_log);
+        anyhow::bail!("this agent can't be taken over")
     }
 }

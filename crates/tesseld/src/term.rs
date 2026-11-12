@@ -40,6 +40,18 @@ pub enum Cmd {
     Hangup,
     /// stop the thread; the program is hung up first if it still runs.
     Quit,
+    /// stop the thread and give the terminal over, its program still running,
+    /// for the next daemon to carry on with.
+    Handoff(std::sync::mpsc::Sender<Released>),
+}
+
+/// a terminal let go of: its program carries on, the next daemon takes it from here.
+pub struct Released {
+    pub info: TermInfo,
+    pub pid: i32,
+    pub master: OwnedFd,
+    /// everything on it and in its history, to draw it again.
+    pub screen: Vec<u8>,
 }
 
 /// the hub's side of a terminal.
@@ -121,7 +133,22 @@ pub fn spawn(info: TermInfo, env: Vec<(String, String)>, hub: UnboundedSender<Hu
     }
     let child = cmd.spawn()?;
     nonblocking(master.as_raw_fd())?;
+    let pid = child.id() as i32;
+    start(info, master, Some(child), pid, Vec::new(), hub)
+}
 
+/// carry on with a terminal another daemon let go of.
+pub fn adopt(r: Released, hub: UnboundedSender<HubMsg>) -> io::Result<Handle> {
+    unsafe {
+        libc::fcntl(r.master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+    }
+    nonblocking(r.master.as_raw_fd())?;
+    start(r.info, r.master, None, r.pid, r.screen, hub)
+}
+
+/// the terminal's thread, around its pty. `child`: ours to wait on, unless
+/// it was taken over. `screen`: what it showed before, to start from.
+fn start(info: TermInfo, master: OwnedFd, child: Option<Child>, pid: i32, screen: Vec<u8>, hub: UnboundedSender<HubMsg>) -> io::Result<Handle> {
     let mut pipe = [0 as RawFd; 2];
     if unsafe { libc::pipe(pipe.as_mut_ptr()) } != 0 {
         return Err(last_os());
@@ -136,7 +163,7 @@ pub fn spawn(info: TermInfo, env: Vec<(String, String)>, hub: UnboundedSender<Hu
     let (tx, rx) = std::sync::mpsc::channel();
     let id = info.id;
     let thread_info = info.clone();
-    std::thread::Builder::new().name(format!("term-{id}")).spawn(move || run(thread_info, master, wake_r, child, rx, hub))?;
+    std::thread::Builder::new().name(format!("term-{id}")).spawn(move || run(thread_info, master, wake_r, child, pid, screen, rx, hub))?;
     Ok(Handle { info, attached: HashSet::new(), closing: false, cmds: tx, wake: wake_w })
 }
 
@@ -152,19 +179,26 @@ fn reply(hub: &UnboundedSender<HubMsg>, client: ClientId, id: u64, result: Resul
 }
 
 /// the terminal's thread: until told to quit.
-fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Child, cmds: std::sync::mpsc::Receiver<Cmd>, hub: UnboundedSender<HubMsg>) {
+#[allow(clippy::too_many_arguments)]
+fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Child>, pid: i32, screen: Vec<u8>, cmds: std::sync::mpsc::Receiver<Cmd>, hub: UnboundedSender<HubMsg>) {
     let fd = master.as_raw_fd();
     let Ok(mut term) = tessel_term::Term::new(info.cols, info.rows, SCROLLBACK) else {
-        let _ = child.kill();
+        if let Some(c) = child.as_mut() {
+            let _ = c.kill();
+        }
         return;
     };
+    // taken over: as it was, before anything new is written.
+    if !screen.is_empty() {
+        term.feed(&screen);
+    }
     // what goes to the program: typed input, and the emulator's own answers.
     let out: Rc<RefCell<VecDeque<u8>>> = Rc::default();
     let answers = out.clone();
     let _ = term.answer_with(move |b| answers.borrow_mut().extend(b.iter().copied()));
 
-    let pid = child.id() as i32;
-    let mut exited = false;
+    let mut exited = info.exited.is_some();
+    let mut handoff = None;
     let mut waiters: Vec<Waiter> = Vec::new();
     let (mut title, mut pwd) = (String::new(), String::new());
     let mut buf = vec![0u8; 64 * 1024];
@@ -211,6 +245,10 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Child, cmd
                     }
                 }
                 Cmd::Quit => quit = true,
+                Cmd::Handoff(back) => {
+                    handoff = Some(back);
+                    quit = true;
+                }
             }
         }
         if quit {
@@ -247,8 +285,13 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Child, cmd
             }
             if ended {
                 exited = true;
-                let status = child.wait().ok();
-                let code = status.map_or(-1, |s| s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0)));
+                // one taken over isn't ours to wait on: how it ended isn't known, so it's said plainly.
+                let status = child.as_mut().and_then(|c| c.wait().ok());
+                let code = match (status, &child) {
+                    (Some(s), _) => s.code().unwrap_or_else(|| 128 + s.signal().unwrap_or(0)),
+                    (None, None) => 0,
+                    (None, Some(_)) => -1,
+                };
                 info.exited = Some(code);
                 let _ = hub.send(HubMsg::TermExited { term: info.id, code });
             }
@@ -293,15 +336,32 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Child, cmd
             });
         }
     }
+    // given over: the program runs on, untouched; whoever waits is told it's the next daemon's now.
+    if let Some(back) = handoff {
+        for w in waiters {
+            reply(&hub, w.client, w.id, Err(RpcError::new(ErrorCode::NotReady, "the daemon is restarting; ask again")));
+        }
+        let _ = back.send(Released { screen: term.dump(), info, pid, master });
+        return;
+    }
     if !exited {
         unsafe { libc::kill(-pid, libc::SIGHUP) };
         // reaped off this thread so a stubborn program can't hold it.
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(2));
-            if matches!(child.try_wait(), Ok(None)) {
-                let _ = child.kill();
+            match child.as_mut() {
+                Some(c) => {
+                    if matches!(c.try_wait(), Ok(None)) {
+                        let _ = c.kill();
+                    }
+                    let _ = c.wait();
+                }
+                None => unsafe {
+                    if libc::kill(pid, 0) == 0 {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
+                },
             }
-            let _ = child.wait();
         });
     }
     for w in waiters {
