@@ -228,8 +228,10 @@ impl Shell {
             .absolute()
             .inset_0()
             .child(picture)
-            // the scrim: the photo is a mood, never louder than what's over it.
-            .child(div().absolute().inset_0().rounded(px(theme::R_PANEL)).bg(if p.dark { gpui_kit::black().opacity(0.6) } else { gpui_kit::white().opacity(0.5) }))
+            // the scrim: the photo is a mood, never louder than what's over it. always
+            // a darkening: space is black, and a white veil turns it to grey haze. the
+            // cards over it are solid, so in light mode a lighter touch is enough.
+            .child(div().absolute().inset_0().rounded(px(theme::R_PANEL)).bg(gpui_kit::black().opacity(if p.dark { 0.55 } else { 0.25 })))
             .children(credit.map(|c| {
                 div()
                     .absolute()

@@ -160,10 +160,8 @@ impl ClaudeBackend {
         for dir in &opts.add_dirs {
             args.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
         }
-        if let Some(tools) = &opts.tools {
-            let env: serde_json::Map<String, serde_json::Value> = tools.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-            let config = serde_json::json!({"mcpServers": {"tessel": {"command": tools.command, "args": ["mcp"], "env": env}}});
-            args.extend(["--mcp-config".to_owned(), config.to_string()]);
+        if opts.tools.is_some() {
+            // the server itself is added once it's running (see `first_lines`).
             // tessel's own tools only touch tessel (its window, this session's
             // surfaces), so they don't stop to ask. the few that would need a
             // person are refused by the server itself.
@@ -174,6 +172,15 @@ impl ClaudeBackend {
             }
         }
         args
+    }
+
+    /// what's written to the agent before anything else: tessel's tool server,
+    /// added while the agent starts rather than on its command line.
+    pub fn first_lines(opts: &SpawnOpts) -> Vec<String> {
+        let Some(tools) = &opts.tools else { return Vec::new() };
+        let env: serde_json::Map<String, serde_json::Value> = tools.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
+        let servers = serde_json::json!({"tessel": {"type": "stdio", "command": tools.command, "args": ["mcp"], "env": env}});
+        vec![wire::mcp_set_servers("tessel-tools", &servers).to_string()]
     }
 }
 
@@ -311,6 +318,9 @@ impl Backend for ClaudeBackend {
         let child_stderr = child.stderr.take().context("no stderr")?;
 
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();
+        for line in Self::first_lines(&opts) {
+            let _ = stdin_tx.send(line);
+        }
         let (stdout_tx, stdout_rx) = mpsc::unbounded_channel::<String>();
         let (exit_tx, exit_rx) = oneshot::channel();
         let exited = Arc::new(AtomicBool::new(false));
@@ -423,16 +433,19 @@ mod tests {
         let tools = crate::backend::AgentTools { command: "/opt/tessel/tesselctl".into(), env: vec![("TESSEL_SESSION".into(), "s-1".into())] };
         let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: Some(tools) };
         let args = ClaudeBackend::args(&opts);
-        let at = args.iter().position(|a| a == "--mcp-config").expect("the tools are passed");
-        let config: serde_json::Value = serde_json::from_str(&args[at + 1]).unwrap();
-        assert_eq!(config["mcpServers"]["tessel"]["command"], "/opt/tessel/tesselctl");
-        assert_eq!(config["mcpServers"]["tessel"]["args"][0], "mcp");
-        assert_eq!(config["mcpServers"]["tessel"]["env"]["TESSEL_SESSION"], "s-1");
+        // not on the command line: that makes the agent wait for every server before starting.
+        assert!(!args.iter().any(|a| a == "--mcp-config"));
+        let first = ClaudeBackend::first_lines(&opts);
+        let req: serde_json::Value = serde_json::from_str(&first[0]).unwrap();
+        assert_eq!(req["request"]["subtype"], "mcp_set_servers");
+        let tessel = &req["request"]["servers"]["tessel"];
+        assert_eq!(tessel["command"], "/opt/tessel/tesselctl");
+        assert_eq!(tessel["args"][0], "mcp");
+        assert_eq!(tessel["env"]["TESSEL_SESSION"], "s-1");
         assert!(args.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("tessel_surface") && w[1].contains("```mermaid")), "one note, both parts");
         assert_eq!(args.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
         assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__tessel"]), "they run without a permission prompt");
-        let without = ClaudeBackend::args(&SpawnOpts { tools: None, ..opts });
-        assert!(!without.iter().any(|a| a == "--mcp-config"));
+        assert!(ClaudeBackend::first_lines(&SpawnOpts { tools: None, ..opts }).is_empty());
     }
 
     #[test]

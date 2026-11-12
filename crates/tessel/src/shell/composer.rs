@@ -479,7 +479,7 @@ impl Shell {
                 list = list.child(div().px(px(10.)).py_2().set(Type::Callout).text_color(p.secondary).child("This session has no tool servers."));
             }
             let mut rows = v_flex().id("mcp-list").overflow_y_scroll().max_h(px(360.));
-            for m in &servers {
+            for (i, m) in servers.iter().enumerate() {
                 let (word, icon, tint) = match m.status.as_str() {
                     "connected" => ("Connected", "check", p.finished),
                     "needs-auth" => ("Needs sign-in", "circle-alert", p.blocked),
@@ -491,6 +491,9 @@ impl Shell {
                 let initial = m.name.trim_start_matches("plugin:").chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_default();
                 rows = rows.child(
                     h_flex()
+                        // an id gives the row hover state of its own: without one, the
+                        // highlight only moves when something else redraws the window.
+                        .id(("mcp-row", i))
                         .h(px(32.))
                         .px(px(10.))
                         .gap(px(10.))

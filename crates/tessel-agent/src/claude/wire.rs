@@ -69,6 +69,15 @@ pub fn apply_flag_settings(request_id: &str, settings: &Value) -> Value {
     json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "apply_flag_settings", "settings": settings}})
 }
 
+/// add (or replace) tool servers in a running agent. tessel's own server goes
+/// in this way rather than `--mcp-config`: a server passed on the command line
+/// makes the agent wait for *every* server, the person's broken ones included,
+/// before it starts, which was twenty seconds on a real machine. added after,
+/// it joins the person's in connecting in the background.
+pub fn mcp_set_servers(request_id: &str, servers: &Value) -> Value {
+    json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "mcp_set_servers", "servers": servers}})
+}
+
 pub fn mcp_status(request_id: &str) -> Value {
     json!({"type": "control_request", "request_id": request_id, "request": {"subtype": "mcp_status"}})
 }

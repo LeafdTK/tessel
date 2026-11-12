@@ -728,16 +728,18 @@ impl Shell {
                     .children(self.context_meter_el(cx))
                     .child(div().pl(theme::z(4.)).child(send)),
             );
+        // what the keys do, as keys: the same caps the menus use, the words in
+        // a tone you can read at a glance without it competing with the box.
+        let hint = |keys: &str, what: &'static str| h_flex().gap(theme::z(6.)).child(theme::keycaps(&p, keys)).child(div().text_color(p.secondary).child(what));
         let hints = h_flex()
             .px(theme::z(12.))
-            .pt(theme::z(6.))
-            .gap(theme::z(14.))
+            .pt(theme::z(8.))
+            .gap(theme::z(16.))
             .set(Type::Subheadline)
-            .text_color(p.tertiary)
-            .child("⏎ send")
-            .child("⇧⏎ new line")
-            .child("/ commands")
-            .child("@ files");
+            .child(hint("⏎", "send"))
+            .child(hint("⇧ ⏎", "new line"))
+            .child(hint("/", "commands"))
+            .child(hint("@", "files"));
         let composer = v_flex().child(composer).child(hints);
         v_flex()
             .size_full()
