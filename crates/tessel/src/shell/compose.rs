@@ -138,7 +138,6 @@ impl Shell {
         let before = self.transcript_opts;
         // another desktop: put this one's chats away before the layout changes under them.
         let (was, now) = (super::desktops::desktop_key(&self.ui), super::desktops::desktop_key(&ui));
-        let (from, to) = (self.ui.desktop, ui.desktop);
         let switching = was != now;
         if switching {
             self.leave_desktop(was, cx);
@@ -146,7 +145,7 @@ impl Shell {
         self.adopt_ui(ui);
         if switching {
             self.enter_desktop(&now, cx);
-            self.slide_desktop(from, to);
+            self.slide_desktop();
         }
         self.palette.set(theme::apply(self.forced_dark, &self.ui.theme, window, cx));
         if self.transcript_opts != before {
@@ -389,7 +388,9 @@ impl Shell {
                         .on_double_click(|_, window, _| window.titlebar_double_click())
                         .on_mouse_move(self.moves_window(cx))
                 });
-                self.styled(div().relative().child(self.panes_el(n, now, cx)).children(strip), s).into_any_element()
+                // a desktop arriving: its panes come up quickly from a little faint. the sidebar stays as it is.
+                let arriving = self.desktop_slide.value().clamp(0.0, 1.0);
+                self.styled(div().relative().opacity(1.0 - arriving * 0.2).child(self.panes_el(n, now, cx)).children(strip), s).into_any_element()
             }
             Kind::Add => self.styled(div().flex_shrink_0().child(self.add_menu("sidebar-add", cx)), s).into_any_element(),
             Kind::Desktops => self.styled(div().flex_1().min_w_0().child(self.desktops_el(cx)), s).into_any_element(),
@@ -463,7 +464,15 @@ impl Shell {
                 inner = inner.child(el);
             }
         }
-        let clip = div().w(px(w)).h_full().flex_shrink_0().overflow_hidden().child(inner);
+        let clip = div()
+            .id(eid(format!("{id}-clip")))
+            .w(px(w))
+            .h_full()
+            .flex_shrink_0()
+            .overflow_hidden()
+            // two fingers sideways across the sidebar: the next desktop, or the last.
+            .when(id == "sidebar", |d| d.on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| this.sidebar_swipe(ev, window, cx))))
+            .child(inner);
         let grab = id.clone();
         let divider = div()
             .id(eid(format!("{id}-divider")))

@@ -10,7 +10,7 @@ use gpui_kit::test::TestWindowExt as _;
 // named imports only: a wildcard would bring in the library's own `test`
 // item, which the test attribute then expands into forever.
 use crate::shell::Tab;
-use gpui_kit::{AnyWindowHandle, AppContext as _, ClipboardItem, ElementId, Entity, Image, ImageFormat, SharedString, TestAppContext, WindowOptions};
+use gpui_kit::{AnyWindowHandle, AppContext as _, ClipboardItem, ElementId, Entity, Image, ImageFormat, ScrollDelta, ScrollEvent, SharedString, TestAppContext, TouchPhase, WindowOptions, point, px};
 use tessel_proto::*;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -2149,5 +2149,53 @@ fn a_chat_can_be_put_on_another_desktop_or_one_of_its_own(cx: &mut TestAppContex
     let (n, name) = rig.shell.read_with(cx, |s, _| (s.ui.desktops.len(), s.ui.desktops[s.ui.desktop].name.clone()));
     assert_eq!((n, name.as_str()), (before + 1, "api"));
     assert_eq!(open(&rig, cx).1, Some(sid(3)));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn the_sidebar_stays_while_desktops_change_their_panes_and_a_swipe_switches(cx: &mut TestAppContext) {
+    let dir = layout_dir("desktop-panes");
+    let file = dir.join("ui.json");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| {
+        let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+        rig.settle(cx);
+        r
+    };
+    let panes = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.ui.panes().len());
+    let showing = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.ui.desktop);
+    let main_panes = panes(&rig, cx);
+    exec(&mut rig, cx, "desktop.new", serde_json::json!({"name": "Two"})).unwrap();
+    // splitting here changes this desktop's panes only, and never the sidebar.
+    exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": "conversation", "dir": "right"})).unwrap();
+    assert_eq!(panes(&rig, cx), main_panes + 1);
+    assert!(rig.exists(cx, a.id.0), "the sidebar's list, as it was");
+    assert!(rig.shell.read_with(cx, |s, _| s.drawer("sidebar").is_some_and(|d| d.open)), "and the sidebar itself");
+    exec(&mut rig, cx, "desktop.use", serde_json::json!({"desktop": 1})).unwrap();
+    assert_eq!(panes(&rig, cx), main_panes, "Main's panes are its own");
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(saved["desktops"][1]["layout"].is_object() && saved["desktops"][1].get("root").is_none(), "a desktop keeps panes, not a whole window");
+
+    // two fingers to the left: the next desktop, once, however far the swipe coasts.
+    let swipe = |rig: &mut Rig, cx: &mut TestAppContext, phase: TouchPhase, dx: f32| {
+        let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(dx), px(1.))), touch_phase: phase, ..ScrollEvent::default() };
+        cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
+        rig.settle(cx);
+    };
+    swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    swipe(&mut rig, cx, TouchPhase::Moved, -50.);
+    assert_eq!(showing(&rig, cx), 1);
+    swipe(&mut rig, cx, TouchPhase::Moved, -90.);
+    assert_eq!(showing(&rig, cx), 1, "one swipe, one desktop");
+    // up and down is the list's, not a switch.
+    swipe(&mut rig, cx, TouchPhase::Started, 0.);
+    let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(30.), px(120.))), touch_phase: TouchPhase::Moved, ..ScrollEvent::default() };
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
+    assert_eq!(showing(&rig, cx), 1);
+    // and back to the right.
+    swipe(&mut rig, cx, TouchPhase::Started, 30.);
+    swipe(&mut rig, cx, TouchPhase::Moved, 40.);
+    assert_eq!(showing(&rig, cx), 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -174,8 +174,11 @@ pub struct Shell {
     pub(crate) awaiting: Option<SessionId>,
     /// what each desktop you aren't looking at had on it.
     pub(crate) stashed: HashMap<String, desktops::Stashed>,
-    /// a desktop sliding in: -1 from the left, 1 from the right, 0 in place.
+    /// a desktop's panes arriving: 1 just switched, fading to 0.
     pub(crate) desktop_slide: Spring,
+    /// a two-finger swipe across the sidebar: how far it has gone, whether it
+    /// has already switched desktops, and when it last moved.
+    pub(crate) swipe: (f32, bool, Option<Instant>),
     /// the pane maximized over the others, if one is.
     pub(crate) pane_zoom: Option<String>,
     /// a pane being carried by its grip.
@@ -572,6 +575,7 @@ impl Shell {
             awaiting: None,
             stashed: HashMap::new(),
             desktop_slide: Spring::unit(0.0),
+            swipe: (0.0, false, None),
             pane_zoom: None,
             pane_move: None,
             root_focus: cx.focus_handle(),
@@ -2294,15 +2298,6 @@ impl Render for Shell {
         let show_overview = self.overview || self.overview_fade.value() > 0.001;
         let ui = self.ui.clone();
         let root = self.node(&ui.root, false, now, cx);
-        // a desktop arriving slides in a little way from its side, fading up.
-        let slide = self.desktop_slide.value();
-        let root = root.map(|r| {
-            if slide.abs() < 0.001 {
-                return r;
-            }
-            let travel = f32::from(window.viewport_size().width) * 0.12;
-            fly(point(px(slide * travel), px(0.)), div().size_full().opacity((1.0 - slide.abs() * 0.7).clamp(0.0, 1.0)).child(r)).into_any_element()
-        });
         let font = ui.theme.font.clone();
 
         // glass: nothing opaque under the frame, so the blurred desktop shows through it.

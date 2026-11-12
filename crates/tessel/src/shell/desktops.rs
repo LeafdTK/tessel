@@ -13,7 +13,7 @@
 
 use super::chats::ChatView;
 use super::Shell;
-use crate::motion::{PANEL, Spring};
+use crate::motion::Spring;
 use gpui_kit::component::message_scroller::MessageScrollerState;
 use gpui_kit::*;
 use serde_json::{Map, Value, json};
@@ -350,6 +350,35 @@ impl Shell {
         row.into_any_element()
     }
 
+    /// two fingers sideways on the sidebar change desktop, as they change
+    /// spaces on the mac: towards the left for the next one. one switch per
+    /// swipe, however long it coasts; up and down is left to the list.
+    pub(crate) fn sidebar_swipe(&mut self, ev: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
+        const ENOUGH: f32 = 60.0;
+        if self.ui.desktops.len() < 2 {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let (mut gone, mut spent, last) = self.swipe;
+        // a new touch, or a pause long enough to be one: start counting again.
+        if ev.touch_phase == TouchPhase::Started || last.is_none_or(|t| now.duration_since(t).as_millis() > 300) {
+            (gone, spent) = (0.0, false);
+        }
+        let d = match ev.delta {
+            ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+            ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
+        };
+        if !spent && d.0.abs() > d.1.abs() {
+            gone += d.0;
+            if gone.abs() >= ENOUGH {
+                spent = true;
+                let next = if gone < 0.0 { "desktop.next" } else { "desktop.prev" };
+                self.run_key(next, json!({}), window, cx);
+            }
+        }
+        self.swipe = (gone, spent, Some(now));
+    }
+
     /// ⌘1…⌘9: that desktop, when there is one.
     pub(crate) fn go_desktop(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         if n >= 1 && n <= self.ui.desktops.len() && n - 1 != self.ui.desktop {
@@ -357,11 +386,12 @@ impl Shell {
         }
     }
 
-    /// slide the new desktop in from the side it sits on.
-    pub(crate) fn slide_desktop(&mut self, from: usize, to: usize) {
-        let dir = if to > from { 1.0 } else { -1.0 };
-        self.desktop_slide = Spring::unit(dir);
-        self.desktop_slide.to(0.0, PANEL);
+    /// a quick fade as a desktop's panes arrive: no movement, so flicking
+    /// between desktops never makes anyone dizzy.
+    pub(crate) fn slide_desktop(&mut self) {
+        const ARRIVE: crate::motion::Preset = crate::motion::Preset { duration: 0.14, bounce: 0.0 };
+        self.desktop_slide = Spring::unit(1.0);
+        self.desktop_slide.to(0.0, ARRIVE);
     }
 
     // ---- the list in ui.json ---------------------------------------------------------
@@ -431,14 +461,18 @@ impl Shell {
     /// a new desktop after the last, shown at once. `copy` starts it with the
     /// layout in use; otherwise `preset`, else the default layout.
     pub(crate) fn new_desktop(&mut self, name: Option<String>, preset: Option<String>, copy: bool, scope: Vec<String>, window: &mut Window, cx: &mut Context<Self>) -> Value {
-        let current_root = self.ui_file().get("root").cloned();
+        let shared_root = self.ui_file().get("root").cloned();
         let mut made = Value::Null;
         let open = self.model.open.as_ref().map(|o| o.id.0.to_string());
         let from = self.ui.desktop;
         self.edit_ui(
             |f| {
-                // what this desktop's layout is now, in case the new one copies it.
-                let showing_root = Self::desktops_in(f).get(from).and_then(|d| d.get("root")).cloned().or(current_root);
+                // the panes showing now, in case the new desktop copies them.
+                let showing = Self::desktops_in(f)
+                    .get(from)
+                    .and_then(Value::as_object)
+                    .and_then(crate::ui::desktop_layout)
+                    .or_else(|| shared_root.as_ref().and_then(crate::ui::panes_layout).cloned());
                 let list = Self::desktops_in(f);
                 if let (Some(Value::Object(d)), Some(id)) = (list.get_mut(from), &open) {
                     d.insert("open".into(), json!(id));
@@ -452,16 +486,16 @@ impl Shell {
                 if !scope.is_empty() {
                     d.insert("scope".into(), json!(scope));
                 }
-                match (copy, preset.clone(), showing_root) {
-                    (true, _, Some(root)) => {
-                        d.insert("root".into(), root);
-                    }
-                    (_, Some(p), _) => {
-                        d.insert("preset".into(), json!(p));
-                    }
-                    _ => {
-                        d.insert("preset".into(), json!("default"));
-                    }
+                let from_preset = |name: &str| {
+                    crate::ui::preset(name).and_then(|t| serde_json::from_str::<Value>(t).ok()).and_then(|v| v.get("root").and_then(crate::ui::panes_layout).cloned())
+                };
+                let layout = match (copy, preset.as_deref()) {
+                    (true, _) => showing,
+                    (_, Some(p)) => from_preset(p),
+                    _ => from_preset("default"),
+                };
+                if let Some(layout) = layout {
+                    d.insert("layout".into(), layout);
                 }
                 list.push(Value::Object(d));
                 f.insert("desktop".into(), json!(id));
@@ -515,26 +549,24 @@ impl Shell {
         Ok(())
     }
 
-    /// change the layout of the desktop showing: its own, made from the one it
-    /// shares the first time it's changed.
-    pub(crate) fn desktop_root_mut(file: &mut Map<String, Value>, showing: usize, current: Option<Value>) -> Option<&mut Value> {
+    /// the panes to change: the showing desktop's own, made from the shared
+    /// ones the first time it's changed; with no desktops, the file's.
+    pub(crate) fn panes_to_edit(file: &mut Map<String, Value>, showing: usize, default_root: Option<Value>) -> Option<&mut Value> {
         if !matches!(file.get("desktops"), Some(Value::Array(a)) if !a.is_empty()) {
             if !file.contains_key("root") {
-                file.insert("root".into(), current?);
+                file.insert("root".into(), default_root?);
                 file.remove("preset");
             }
-            return file.get_mut("root");
+            return crate::ui::panes_layout_mut(file.get_mut("root")?);
         }
-        let shared = file.get("root").cloned();
+        let shared = file.get("root").and_then(crate::ui::panes_layout).cloned().or_else(|| default_root.as_ref().and_then(crate::ui::panes_layout).cloned());
         let Some(Value::Object(d)) = Self::desktops_in(file).get_mut(showing) else { return None };
-        if !d.contains_key("root") {
-            let preset = d.remove("preset").and_then(|p| p.as_str().map(str::to_owned));
-            let root = match preset {
-                Some(name) => crate::ui::preset(&name).and_then(|t| serde_json::from_str::<Value>(t).ok()).and_then(|v| v.get("root").cloned()),
-                None => shared.or(current),
-            };
-            d.insert("root".into(), root?);
+        if !d.contains_key("layout") {
+            let layout = crate::ui::desktop_layout(d).or(shared)?;
+            d.remove("root");
+            d.remove("preset");
+            d.insert("layout".into(), layout);
         }
-        d.get_mut("root")
+        d.get_mut("layout")
     }
 }

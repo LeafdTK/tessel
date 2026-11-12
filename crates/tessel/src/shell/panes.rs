@@ -280,10 +280,8 @@ impl Shell {
         let showing = self.ui.desktop;
         self.edit_ui(
             |f| {
-                // the desktop showing gets a layout of its own the first time it's changed.
-                if let Some(root) = Self::desktop_root_mut(f, showing, current)
-                    && let Some(layout) = find_panes(root)
-                {
+                // the desktop showing gets panes of its own the first time they're changed.
+                if let Some(layout) = Self::panes_to_edit(f, showing, current) {
                     change(layout);
                 }
             },
@@ -1136,15 +1134,6 @@ fn set_size(t: &mut PaneTree, size: f32) {
         PaneTree::Pane(p) => p.size = size,
         PaneTree::Split { size: s, .. } => *s = size,
     }
-}
-
-/// the `layout` of the first `panes` node in a json tree.
-fn find_panes(v: &mut Value) -> Option<&mut Value> {
-    let is_panes = v.get("type").and_then(Value::as_str) == Some("panes");
-    if is_panes {
-        return v.get_mut("layout");
-    }
-    v.get_mut("children")?.as_array_mut()?.iter_mut().find_map(find_panes)
 }
 
 fn at_trail<'a>(v: &'a mut Value, trail: &[usize]) -> Option<&'a mut Value> {

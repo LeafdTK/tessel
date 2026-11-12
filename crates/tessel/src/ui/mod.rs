@@ -128,8 +128,38 @@ pub fn parse(text: &str) -> Result<Ui, String> {
     Ok(ui)
 }
 
-/// a file with `desktops` is read as the desktop that's showing: its own
-/// `root` or `preset` over the file's, everything else (theme, options) shared.
+/// the first `panes` node's `layout` in a layout tree.
+pub fn panes_layout(v: &Value) -> Option<&Value> {
+    if v.get("type").and_then(Value::as_str) == Some("panes") {
+        return v.get("layout");
+    }
+    v.get("children")?.as_array()?.iter().find_map(panes_layout)
+}
+
+pub fn panes_layout_mut(v: &mut Value) -> Option<&mut Value> {
+    if v.get("type").and_then(Value::as_str) == Some("panes") {
+        return v.get_mut("layout");
+    }
+    v.get_mut("children")?.as_array_mut()?.iter_mut().find_map(panes_layout_mut)
+}
+
+/// a desktop's panes, from what its entry holds: its own `layout`, or (as
+/// entries once were) a whole `root` or `preset`, of which only the panes count.
+pub fn desktop_layout(entry: &Map<String, Value>) -> Option<Value> {
+    if let Some(l) = entry.get("layout") {
+        return Some(l.clone());
+    }
+    let root = match (entry.get("root"), entry.get("preset").and_then(Value::as_str)) {
+        (Some(root), _) => root.clone(),
+        (None, Some(name)) => serde_json::from_str::<Value>(preset(name)?).ok()?.get("root")?.clone(),
+        _ => return None,
+    };
+    panes_layout(&root).cloned()
+}
+
+/// a file with `desktops` is read as the desktop that's showing: its panes
+/// in place of the file's, and everything else (the sidebar, the theme, the
+/// options) shared by every desktop.
 fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
     let Value::Object(mut obj) = v else { return Ok((v, Vec::new(), 0)) };
     let list = match obj.remove("desktops") {
@@ -145,7 +175,7 @@ fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
     for (i, d) in list.iter().enumerate() {
         let at = format!("desktops[{i}]");
         let o = d.as_object().ok_or_else(|| format!("{at}: expected an object with a \"name\""))?;
-        keys(o, &at, &["id", "name", "root", "preset", "scope", "open"])?;
+        keys(o, &at, &["id", "name", "layout", "root", "preset", "scope", "open"])?;
         let name = o.get("name").map(|n| text(n, &format!("{at}.name"))).transpose()?.map(str::to_owned).unwrap_or_else(|| format!("Desktop {}", i + 1));
         let id = o.get("id").map(|n| text(n, &format!("{at}.id"))).transpose()?.map(str::to_owned).unwrap_or_else(|| format!("d{}", i + 1));
         if desktops.iter().any(|d: &Desktop| d.id == id) {
@@ -157,7 +187,12 @@ fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
             Some(_) => return Err(format!("{at}.scope: expected a list of project names, like [\"orchard\"]")),
         };
         let open = o.get("open").map(|n| text(n, &format!("{at}.open"))).transpose()?.map(str::to_owned);
-        layouts.push((o.get("root").cloned(), o.get("preset").cloned()));
+        if let Some(p) = o.get("preset").and_then(Value::as_str)
+            && preset(p).is_none()
+        {
+            return Err(format!("{at}.preset: there is no preset \"{p}\". presets: {}", preset_names()));
+        }
+        layouts.push(desktop_layout(o));
         desktops.push(Desktop { id, name, scope, open });
     }
     let showing = match obj.remove("desktop") {
@@ -166,16 +201,16 @@ fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
         Some(Value::Number(n)) => (n.as_u64().unwrap_or(1).max(1) as usize - 1).min(desktops.len() - 1),
         Some(_) => return Err("desktop: expected a desktop's id, like \"d2\"".into()),
     };
-    match layouts.swap_remove(showing) {
-        (Some(root), _) => {
+    if let Some(layout) = layouts.swap_remove(showing) {
+        // the shared layout, written out, with this desktop's panes in it.
+        let mut root = match (obj.get("root"), obj.get("preset").and_then(Value::as_str)) {
+            (Some(r), _) => r.clone(),
+            (None, name) => preset(name.unwrap_or("default")).and_then(|t| serde_json::from_str::<Value>(t).ok()).and_then(|v| v.get("root").cloned()).unwrap_or(Value::Null),
+        };
+        if let Some(slot) = panes_layout_mut(&mut root) {
+            *slot = layout;
             obj.insert("root".into(), root);
-            obj.remove("preset");
         }
-        (None, Some(preset)) => {
-            obj.insert("preset".into(), preset);
-            obj.remove("root");
-        }
-        (None, None) => {}
     }
     Ok((Value::Object(obj), desktops, showing))
 }
@@ -1645,17 +1680,23 @@ mod tests {
 
     #[test]
     fn a_desktop_has_its_own_layout_and_shares_the_rest() {
-        let file = r#"{"theme": "orchard", "root": {"type": "panes", "layout": {"module": "conversation"}},
-            "desktops": [{"name": "Main"}, {"id": "o", "name": "Orchard", "scope": ["orchard"], "preset": "default"}],
+        let file = r#"{"theme": "orchard", "root": {"type": "row", "children": [
+                {"type": "drawer", "id": "sidebar", "children": [{"type": "sessions"}]},
+                {"type": "panes", "layout": {"module": "conversation"}}]},
+            "desktops": [{"name": "Main"}, {"id": "o", "name": "Orchard", "scope": ["orchard"], "layout": {"split": "row", "children": [{"module": "conversation"}, {"module": "terminal"}]}}],
             "desktop": "o"}"#;
         let ui = parse(file).unwrap();
         assert_eq!(ui.desktop, 1);
         assert_eq!(ui.desktops.iter().map(|d| (d.id.as_str(), d.name.as_str())).collect::<Vec<_>>(), [("d1", "Main"), ("o", "Orchard")]);
         assert_eq!(ui.desktops[1].scope, ["orchard"]);
         assert_eq!(ui.theme.base, Some(Base::Orchard), "the theme is the file's, on every desktop");
-        assert_eq!(ui.root, Ui::default_layout().root, "Orchard's own preset, not the file's root");
+        assert_eq!(ui.panes().len(), 2, "Orchard's own panes");
+        assert!(ui.find(Kind::Sessions).is_some(), "in the shared sidebar");
         let main = parse(&file.replace(r#""desktop": "o""#, r#""desktop": "d1""#)).unwrap();
-        assert_eq!(main.panes().len(), 1, "Main has no layout of its own: the file's");
+        assert_eq!(main.panes().len(), 1, "Main has no panes of its own: the file's");
+        // an entry written before desktops held only panes: its panes, the sidebar still shared.
+        let old = parse(&file.replace(r#""layout": {"split": "row", "children": [{"module": "conversation"}, {"module": "terminal"}]}"#, r#""preset": "tiles""#)).unwrap();
+        assert!(old.panes().iter().any(|p| p.module == Some(Module::Terminal)) && old.find(Kind::Sessions).is_some());
         assert_eq!(parse(r#"{"desktops": [{"name": "A"}, {"name": "B"}], "desktop": 2}"#).unwrap().desktop, 1, "a number counts from one");
         assert!(parse(r#"{"desktops": [{"id": "x"}, {"id": "x"}]}"#).unwrap_err().contains("used twice"));
         assert!(parse(r#"{"desktops": [{"name": "A", "scope": "orchard"}]}"#).unwrap_err().contains("scope"));

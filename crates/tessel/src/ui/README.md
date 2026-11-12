@@ -37,7 +37,7 @@ quickest way to see how the pieces fit.
 | `freestyle` | `true` turns off every guardrail below: drawn exactly as written           |
 | `transcript` | the transcript's options (`user`, `thoughts`, `tools`), wherever the layout put it |
 | `sessions` | the session list's options (`trace`)                                          |
-| `desktops` | a list of desktops, each `{"id", "name", "root" or "preset", "scope", "open"}`: a layout of its own, the projects its sidebar lists (`scope`, empty for all), and the chat it had open. the rest of the file (theme, options) is shared |
+| `desktops` | a list of desktops, each `{"id", "name", "layout", "scope", "open"}`: its own panes (`layout`, shaped like a `panes` node's), the projects the sidebar lists on it (`scope`, empty for all), and the chat it had open. everything else (the sidebar, the theme, the options) is shared |
 | `desktop` | the id of the desktop showing (or its number, from 1) |
 | `notch` | the agents drawn around the camera notch. on where there is one; `false` hides it, `true` shows it on a Mac without one, mid menu bar |
 
