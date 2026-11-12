@@ -2273,3 +2273,43 @@ fn scripts_can_be_written_by_hand_for_the_team_or_this_mac(cx: &mut TestAppConte
     rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts: saved, port: 41000 }) }]);
     assert_eq!(rig.shell.read_with(cx, |s, _| s.open_scripts().map(|(s, _)| s.concurrent)), Some(false));
 }
+
+#[gpui_kit::test]
+fn the_browser_pane_shows_the_chats_page_and_a_pick_goes_in_your_message(cx: &mut TestAppContext) {
+    use tessel_proto::BrowserAct;
+    let dir = layout_dir("browser-pane");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    let browser = |c: &Cmd| match c {
+        Cmd::Browser { session, act } if *session == a.id => Some(act.clone()),
+        _ => None,
+    };
+
+    // the agent uses the browser: a pane comes up, and the page is opened and watched.
+    rig.feed(cx, vec![UiEvent::BrowserActivity { session: a.id, what: "clicked Sign in".into(), at: Some((40.0, 20.0)) }]);
+    assert!(rig.shell.read_with(cx, |s, _| s.browser_visible()), "the agent's browsing is shown");
+    let acts: Vec<BrowserAct> = rig.asked().iter().filter_map(browser).collect();
+    assert!(acts.contains(&BrowserAct::Open { url: None }) && acts.contains(&BrowserAct::Watch { on: true }), "{acts:?}");
+    assert!(rig.exists(cx, "browser-page"));
+
+    // frames draw; the toolbar steers.
+    rig.feed(cx, vec![UiEvent::BrowserFrame { session: a.id, bgra: vec![255; 4 * 4 * 4], width: 4, height: 4 }]);
+    rig.click(cx, "browser-reload");
+    assert!(rig.asked().iter().filter_map(browser).any(|a| a == BrowserAct::Reload));
+    rig.click(cx, "browser-pick");
+    assert!(rig.asked().iter().filter_map(browser).any(|a| a == BrowserAct::Pick { on: true }));
+
+    // what you point at goes in your next message: its picture, and where it is.
+    let picked = tessel_proto::Picked { url: "http://localhost:41000/".into(), selector: "#signin".into(), html: "<button id=\"signin\">Sign in</button>".into(), text: "Sign in".into(), x: 0.0, y: 0.0, width: 80.0, height: 30.0, image: "iVBORw0KGgo=".into() };
+    rig.feed(cx, vec![UiEvent::BrowserPicked { session: a.id, picked }]);
+    let (draft, attached) = rig.shell.read_with(cx, |s, cx| (s.composer.read(cx).value().to_string(), s.attachments.iter().map(|a| a.media_type.clone()).collect::<Vec<_>>()));
+    assert!(draft.contains("#signin") && draft.contains("<button"), "{draft}");
+    assert_eq!(attached, ["image/png"]);
+
+    // no browser to drive: a way to get one.
+    rig.feed(cx, vec![UiEvent::BrowserEngine(tessel_proto::BrowserEngine::default())]);
+    assert!(rig.exists(cx, "browser-install"));
+    rig.click(cx, "browser-install-go");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "browser.install", .. })));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -88,6 +88,25 @@ list; close (term).",
             }, "required": ["op"]}
         },
         {
+            "name": "tessel_browser",
+            "description": "A real browser page the person watches live in tessel's Browser pane, and can point at parts of to show you. \
+Use it whenever you build or change UI: open the app (with no url it starts at this workspace's server, localhost:$TESSEL_PORT), read the page, \
+click and type through what you built, and take a screenshot to see it as the person does. They see everything you do as you do it. \
+ops: open (url?), back, forward, reload, read (the page's text, and what can be clicked or typed into, with selectors), screenshot, \
+click (selector, or x and y in CSS pixels), type (text, selector?: clicked first), key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
+            "inputSchema": {"type": "object", "properties": {
+                "op": {"type": "string", "enum": ["open", "back", "forward", "reload", "read", "screenshot", "click", "type", "key", "scroll"]},
+                "url": {"type": "string"},
+                "selector": {"type": "string", "description": "a CSS selector, as read gives them"},
+                "x": {"type": "number"},
+                "y": {"type": "number"},
+                "text": {"type": "string"},
+                "key": {"type": "string"},
+                "dx": {"type": "number"},
+                "dy": {"type": "number"}
+            }, "required": ["op"]}
+        },
+        {
             "name": "tessel_surface",
             "description": surface,
             "inputSchema": {"type": "object", "properties": {
@@ -105,6 +124,8 @@ list; close (term).",
 struct Server {
     client: Option<Client>,
     session: Option<SessionId>,
+    /// a screenshot the last tool took, sent along with its words.
+    image: Option<String>,
 }
 
 impl Server {
@@ -193,6 +214,39 @@ impl Server {
         })
     }
 
+    /// the browser the person watches: open, look, click, type.
+    async fn browser(&mut self, args: &Value) -> anyhow::Result<String> {
+        use tessel_proto::BrowserAct;
+        let session = self.session.ok_or_else(|| anyhow::anyhow!("the browser belongs to a session, and this agent wasn't started by tessel"))?;
+        let s = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_owned);
+        let n = |k: &str| args.get(k).and_then(Value::as_f64);
+        let op = s("op").ok_or_else(|| anyhow::anyhow!("tessel_browser needs \"op\""))?;
+        let act = match op.as_str() {
+            "open" => BrowserAct::Open { url: s("url") },
+            "back" => BrowserAct::Back,
+            "forward" => BrowserAct::Forward,
+            "reload" => BrowserAct::Reload,
+            "read" => BrowserAct::Read,
+            "screenshot" => BrowserAct::Screenshot,
+            "click" => BrowserAct::Click { selector: s("selector"), x: n("x"), y: n("y") },
+            "type" => BrowserAct::Type { text: s("text").ok_or_else(|| anyhow::anyhow!("type needs \"text\""))?, selector: s("selector") },
+            "key" => BrowserAct::Key { key: s("key").ok_or_else(|| anyhow::anyhow!("key needs \"key\": Enter, Tab, Escape…"))? },
+            "scroll" => BrowserAct::Scroll { dx: n("dx").unwrap_or(0.0), dy: n("dy").unwrap_or(400.0), x: n("x"), y: n("y") },
+            other => anyhow::bail!("tessel_browser has no op {other:?}: open, back, forward, reload, read, screenshot, click, type, key or scroll"),
+        };
+        let reply = self.client().await?.request(Request::Browser { session, act, agent: true }).await?;
+        let Response::Browser { state, text, image } = reply else { anyhow::bail!("unexpected reply: {reply:?}") };
+        let at = format!("{} ({})", if state.title.is_empty() { "untitled" } else { &state.title }, state.url);
+        Ok(match (text, image) {
+            (Some(text), _) => text,
+            (None, Some(png)) => {
+                self.image = Some(png);
+                format!("the page now: {at}")
+            }
+            (None, None) => format!("done. the page: {at}"),
+        })
+    }
+
     /// run one tool. the text is what the agent reads back.
     async fn call(&mut self, name: &str, args: &Value) -> anyhow::Result<String> {
         let text = |v: Value| if v.is_null() { "done".to_owned() } else { serde_json::to_string_pretty(&v).unwrap_or_default() };
@@ -229,6 +283,7 @@ impl Server {
                 "done: it's on screen".to_owned()
             }
             "tessel_terminal" => self.terminal(args).await?,
+            "tessel_browser" => self.browser(args).await?,
             other => anyhow::bail!("there's no tool {other}"),
         })
     }
@@ -237,7 +292,7 @@ impl Server {
 /// serve until stdin closes.
 pub async fn serve() -> anyhow::Result<()> {
     let session = std::env::var("TESSEL_SESSION").ok().and_then(|s| s.parse().ok());
-    let mut server = Server { client: None, session };
+    let mut server = Server { client: None, session, image: None };
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut out = tokio::io::stdout();
     while let Some(line) = lines.next_line().await? {
@@ -258,7 +313,13 @@ pub async fn serve() -> anyhow::Result<()> {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match server.call(&name, &args).await {
-                    Ok(text) => json!({"content": [{"type": "text", "text": text}], "isError": false}),
+                    Ok(text) => {
+                        let mut content = vec![json!({"type": "text", "text": text})];
+                        if let Some(png) = server.image.take() {
+                            content.push(json!({"type": "image", "data": png, "mimeType": "image/png"}));
+                        }
+                        json!({"content": content, "isError": false})
+                    }
                     Err(e) => json!({"content": [{"type": "text", "text": format!("{e:#}")}], "isError": true}),
                 })
             }

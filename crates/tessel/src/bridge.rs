@@ -22,6 +22,8 @@ pub enum Cmd {
     Open(Option<SessionId>),
     /// the chats the other panes show, which the window follows as well.
     Follow(Vec<SessionId>),
+    /// do something to a session's page, from the pane.
+    Browser { session: SessionId, act: tessel_proto::BrowserAct },
     Create { cwd: String, worktree: bool, prompt: String },
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
     Fork { session: SessionId, workspace: bool },
@@ -101,6 +103,12 @@ pub enum UiEvent {
     TermOutput(TermId, Vec<u8>),
     TermUpdated(TermInfo),
     TermRemoved(TermId),
+    /// a frame of a session's page, decoded: bgra pixels.
+    BrowserFrame { session: SessionId, bgra: Vec<u8>, width: u32, height: u32 },
+    BrowserState { session: SessionId, state: tessel_proto::BrowserState },
+    BrowserPicked { session: SessionId, picked: tessel_proto::Picked },
+    BrowserActivity { session: SessionId, what: String, at: Option<(f64, f64)> },
+    BrowserEngine(tessel_proto::BrowserEngine),
     Answer { tag: &'static str, result: Result<Response, String> },
     /// something the user did failed. shown, not fatal.
     Error(String),
@@ -281,6 +289,8 @@ async fn session(
         Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
         _ => None,
     });
+    // one frame of a page decoding at a time.
+    let decoding = Arc::new(std::sync::atomic::AtomicBool::new(false));
     list_terms(client, ui);
     loop {
         tokio::select! {
@@ -304,6 +314,24 @@ async fn session(
                     Event::TermOutput { term, bytes } => UiEvent::TermOutput(term, bytes),
                     Event::TermUpdated { info } => UiEvent::TermUpdated(info),
                     Event::TermRemoved { term } => UiEvent::TermRemoved(term),
+                    Event::BrowserFrame { session, jpeg, .. } => {
+                        // decoded off this loop, and only one at a time: a frame that
+                        // arrives mid-decode is dropped, so the pane never falls behind.
+                        if !decoding.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                            let (ui, busy) = (ui.clone(), decoding.clone());
+                            tokio::task::spawn_blocking(move || {
+                                if let Some((bgra, width, height)) = decode_frame(&jpeg) {
+                                    let _ = ui.send(UiEvent::BrowserFrame { session, bgra, width, height });
+                                }
+                                busy.store(false, std::sync::atomic::Ordering::Release);
+                            });
+                        }
+                        continue;
+                    }
+                    Event::BrowserState { session, state } => UiEvent::BrowserState { session, state },
+                    Event::BrowserPicked { session, picked } => UiEvent::BrowserPicked { session, picked },
+                    Event::BrowserActivity { session, what, x, y } => UiEvent::BrowserActivity { session, what, at: x.zip(y) },
+                    Event::BrowserEngine { engine } => UiEvent::BrowserEngine(engine),
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
                     Event::Settings { settings } => UiEvent::DaemonSettings(settings),
@@ -319,6 +347,13 @@ async fn session(
                     Cmd::Open(id) => {
                         open.open = id;
                         follow(client, ui, open).await
+                    }
+                    Cmd::Browser { session, act } => {
+                        ask(client, ui, Request::Browser { session, act, agent: false }, move |r| match r {
+                            Response::Browser { state, .. } => Some(UiEvent::BrowserState { session, state }),
+                            _ => None,
+                        });
+                        Ok(())
                     }
                     Cmd::Follow(extra) => {
                         open.extra = extra;
@@ -503,4 +538,17 @@ async fn session(
             }
         }
     }
+}
+
+/// a page's frame as pixels for the window: base64 JPEG to bgra.
+fn decode_frame(jpeg: &str) -> Option<(Vec<u8>, u32, u32)> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(jpeg).ok()?;
+    let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg).ok()?;
+    let mut rgba = img.to_rgba8();
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    let (w, h) = rgba.dimensions();
+    Some((rgba.into_raw(), w, h))
 }

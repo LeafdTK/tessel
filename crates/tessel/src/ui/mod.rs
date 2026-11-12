@@ -1397,10 +1397,12 @@ pub enum Module {
     Terminal,
     /// history as a graph; staging, committing, undo.
     Git,
+    /// the open chat's page, live: the agent drives it, you watch, steer and point.
+    Browser,
 }
 
 /// name, module, title, lucide icon, what it is.
-pub const MODULES: [(&str, Module, &str, &str, &str); 11] = [
+pub const MODULES: [(&str, Module, &str, &str, &str); 12] = [
     ("conversation", Module::Conversation, "Conversation", "message-square", "The session: what the agent says and does, and the message box"),
     ("sessions", Module::Sessions, "Sessions", "list", "Every session, the ones that need you first"),
     ("workspace", Module::Workspace, "Workspace", "panels-top-left", "Changes, files, checks, artifacts and info as tabs"),
@@ -1412,6 +1414,7 @@ pub const MODULES: [(&str, Module, &str, &str, &str); 11] = [
     ("surfaces", Module::Surfaces, "Surfaces", "layout-dashboard", "Live views the agent drew: progress, results, choices"),
     ("terminal", Module::Terminal, "Terminal", "square-terminal", "A shell in the session's folder, on Ghostty's core"),
     ("git", Module::Git, "Git", "git-graph", "History as a graph; stage, commit and undo"),
+    ("browser", Module::Browser, "Browser", "globe", "The page you and the agent both use: watch it work, point at things to show it"),
 ];
 
 impl Module {

@@ -45,8 +45,8 @@ fn an_agent_can_start_it_list_its_tools_and_hear_why_a_call_failed() {
     assert_eq!(out[0]["result"]["protocolVersion"], "2025-06-18");
 
     let names: Vec<&str> = out[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["tessel_window", "tessel_window_state", "tessel_commands", "tessel_layout", "tessel_terminal", "tessel_surface"]);
-    let surface = out[1]["result"]["tools"][5]["description"].as_str().unwrap();
+    assert_eq!(names, ["tessel_window", "tessel_window_state", "tessel_commands", "tessel_layout", "tessel_terminal", "tessel_browser", "tessel_surface"]);
+    let surface = out[1]["result"]["tools"][6]["description"].as_str().unwrap();
     assert!(surface.contains("progress") && surface.contains("<surface-event"), "the kinds and the event are explained");
 
     assert_eq!(out[2]["id"], 3);

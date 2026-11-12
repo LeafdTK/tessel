@@ -13,6 +13,7 @@ mod composer;
 mod exec;
 mod mentions;
 mod backdrop;
+mod browser;
 mod chats;
 mod desktops;
 mod space;
@@ -178,6 +179,21 @@ pub struct Shell {
     /// workspaces asked about already, and the one being asked about now.
     pub(crate) scripts_tried: HashSet<String>,
     pub(crate) scripts_asked: Option<String>,
+    /// each chat's page in the browser, as the pane shows it.
+    pub(crate) pages: browser::Pages,
+    pub(crate) browser_engine: Option<tessel_proto::BrowserEngine>,
+    pub(crate) browser_asked: bool,
+    /// the chat whose page is being sent, while a browser pane shows it.
+    pub(crate) browser_watching: Option<SessionId>,
+    pub(crate) browser_url: Entity<InputState>,
+    /// the address last shown, and one to show at the next frame.
+    pub(crate) browser_url_from: String,
+    pub(crate) browser_url_next: Option<String>,
+    pub(crate) browser_focus: FocusHandle,
+    pub(crate) browser_show_next: bool,
+    pub(crate) browser_moved: Option<Instant>,
+    /// words to add to the message box at the next frame (a pick from the page).
+    pub(crate) draft_append: Option<String>,
     /// Settings → Scripts, while it's showing.
     pub(crate) scripts_form: Option<scripts::ScriptsForm>,
     /// what each desktop you aren't looking at had on it.
@@ -370,6 +386,7 @@ impl Shell {
         let project_name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let desktop_rename = cx.new(|cx| InputState::new(window, cx));
+        let browser_url = cx.new(|cx| InputState::new(window, cx).placeholder("Search or type an address"));
         let palette_ui = palette::PaletteState::new(window, cx);
         let palette_input = palette_ui.input.clone();
         let changes_search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
@@ -417,6 +434,18 @@ impl Shell {
                 }
                 InputEvent::PressEnter { .. } => this.palette_confirm(window, cx),
                 _ => {}
+            }),
+            // an address goes in with return.
+            cx.subscribe_in(&browser_url, window, |this, input, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    let url = input.read(cx).value().trim().to_owned();
+                    if !url.is_empty()
+                        && let Some(session) = this.model.open.as_ref().map(|o| o.id)
+                    {
+                        this.cmd(Cmd::Browser { session, act: tessel_proto::BrowserAct::Navigate { url } });
+                        window.focus(&this.browser_focus, cx);
+                    }
+                }
             }),
             // a desktop's new name goes in with return; clicking away leaves it as it was.
             cx.subscribe_in(&desktop_rename, window, |this, input, ev: &InputEvent, window, cx| match ev {
@@ -586,6 +615,17 @@ impl Shell {
             scripts_tried: HashSet::new(),
             scripts_asked: None,
             scripts_form: None,
+            pages: HashMap::new(),
+            browser_engine: None,
+            browser_asked: false,
+            browser_watching: None,
+            browser_url: browser_url.clone(),
+            browser_url_from: String::new(),
+            browser_url_next: None,
+            browser_focus: cx.focus_handle(),
+            browser_show_next: false,
+            browser_moved: None,
+            draft_append: None,
             desktop_slide: Spring::unit(0.0),
             swipe: (0.0, false, None),
             pane_zoom: None,
@@ -887,6 +927,8 @@ impl Shell {
                 }
             }
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
+            UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
+            ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {
@@ -2228,6 +2270,15 @@ impl Render for Shell {
         // which pane shows which chat, now that the layout may have changed.
         self.sync_views(cx);
         self.ensure_scripts_form(window, cx);
+        self.sync_browser(window, cx);
+        if let Some(more) = self.draft_append.take() {
+            let next = format!("{}{more}", self.composer.read(cx).value().trim_end());
+            let last = next.split('\n').count().saturating_sub(1) as u32;
+            self.composer.update(cx, |s, cx| {
+                s.set_value(next, window, cx);
+                s.set_cursor_position(gpui_kit::component::input::Position { line: last, character: u32::MAX }, window, cx);
+            });
+        }
         if let Some(draft) = self.draft_to_set.take() {
             self.composer.update(cx, |c, cx| c.set_value(draft, window, cx));
         }

@@ -43,6 +43,7 @@ Use a diagram or a formula when it explains something better than prose, not for
 pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Reach for them on your own, without being asked and without announcing them:\n\
 - When something reads better seen than read (numbers to compare, a result summary, a checklist, progress that moves while you work, options for the person to pick), draw it with tessel_surface instead of a markdown table, ASCII art or a status paragraph, and update it in place with set as the work goes on.\n\
 - Builds, test suites, dev servers and anything else the person should watch go in a terminal with tessel_terminal (Bash stays for quick one-off commands).\n\
+- When you build or change anything with a UI, look at it with tessel_browser: open it, use it, screenshot it. The person watches that page in the Browser pane and may point at parts of it to show you what they mean (those arrive as a message with the element's selector, HTML and a picture).\n\
 - This workspace has ten ports of its own, $TESSEL_PORT to $TESSEL_PORT+9: start servers on those, never on a fixed port another workspace may be using. Its setup script, run buttons and the files each new workspace gets are in .tessel/settings.toml; change that file when asked to change any of them.\n\
 - Arrange the window when it helps them follow along with tessel_window: show the changes after editing files, the git pane after a commit.\n\
 Keep to what genuinely reads better that way: a one-line answer stays a line.";

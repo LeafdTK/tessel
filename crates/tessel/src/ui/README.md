@@ -96,6 +96,7 @@ Modules:
 | `artifacts`    | plans and files the agent made                                        |
 | `info`         | the session: model, cost, tool servers, linked folders                |
 | `terminal`     | a shell in the session's folder, run by the daemon on Ghostty's core: it outlives the window, and scripts can read and drive it (`tesselctl term`) |
+| `browser`      | the open chat's page, in a browser the daemon runs: the agent drives it with its tools while you watch, you can click, scroll and type in it too, and Pick puts a part of the page in your next message |
 | `git`          | every branch's history as a graph; stage and unstage files (or lines, from a diff), commit with a message you write or one written for you, undo what tessel did |
 | `surfaces`     | live views the agent drew for a pane (`tessel_surface`, region `pane`). while one is open those leave the chat |
 
@@ -420,6 +421,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `workspace.setup` | Run the workspace's setup again |  |  |
 | `workspace.write_scripts` | Set up scripts with an agent |  | a new chat that writes .tessel/settings.toml |
 | `workspace.scripts` | The workspace's scripts and ports |  |  |
+| `browser.open` | Open the browser |  | url?: where to go (the workspace's server if not given) |
+| `browser.pick` | Point at part of the page |  |  |
 | `desktop.next` | Next desktop | ⌥ ⌘ → |  |
 | `desktop.prev` | Previous desktop | ⌥ ⌘ ← |  |
 | `desktop.new` | New desktop |  | name?; preset?: default|studio|focus|tiles|rail; copy?: true to start from the layout showing; scope?: project names its sidebar lists |

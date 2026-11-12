@@ -35,6 +35,20 @@ impl Shell {
                 self.open_settings(cx);
                 done
             }
+            "browser.open" => {
+                let session = self.model.open.as_ref().map(|o| o.id).ok_or("open a chat first: the browser is the chat's")?;
+                self.show_browser(window, cx);
+                if let Some(url) = arg(args, "url") {
+                    self.cmd(crate::bridge::Cmd::Browser { session, act: tessel_proto::BrowserAct::Navigate { url: url.to_owned() } });
+                }
+                done
+            }
+            "browser.pick" => {
+                let session = self.model.open.as_ref().map(|o| o.id).ok_or("open a chat first: the browser is the chat's")?;
+                self.show_browser(window, cx);
+                self.cmd(crate::bridge::Cmd::Browser { session, act: tessel_proto::BrowserAct::Pick { on: true } });
+                done
+            }
             "workspace.run" | "workspace.stop" => {
                 let (scripts, _) = self.open_scripts().cloned().ok_or("this workspace's scripts aren't known yet (or no chat is open)")?;
                 let action = match arg(args, "script") {

@@ -120,6 +120,9 @@ pub static COMMANDS: &[Spec] = &[
     c("workspace.setup", "Run the workspace's setup again", "rotate-ccw", None, "{}", ""),
     c("workspace.write_scripts", "Set up scripts with an agent", "sparkles", None, "{}", "a new chat that writes .tessel/settings.toml"),
     q("workspace.scripts", "The workspace's scripts and ports", ""),
+    // the browser
+    c("browser.open", "Open the browser", "globe", None, "{}", "url?: where to go (the workspace's server if not given)"),
+    c("browser.pick", "Point at part of the page", "mouse-pointer-click", None, "{}", ""),
     // desktops
     c("desktop.next", "Next desktop", "chevron-right", Some("⌥ ⌘ →"), "{}", ""),
     c("desktop.prev", "Previous desktop", "chevron-left", Some("⌥ ⌘ ←"), "{}", ""),

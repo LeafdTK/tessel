@@ -522,6 +522,9 @@ async fn follow_events(events: &mut Events, json: bool) {
             Event::TermUpdated { info } => println!("{}", term_line(&info)),
             Event::TermRemoved { term } => println!("terminal {term} closed"),
             Event::TermOutput { .. } => {}
+            Event::BrowserActivity { session, what, .. } => println!("{session} browser: {what}"),
+            Event::BrowserPicked { session, picked } => println!("{session} browser: picked {} on {}", picked.selector, picked.url),
+            Event::BrowserState { .. } | Event::BrowserFrame { .. } | Event::BrowserEngine { .. } => {}
             Event::UiCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
         }
     }
