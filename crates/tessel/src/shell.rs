@@ -14,6 +14,7 @@ mod exec;
 mod mentions;
 mod backdrop;
 mod chats;
+mod desktops;
 mod space;
 mod models;
 mod looks;
@@ -171,6 +172,10 @@ pub struct Shell {
     pub(crate) followed: Vec<SessionId>,
     /// the chat the focused pane is waiting on a snapshot of.
     pub(crate) awaiting: Option<SessionId>,
+    /// what each desktop you aren't looking at had on it.
+    pub(crate) stashed: HashMap<String, desktops::Stashed>,
+    /// a desktop sliding in: -1 from the left, 1 from the right, 0 in place.
+    pub(crate) desktop_slide: Spring,
     /// the pane maximized over the others, if one is.
     pub(crate) pane_zoom: Option<String>,
     /// a pane being carried by its grip.
@@ -544,6 +549,8 @@ impl Shell {
             focus_composer_next: false,
             followed: Vec::new(),
             awaiting: None,
+            stashed: HashMap::new(),
+            desktop_slide: Spring::unit(0.0),
             pane_zoom: None,
             pane_move: None,
             root_focus: cx.focus_handle(),
@@ -2122,7 +2129,7 @@ impl Shell {
     fn animate(&mut self, cx: &App) -> bool {
         let cards_moving = self.overview_fade.is_moving() || self.cards.values().any(|c| c.iter().any(Spring::is_moving));
         let drawers_moving = self.drawers.iter().any(|d| d.w.is_moving()) || self.panes_moving();
-        let moving = drawers_moving || self.row_fx.is_moving() || self.prompt_open.is_moving() || cards_moving;
+        let moving = drawers_moving || self.row_fx.is_moving() || self.prompt_open.is_moving() || cards_moving || self.desktop_slide.is_moving();
         if !moving {
             self.ticker.rest();
             return false;
@@ -2137,6 +2144,7 @@ impl Shell {
         still |= self.row_fx.step(dt, reduced);
         still |= self.prompt_open.step(dt, reduced);
         still |= self.overview_fade.step(dt, reduced);
+        still |= self.desktop_slide.step(dt, reduced);
         for card in self.cards.values_mut() {
             for spring in card.iter_mut() {
                 still |= spring.step(dt, reduced);
@@ -2247,6 +2255,15 @@ impl Render for Shell {
         let show_overview = self.overview || self.overview_fade.value() > 0.001;
         let ui = self.ui.clone();
         let root = self.node(&ui.root, false, now, cx);
+        // a desktop arriving slides in a little way from its side, fading up.
+        let slide = self.desktop_slide.value();
+        let root = root.map(|r| {
+            if slide.abs() < 0.001 {
+                return r;
+            }
+            let travel = f32::from(window.viewport_size().width) * 0.12;
+            fly(point(px(slide * travel), px(0.)), div().size_full().opacity((1.0 - slide.abs() * 0.7).clamp(0.0, 1.0)).child(r)).into_any_element()
+        });
         let font = ui.theme.font.clone();
 
         // glass: nothing opaque under the frame, so the blurred desktop shows through it.
@@ -2290,6 +2307,18 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &crate::NextEffort, window, cx| this.run_key("model.effort", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::ToggleFast, window, cx| this.run_key("model.fast", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::AttachFiles, window, cx| this.run_key("composer.attach", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::NextDesktop, window, cx| this.run_key("desktop.next", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::PrevDesktop, window, cx| this.run_key("desktop.prev", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::NewDesktop, window, cx| this.run_key("desktop.new", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop1, window, cx| this.go_desktop(1, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop2, window, cx| this.go_desktop(2, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop3, window, cx| this.go_desktop(3, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop4, window, cx| this.go_desktop(4, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop5, window, cx| this.go_desktop(5, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop6, window, cx| this.go_desktop(6, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop7, window, cx| this.go_desktop(7, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop8, window, cx| this.go_desktop(8, window, cx)))
+            .on_action(cx.listener(|this, _: &crate::Desktop9, window, cx| this.go_desktop(9, window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_end(cx);
                 this.pane_drag_end(window, cx);

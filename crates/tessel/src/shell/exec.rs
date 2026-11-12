@@ -35,6 +35,60 @@ impl Shell {
                 self.open_settings(cx);
                 done
             }
+            "desktop.next" | "desktop.prev" => {
+                let n = self.ui.desktops.len().max(1);
+                let to = if cmd == "desktop.next" { (self.ui.desktop + 1) % n } else { (self.ui.desktop + n - 1) % n };
+                if n > 1 {
+                    self.use_desktop(to, window, cx);
+                }
+                Ok(json!({"desktop": to + 1}))
+            }
+            "desktop.use" => {
+                let to = self.desktop_index(Some(args.get("desktop").ok_or("desktop.use needs \"desktop\": its number (from 1), name or id")?))?;
+                self.use_desktop(to, window, cx);
+                Ok(json!({"desktop": to + 1}))
+            }
+            "desktop.new" => {
+                let scope: Vec<String> = args.get("scope").and_then(Value::as_array).map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let copy = args.get("copy").and_then(Value::as_bool).unwrap_or(false);
+                Ok(self.new_desktop(arg(args, "name").map(str::to_owned), arg(args, "preset").map(str::to_owned), copy, scope, window, cx))
+            }
+            "desktop.rename" => {
+                let name = need(args, "name", cmd)?.trim().to_owned();
+                if name.is_empty() {
+                    return Err("a desktop needs a name".into());
+                }
+                let at = self.desktop_index(args.get("desktop"))?;
+                self.edit_desktop(at, |d| {
+                    d.insert("name".into(), json!(name));
+                }, window, cx);
+                done
+            }
+            "desktop.scope" => {
+                let projects: Vec<String> = args.get("projects").and_then(Value::as_array).ok_or("desktop.scope needs \"projects\": a list of project names, or [] for all")?.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect();
+                let at = self.desktop_index(args.get("desktop"))?;
+                self.edit_desktop(at, |d| {
+                    if projects.is_empty() {
+                        d.remove("scope");
+                    } else {
+                        d.insert("scope".into(), json!(projects));
+                    }
+                }, window, cx);
+                done
+            }
+            "desktop.close" => {
+                let at = self.desktop_index(args.get("desktop"))?;
+                self.close_desktop(at, window, cx)?;
+                done
+            }
+            "desktop.list" => {
+                let list: Vec<Value> = if self.ui.desktops.is_empty() {
+                    vec![json!({"number": 1, "id": "d1", "name": "Main", "scope": [], "showing": true})]
+                } else {
+                    self.ui.desktops.iter().enumerate().map(|(i, d)| json!({"number": i + 1, "id": d.id, "name": d.name, "scope": d.scope, "showing": i == self.ui.desktop})).collect()
+                };
+                Ok(Value::Array(list))
+            }
             "app.overview" => {
                 self.toggle_overview(cx);
                 done

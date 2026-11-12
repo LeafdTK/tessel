@@ -37,6 +37,8 @@ quickest way to see how the pieces fit.
 | `freestyle` | `true` turns off every guardrail below: drawn exactly as written           |
 | `transcript` | the transcript's options (`user`, `thoughts`, `tools`), wherever the layout put it |
 | `sessions` | the session list's options (`trace`)                                          |
+| `desktops` | a list of desktops, each `{"id", "name", "root" or "preset", "scope", "open"}`: a layout of its own, the projects its sidebar lists (`scope`, empty for all), and the chat it had open. the rest of the file (theme, options) is shared |
+| `desktop` | the id of the desktop showing (or its number, from 1) |
 | `notch` | the agents drawn around the camera notch. on where there is one; `false` hides it, `true` shows it on a Mac without one, mid menu bar |
 
 A file with only a `"theme"` restyles the default layout. A file with `"root"` is your
@@ -412,6 +414,14 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
 | `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
+| `desktop.next` | Next desktop | ⌥ ⌘ → |  |
+| `desktop.prev` | Previous desktop | ⌥ ⌘ ← |  |
+| `desktop.new` | New desktop |  | name?; preset?: default|studio|focus|tiles|rail; copy?: true to start from the layout showing; scope?: project names its sidebar lists |
+| `desktop.close` | Close this desktop |  | desktop?: its number (from 1), name or id. its chats keep running |
+| `desktop.use` | Show a desktop |  | desktop: its number (from 1), name or id |
+| `desktop.rename` | Rename a desktop |  | name; desktop? |
+| `desktop.scope` | Pick the projects a desktop lists |  | projects: project names, or [] for all; desktop? |
+| `desktop.list` | Every desktop |  |  |
 | `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |

@@ -277,15 +277,11 @@ impl Shell {
     /// layout in use into the file first if it doesn't have one of its own.
     pub(crate) fn edit_panes(&mut self, change: impl FnOnce(&mut Value), window: &mut Window, cx: &mut Context<Self>) {
         let current = crate::ui::preset("default").and_then(|t| serde_json::from_str::<Value>(t).ok()).and_then(|v| v.get("root").cloned());
+        let showing = self.ui.desktop;
         self.edit_ui(
             |f| {
-                if !f.contains_key("root") {
-                    if let Some(root) = current {
-                        f.insert("root".into(), root);
-                    }
-                    f.remove("preset");
-                }
-                if let Some(root) = f.get_mut("root")
+                // the desktop showing gets a layout of its own the first time it's changed.
+                if let Some(root) = Self::desktop_root_mut(f, showing, current)
                     && let Some(layout) = find_panes(root)
                 {
                     change(layout);

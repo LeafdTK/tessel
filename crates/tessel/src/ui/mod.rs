@@ -49,6 +49,10 @@ pub struct Ui {
     /// the agents at work, drawn around the camera notch. none: on where
     /// there is a notch, off where there isn't.
     pub notch: Option<bool>,
+    /// every desktop, in order. empty: the file is one desktop.
+    pub desktops: Vec<Desktop>,
+    /// which of them is showing (`root` is its layout).
+    pub desktop: usize,
     /// what was adjusted to fit tessel's scales, and what still reads badly.
     pub report: harmony::Report,
 }
@@ -99,12 +103,81 @@ impl Ui {
     }
 }
 
+/// one desktop: a layout of its own, the projects its sidebar lists, and the
+/// chat it had open. sessions don't belong to desktops; desktops show them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Desktop {
+    /// stable across renames: what the window remembers a desktop's state by.
+    pub id: String,
+    pub name: String,
+    /// project names the sidebar lists here. empty: every project.
+    pub scope: Vec<String>,
+    /// the chat it had open, by session id.
+    pub open: Option<String>,
+}
+
 // ---- parsing -------------------------------------------------------------------
 
 /// read a `ui.json`. errors name the place in the file and what would have been accepted.
 pub fn parse(text: &str) -> Result<Ui, String> {
     let v: Value = serde_json::from_str(text).map_err(|e| format!("ui.json is not valid JSON: {e}"))?;
-    parse_value(&v, 0)
+    let (v, desktops, desktop) = desktop_overlay(v)?;
+    let mut ui = parse_value(&v, 0)?;
+    ui.desktops = desktops;
+    ui.desktop = desktop;
+    Ok(ui)
+}
+
+/// a file with `desktops` is read as the desktop that's showing: its own
+/// `root` or `preset` over the file's, everything else (theme, options) shared.
+fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
+    let Value::Object(mut obj) = v else { return Ok((v, Vec::new(), 0)) };
+    let list = match obj.remove("desktops") {
+        None => {
+            obj.remove("desktop");
+            return Ok((Value::Object(obj), Vec::new(), 0));
+        }
+        Some(Value::Array(list)) if !list.is_empty() => list,
+        Some(_) => return Err("desktops: expected a list of desktops, like [{\"name\": \"Orchard\"}]".into()),
+    };
+    let mut desktops = Vec::new();
+    let mut layouts = Vec::new();
+    for (i, d) in list.iter().enumerate() {
+        let at = format!("desktops[{i}]");
+        let o = d.as_object().ok_or_else(|| format!("{at}: expected an object with a \"name\""))?;
+        keys(o, &at, &["id", "name", "root", "preset", "scope", "open"])?;
+        let name = o.get("name").map(|n| text(n, &format!("{at}.name"))).transpose()?.map(str::to_owned).unwrap_or_else(|| format!("Desktop {}", i + 1));
+        let id = o.get("id").map(|n| text(n, &format!("{at}.id"))).transpose()?.map(str::to_owned).unwrap_or_else(|| format!("d{}", i + 1));
+        if desktops.iter().any(|d: &Desktop| d.id == id) {
+            return Err(format!("{at}.id: \"{id}\" is used twice"));
+        }
+        let scope = match o.get("scope") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(a)) => a.iter().map(|p| text(p, &format!("{at}.scope")).map(str::to_owned)).collect::<Result<_, _>>()?,
+            Some(_) => return Err(format!("{at}.scope: expected a list of project names, like [\"orchard\"]")),
+        };
+        let open = o.get("open").map(|n| text(n, &format!("{at}.open"))).transpose()?.map(str::to_owned);
+        layouts.push((o.get("root").cloned(), o.get("preset").cloned()));
+        desktops.push(Desktop { id, name, scope, open });
+    }
+    let showing = match obj.remove("desktop") {
+        None => 0,
+        Some(Value::String(id)) => desktops.iter().position(|d| d.id == id).unwrap_or(0),
+        Some(Value::Number(n)) => (n.as_u64().unwrap_or(1).max(1) as usize - 1).min(desktops.len() - 1),
+        Some(_) => return Err("desktop: expected a desktop's id, like \"d2\"".into()),
+    };
+    match layouts.swap_remove(showing) {
+        (Some(root), _) => {
+            obj.insert("root".into(), root);
+            obj.remove("preset");
+        }
+        (None, Some(preset)) => {
+            obj.insert("preset".into(), preset);
+            obj.remove("root");
+        }
+        (None, None) => {}
+    }
+    Ok((Value::Object(obj), desktops, showing))
 }
 
 fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
@@ -183,7 +256,7 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
         }
     }
     let notch = notch.or(base_notch.flatten());
-    let mut ui = Ui { root, theme, freestyle, notch, report: harmony::Report::default() };
+    let mut ui = Ui { root, theme, freestyle, notch, desktops: Vec::new(), desktop: 0, report: harmony::Report::default() };
     check(&ui)?;
     ui.report = harmony::harmonize(&mut ui);
     Ok(ui)
@@ -1542,6 +1615,25 @@ mod tests {
         assert_eq!(ui.find(Kind::Sessions).unwrap().props.trace, Some(false));
         let e = parse(r#"{"transcript": {"side": "right"}}"#).unwrap_err();
         assert!(e.contains("transcript") && e.contains("user"), "{e}");
+    }
+
+    #[test]
+    fn a_desktop_has_its_own_layout_and_shares_the_rest() {
+        let file = r#"{"theme": "orchard", "root": {"type": "panes", "layout": {"module": "conversation"}},
+            "desktops": [{"name": "Main"}, {"id": "o", "name": "Orchard", "scope": ["orchard"], "preset": "default"}],
+            "desktop": "o"}"#;
+        let ui = parse(file).unwrap();
+        assert_eq!(ui.desktop, 1);
+        assert_eq!(ui.desktops.iter().map(|d| (d.id.as_str(), d.name.as_str())).collect::<Vec<_>>(), [("d1", "Main"), ("o", "Orchard")]);
+        assert_eq!(ui.desktops[1].scope, ["orchard"]);
+        assert_eq!(ui.theme.base, Some(Base::Orchard), "the theme is the file's, on every desktop");
+        assert_eq!(ui.root, Ui::default_layout().root, "Orchard's own preset, not the file's root");
+        let main = parse(&file.replace(r#""desktop": "o""#, r#""desktop": "d1""#)).unwrap();
+        assert_eq!(main.panes().len(), 1, "Main has no layout of its own: the file's");
+        assert_eq!(parse(r#"{"desktops": [{"name": "A"}, {"name": "B"}], "desktop": 2}"#).unwrap().desktop, 1, "a number counts from one");
+        assert!(parse(r#"{"desktops": [{"id": "x"}, {"id": "x"}]}"#).unwrap_err().contains("used twice"));
+        assert!(parse(r#"{"desktops": [{"name": "A", "scope": "orchard"}]}"#).unwrap_err().contains("scope"));
+        assert!(parse(r#"{}"#).unwrap().desktops.is_empty(), "no list: one desktop, as before");
     }
 
     #[test]

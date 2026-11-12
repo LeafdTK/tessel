@@ -125,13 +125,29 @@ impl Shell {
         {
             self.ws.tab = *first;
         }
+        let scope = ui.desktops.get(ui.desktop).map(|d| d.scope.clone()).unwrap_or_default();
         self.ui = Rc::new(ui);
+        if scope != self.model.scope {
+            self.model.scope = scope;
+            self.reflow_sidebar_as(false, false);
+        }
     }
 
     /// take on a layout and redraw with it.
     pub(crate) fn use_ui(&mut self, ui: Ui, window: &mut Window, cx: &mut Context<Self>) {
         let before = self.transcript_opts;
+        // another desktop: put this one's chats away before the layout changes under them.
+        let (was, now) = (super::desktops::desktop_key(&self.ui), super::desktops::desktop_key(&ui));
+        let (from, to) = (self.ui.desktop, ui.desktop);
+        let switching = was != now;
+        if switching {
+            self.leave_desktop(was, cx);
+        }
         self.adopt_ui(ui);
+        if switching {
+            self.enter_desktop(&now, cx);
+            self.slide_desktop(from, to);
+        }
         self.palette.set(theme::apply(self.forced_dark, &self.ui.theme, window, cx));
         if self.transcript_opts != before {
             // rows change height when what they show changes.

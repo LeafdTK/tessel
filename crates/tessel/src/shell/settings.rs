@@ -46,7 +46,7 @@ impl Shell {
     }
 
     /// what `ui.json` says now, as an object. no file is an empty one.
-    fn ui_file(&self) -> Map<String, Value> {
+    pub(crate) fn ui_file(&self) -> Map<String, Value> {
         self.ui_path
             .as_deref()
             .and_then(|p| std::fs::read_to_string(p).ok())

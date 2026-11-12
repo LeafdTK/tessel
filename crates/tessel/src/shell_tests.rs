@@ -1460,6 +1460,8 @@ fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
                 "⇧" => m.2 = true,
                 "⌘" => m.3 = true,
                 "↩" => m.4 = "enter".into(),
+                "←" => m.4 = "left".into(),
+                "→" => m.4 = "right".into(),
                 k => m.4 = k.to_lowercase(),
             }
         }
@@ -2054,4 +2056,53 @@ fn two_conversation_panes_hold_two_chats_and_a_new_one_mirrors(cx: &mut TestAppC
     assert_eq!(open(&rig, cx), Some(a.id), "a is the focused chat, from what was on screen");
     assert_eq!(view(&rig, cx, "conversation"), Some(b.id), "the left pane keeps b");
     assert_eq!(rig.shell.read_with(cx, |s, cx| (s.drafts.get(&b.id).cloned(), s.composer.read(cx).value().to_string())), (Some("half a thought".into()), String::new()), "b's draft waits for b");
+}
+
+#[gpui_kit::test]
+fn desktops_keep_their_own_chats_and_projects(cx: &mut TestAppContext) {
+    let dir = layout_dir("desktops");
+    let file = dir.join("ui.json");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let mut web = session(9, "Landing page", RunState::Idle, None);
+    web.cwd = "/work/web".into();
+    web.worktree = None;
+    let mut all = rig.shell.read_with(cx, |s, _| s.model.sessions.clone());
+    all.push(web.clone());
+    rig.feed(cx, vec![UiEvent::Sessions(all)]);
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| {
+        let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+        rig.settle(cx);
+        r
+    };
+    let open = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.model.open.as_ref().map(|o| o.id).or(s.awaiting));
+
+    // a second desktop: the layout in use becomes "Main", and the new one shows.
+    let made = exec(&mut rig, cx, "desktop.new", serde_json::json!({"name": "Web", "scope": ["web"]})).unwrap();
+    assert_eq!(made["number"], 2);
+    let names = rig.shell.read_with(cx, |s, _| (s.ui.desktops.iter().map(|d| d.name.clone()).collect::<Vec<_>>(), s.ui.desktop));
+    assert_eq!(names, (vec!["Main".to_owned(), "Web".to_owned()], 1));
+    // it lists only its projects, and opens the latest chat among them.
+    assert!(rig.exists(cx, web.id.0) && !rig.exists(cx, a.id.0), "the Web desktop lists web's chats only");
+    assert_eq!(open(&rig, cx), Some(web.id));
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Follow(extra) if extra.contains(&a.id))), "Main's chat stays followed: {asked:?}");
+    rig.feed(cx, vec![snapshot(web.clone(), vec![])]);
+
+    // back to Main: its chat, from what was already loaded, and every project.
+    exec(&mut rig, cx, "desktop.use", serde_json::json!({"desktop": "Main"})).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 0);
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.model.open.as_ref().map(|o| o.id)), Some(a.id), "no waiting: it was still on hand");
+    assert!(rig.exists(cx, a.id.0) && rig.exists(cx, web.id.0));
+    // the file remembers which chat Web had open.
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(saved["desktops"][1]["open"], serde_json::json!(web.id.0.to_string()));
+
+    // the next desktop, by key binding's command; then closing it goes back.
+    exec(&mut rig, cx, "desktop.next", serde_json::json!({})).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 1);
+    exec(&mut rig, cx, "desktop.close", serde_json::json!({})).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| (s.ui.desktops.len(), s.ui.desktop)), (1, 0));
+    assert!(exec(&mut rig, cx, "desktop.close", serde_json::json!({})).is_err(), "the last one stays");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

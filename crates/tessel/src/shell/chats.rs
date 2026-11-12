@@ -59,9 +59,10 @@ impl Shell {
     pub(crate) fn sync_follow(&mut self) {
         let open = self.model.open.as_ref().map(|o| o.id).or(self.awaiting);
         let mut extra: Vec<SessionId> = Vec::new();
-        for v in self.views.values() {
-            if Some(v.session) != open && !extra.contains(&v.session) {
-                extra.push(v.session);
+        // what other panes show, and what other desktops do: switching back is instant.
+        for s in self.views.values().map(|v| v.session).chain(self.stashed_sessions()) {
+            if Some(s) != open && !extra.contains(&s) {
+                extra.push(s);
             }
         }
         extra.sort();

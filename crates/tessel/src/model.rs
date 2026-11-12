@@ -14,6 +14,8 @@ pub struct Model {
     pub open: Option<Open>,
     /// chats shown in other panes: followed, but not the one you type into.
     pub others: std::collections::HashMap<SessionId, Open>,
+    /// the projects the sidebar lists, on a desktop that has picked some. empty: all.
+    pub scope: Vec<String>,
     pub connection: Connection,
     /// projects folded shut in the sidebar: their header shows, their sessions don't.
     pub collapsed: std::collections::HashSet<String>,
@@ -295,7 +297,8 @@ impl SidebarLayout {
         // a workspace is a folder, and its sessions are its tabs: one row each,
         // standing for the tab that wants you, else the one busy most recently.
         let mut stand_in: HashMap<&str, &SessionSummary> = HashMap::new();
-        for s in &model.sessions {
+        // a desktop that lists some projects lists only those.
+        for s in model.sessions.iter().filter(|s| model.scope.is_empty() || model.scope.contains(&project_name(s))) {
             let keep = match stand_in.get(s.cwd.as_str()) {
                 None => true,
                 Some(cur) => {
