@@ -756,7 +756,7 @@ impl Shell {
                 .pb(theme::z(8.))
                 .gap(theme::z(10.))
                 .set(Type::Callout)
-                .child(status_dot(p.blocked, true, &p))
+                .child(live_dot(p.blocked, &p))
                 .child(div().min_w_0().truncate().text_color(p.label).child(what))
                 .children(since.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t)))
         });

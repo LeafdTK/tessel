@@ -44,7 +44,9 @@ impl Shell {
             .mx_2()
             .pl(px(4.))
             .pr(px(8.))
-            .gap(px(6.))
+            // 4 between the pieces puts the tile over the rows' dots and the
+            // name on the rows' text column: one line down the list.
+            .gap(px(4.))
             .items_center()
             .rounded(px(theme::R_TILE))
             .when(!queue, |d| {

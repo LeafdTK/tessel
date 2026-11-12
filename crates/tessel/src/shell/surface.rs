@@ -83,6 +83,37 @@ impl Shell {
         }
     }
 
+    /// a status tone (success, warning, error, info), if the props name one.
+    fn status_tone(&self, p: &Value) -> Option<(Hsla, bool)> {
+        let pal = self.palette.get();
+        match s(p, "tone") {
+            Some("success") => Some((pal.finished, false)),
+            Some("warning") => Some((pal.blocked, false)),
+            Some("error") => Some((pal.failed, true)),
+            Some("info") => Some((theme::info(&pal), false)),
+            _ => None,
+        }
+    }
+
+    /// orchard's status badge: the dot and the word, colour never alone, and
+    /// only a failure in semibold. other tones stay a quiet pill.
+    fn badge(&self, text: String, p: &Value) -> AnyElement {
+        let pal = self.palette.get();
+        match self.status_tone(p) {
+            Some((c, failing)) => h_flex()
+                .h(z(22.))
+                .px(z(8.))
+                .gap(z(6.))
+                .rounded_full()
+                .bg(pal.label.opacity(0.06))
+                .set(Type::Callout)
+                .child(status_dot(c, false, &pal))
+                .child(div().text_color(if failing { pal.failed } else { pal.label }).when(failing, |d| d.font_weight(FontWeight::SEMIBOLD)).child(text))
+                .into_any_element(),
+            None => theme::badge(text, self.tone(p, pal.secondary)).into_any_element(),
+        }
+    }
+
     fn element(&self, surface: &str, session: SessionId, node: &Value, cx: &App) -> AnyElement {
         let pal = self.palette.get();
         let k = s(node, "k").unwrap_or("");
@@ -107,7 +138,7 @@ impl Shell {
             "card" => {
                 let title = s(&p, "title").map(str::to_owned);
                 let note = s(&p, "note").map(str::to_owned);
-                let status = s(&p, "status").map(|t| theme::badge(t.to_owned(), self.tone(&p, pal.secondary)));
+                let status = s(&p, "status").map(|t| self.badge(t.to_owned(), &p));
                 let head = (title.is_some() || note.is_some() || status.is_some()).then(|| {
                     h_flex()
                         .items_start()
@@ -171,32 +202,35 @@ impl Shell {
                 let label = s(&p, "label").unwrap_or("").to_owned();
                 natural(theme::button(&pal, eid(""), label.clone(), s(&p, "icon"), kind).test_support().aria_label(label).on_click(move |_, _, _| send()).into_any_element())
             }
-            "badge" => natural(theme::badge(shown(p.get("text")), self.tone(&p, pal.secondary)).into_any_element()),
+            "badge" => natural(self.badge(shown(p.get("text")), &p)),
             "progress" => {
                 let value = p.get("value").and_then(Value::as_f64).map(|v| v.clamp(0.0, 1.0) as f32);
                 let fill = self.tone(&p, pal.accent);
-                let track = div().h(z(4.)).w_full().rounded_full().bg(pal.fill).overflow_hidden();
+                let track = div().h(z(4.)).w_full().rounded_full().bg(pal.label.opacity(0.08)).overflow_hidden();
+                // still going: orchard's live dot by the label. done: nothing moves.
+                let running = value.is_none_or(|v| v < 1.0);
                 v_flex()
-                    .gap(z(6.))
-                    .when(s(&p, "label").is_some() || value.is_some(), |d| {
-                        d.child(
-                            h_flex()
-                                .set(Type::Callout)
-                                .child(div().flex_1().min_w_0().truncate().text_color(pal.secondary).child(s(&p, "label").unwrap_or("").to_owned()))
-                                .children(value.map(|v| div().text_color(pal.tertiary).child(format!("{:.0}%", v * 100.0)))),
-                        )
-                    })
+                    .gap(z(8.))
+                    .child(
+                        h_flex()
+                            .gap(z(8.))
+                            .set(Type::Callout)
+                            .when(running, |d| d.child(live_dot(pal.blocked, &pal)))
+                            .child(div().flex_1().min_w_0().truncate().text_color(pal.label).child(s(&p, "label").unwrap_or("").to_owned()))
+                            .children(value.map(|v| div().set(Type::Code).text_color(pal.secondary).child(format!("{:.0}%", v * 100.0)))),
+                    )
+                    // unknown amount: the track alone; the dot already says it's moving.
                     .child(match value {
                         Some(v) => track.child(div().h_full().w(relative(v)).rounded_full().bg(fill)),
-                        // nothing known yet: a sweep.
-                        None => track.child(gpui_kit::component::skeleton::Skeleton::new().h_full().w_full().rounded_full()),
+                        None => track,
                     })
                     .into_any_element()
             }
+            // a working line: orchard's orbiting dot, not a shimmer.
             "shimmer" => h_flex()
-                .gap_2()
-                .child(gpui_kit::component::spinner::Spinner::new().xsmall().color(pal.tertiary))
-                .child(div().set(Type::Callout).text_color(pal.secondary).child(s(&p, "text").unwrap_or("Working…").to_owned()))
+                .gap(z(8.))
+                .child(live_dot(pal.blocked, &pal))
+                .child(div().set(Type::Callout).text_color(pal.label).child(s(&p, "text").unwrap_or("Working").to_owned()))
                 .into_any_element(),
             "checkbox" => {
                 let checked = p.get("checked").and_then(Value::as_bool).unwrap_or(false);
@@ -222,17 +256,34 @@ impl Shell {
                 }
                 natural(tray.into_any_element())
             }
-            "metric" => v_flex()
-                .gap(z(2.))
-                .child(div().set(Type::Subheadline).text_color(pal.tertiary).child(s(&p, "label").unwrap_or("").to_owned()))
-                .child(
-                    h_flex()
-                        .gap(z(6.))
-                        .items_baseline()
-                        .child(div().set(Type::Title).text_color(self.tone(&p, pal.label)).child(shown(p.get("value"))))
-                        .children(s(&p, "delta").map(|d| div().set(Type::Subheadline).text_color(pal.tertiary).child(d.to_owned()))),
-                )
-                .into_any_element(),
+            // the bold budget: a number is medium, in ink; its status is a dot by
+            // the label, and only a failure turns the number red and semibold.
+            "metric" => {
+                let tone = self.status_tone(&p);
+                let failing = tone.is_some_and(|(_, f)| f);
+                v_flex()
+                    .gap(z(4.))
+                    .child(
+                        h_flex()
+                            .gap(z(6.))
+                            .children(tone.map(|(c, _)| status_dot(c, false, &pal)))
+                            .child(div().set(Type::Subheadline).text_color(pal.secondary).child(s(&p, "label").unwrap_or("").to_owned())),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(z(6.))
+                            .items_baseline()
+                            .child(
+                                div()
+                                    .set(Type::Title)
+                                    .font_weight(if failing { FontWeight::SEMIBOLD } else { FontWeight::MEDIUM })
+                                    .text_color(if failing { pal.failed } else { pal.label })
+                                    .child(shown(p.get("value"))),
+                            )
+                            .children(s(&p, "delta").map(|d| div().set(Type::Subheadline).text_color(pal.tertiary).child(d.to_owned()))),
+                    )
+                    .into_any_element()
+            }
             "list" => {
                 let mut col = v_flex().gap(px(1.));
                 for (i, item) in p.get("items").and_then(Value::as_array).into_iter().flatten().enumerate() {

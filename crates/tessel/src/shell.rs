@@ -1739,7 +1739,9 @@ impl Shell {
         let p = self.palette.get();
         let mut col = v_flex().w_full().pb_2().gap_2();
         for (ix, req) in pending.iter().enumerate() {
-            let mut card = v_flex().p_3().gap_2().rounded(px(theme::R_CARD)).border_1().border_color(p.blocked);
+            // orchard's card: raised on a hairline, a soft shadow; what it needs from
+            // you is said by the blue dot and the words, not by a coloured frame.
+            let mut card = v_flex().p(px(14.)).gap(px(10.)).rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.raised).shadow_sm();
             if req.plan.is_some() {
                 // the plan itself is in the transcript, right above.
                 let (approve, back) = (req.request_id.clone(), req.request_id.clone());
@@ -1790,17 +1792,32 @@ impl Shell {
                     .map(str::to_owned)
                     .unwrap_or_else(|| req.input.to_string());
                 let (allow, deny) = (req.request_id.clone(), req.request_id.clone());
+                let (_, kind, what, _) = tool_parts(&req.tool, &req.input);
+                let control = |b: Button| b.h(theme::z(theme::CONTROL_H)).px(theme::z(14.)).rounded(theme::z(theme::R_CONTROL));
                 card = card
-                    .child(div().set(Type::Body).text_color(p.label).child(format!("Allow {} to {}?", req.tool, summarize_tool(&req.tool, &req.input))))
-                    .child(div().set(Type::Code).text_color(p.secondary).line_clamp(6).child(detail))
+                    // what it wants, the way a tool row says it.
                     .child(
                         h_flex()
-                            .gap_2()
-                            .justify_end()
-                            .child(Button::new(("deny", ix)).small().outline().label("Deny").on_click(cx.listener(move |this, _, _, _| {
+                            .gap(px(8.))
+                            .set(Type::Body)
+                            .child(h_flex().w(px(14.)).flex_shrink_0().justify_center().child(status_dot(info_blue(&p), false, &p)))
+                            .child(div().flex_shrink_0().font_weight(FontWeight::MEDIUM).text_color(p.label).child(kind))
+                            .child(div().min_w_0().truncate().text_color(p.secondary).child(what))
+                            .child(div().flex_1())
+                            .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child("Needs your OK")),
+                    )
+                    // the whole of it, as it'll run.
+                    .child(div().ml(px(22.)).px(px(10.)).py(px(8.)).rounded(px(theme::R_TILE)).bg(p.label.opacity(0.05)).set(Type::Code).text_color(p.secondary).line_clamp(6).child(detail))
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .pl(px(22.))
+                            .child(h_flex().gap(px(6.)).set(Type::Subheadline).text_color(p.tertiary).child(theme::keycaps(&p, "⌘ ↩")).child("allow"))
+                            .child(div().flex_1())
+                            .child(control(Button::new(("deny", ix)).outline().label("Deny")).on_click(cx.listener(move |this, _, _, _| {
                                 this.answer(deny.clone(), PermissionDecision::Deny { message: String::new() })
                             })))
-                            .child(Button::new(("allow", ix)).small().primary().label("Allow").on_click(cx.listener(move |this, _, _, _| {
+                            .child(control(Button::new(("allow", ix)).primary().label("Allow")).on_click(cx.listener(move |this, _, _, _| {
                                 this.answer(allow.clone(), PermissionDecision::Allow { updated_input: None })
                             }))),
                     );
@@ -1848,6 +1865,14 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
+        // TESSEL_FRAME_LOG=1: when each frame is built, and how long since the last.
+        if std::env::var_os("TESSEL_FRAME_LOG").is_some() {
+            thread_local!(static LAST: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
+            let now = Instant::now();
+            let gap = LAST.with(|l| l.replace(Some(now))).map(|t| now.duration_since(t).as_millis());
+            FRAME_START.with(|f| f.set(Some(now)));
+            eprintln!("frame: {gap:?} ms since the last");
+        }
         let active = window.is_window_active();
         if active && !self.window_active {
             // coming back to the window counts as looking at what's open.
@@ -2002,6 +2027,18 @@ impl Render for Shell {
             .when(self.palette_ui.open, |d| d.child(self.palette_layer(window, cx)))
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))
+            // TESSEL_FRAME_LOG: painted last, so it sees the whole frame's cost.
+            .when(std::env::var_os("TESSEL_FRAME_LOG").is_some(), |d| {
+                d.child(
+                    canvas(|_, _, _| {}, |_, _, _, _| {
+                        if let Some(t) = FRAME_START.with(|f| f.take()) {
+                            eprintln!("built, laid out and painted in {} ms", t.elapsed().as_millis());
+                        }
+                    })
+                    .absolute()
+                    .size_0(),
+                )
+            })
     }
 }
 
@@ -2124,6 +2161,11 @@ pub(crate) fn info_blue(p: &Palette) -> Hsla {
 /// changes size, its colour the state, and, while work is going on, a ring
 /// outside it (so starting or finishing never moves the layout): a faint
 /// track and one arc orbiting the core.
+/// a moving dot in a slot its ring fits in, for anywhere an edge could clip it.
+pub(crate) fn live_dot(core: Hsla, p: &Palette) -> Div {
+    h_flex().size(px(18.)).flex_shrink_0().justify_center().child(status_dot(core, true, p))
+}
+
 pub(crate) fn status_dot(core: Hsla, live: bool, p: &Palette) -> Div {
     let track = p.label.opacity(0.14);
     let mut dot = div().relative().size(px(8.)).flex_shrink_0().child(div().size_full().rounded_full().bg(core));
@@ -2162,6 +2204,8 @@ pub(crate) fn status_dot(core: Hsla, live: bool, p: &Palette) -> Div {
 }
 
 thread_local! {
+    /// when the frame being drawn started building, for TESSEL_FRAME_LOG.
+    static FRAME_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     /// the palette marks are drawn in, set as each frame starts.
     static MARK_PALETTE: std::cell::Cell<Palette> = std::cell::Cell::new(Palette::dark());
 }
@@ -2309,7 +2353,11 @@ fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: O
             .child(lead)
             .child(div().flex_shrink_0().font_weight(FontWeight::SEMIBOLD).text_color(p.label).child(kind))
             .child(div().flex_1().min_w_0().truncate().text_color(p.secondary).when(mono, |d| d.set(Type::Code)).child(detail))
-            .children(note.map(|n| div().flex_shrink_0().text_color(if status == ToolStatus::Failed { p.failed } else { p.blocked }).child(n)))
+            .children(note.map(|n| div().flex_shrink_0().text_color(match status {
+                ToolStatus::Failed => p.failed,
+                ToolStatus::AwaitingPermission => info_blue(p),
+                _ => p.tertiary,
+            }).child(n)))
             .children(took.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t))),
     );
     // output earns its space only when something went wrong.
