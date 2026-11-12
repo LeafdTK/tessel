@@ -375,6 +375,10 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
         t.colors.foreground = palette.label;
         t.colors.muted_foreground = palette.secondary;
         t.colors.border = palette.separator;
+        // menus and popovers float above the window: lighter in the dark, as
+        // a raised sheet is, never the library's near-black.
+        t.colors.popover = palette.raised;
+        t.colors.popover_foreground = palette.label;
         t.colors.primary = palette.accent;
         t.colors.primary_hover = palette.accent;
         t.colors.primary_active = palette.accent;

@@ -47,15 +47,6 @@
                 "id": "settings",
                 "action": "settings",
                 "icon": "settings"
-              },
-              {
-                "type": "spacer"
-              },
-              {
-                "type": "button",
-                "id": "customize",
-                "action": "customize",
-                "icon": "sparkles"
               }
             ]
           }

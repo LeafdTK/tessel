@@ -31,8 +31,6 @@ actions!(
         AllowPending,
         OpenSettings,
         CloseSettings,
-        OpenAsk,
-        CloseAsk,
         CloseSheet,
         ConfirmSheet,
         OpenPalette,
@@ -85,7 +83,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-q", Quit, None),
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("cmd-k", OpenPalette, None),
-        KeyBinding::new("shift-cmd-k", OpenAsk, None),
         KeyBinding::new("escape", PaletteClose, Some("Palette")),
         KeyBinding::new("up", PaletteUp, Some("Palette")),
         KeyBinding::new("down", PaletteDown, Some("Palette")),
@@ -105,7 +102,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-5", Favorite5, None),
         KeyBinding::new("shift-cmd-e", NextEffort, None),
         KeyBinding::new("alt-cmd-f", ToggleFast, None),
-        KeyBinding::new("escape", CloseAsk, Some("Ask")),
         KeyBinding::new("escape", CloseSheet, Some("Sheet")),
         KeyBinding::new("cmd-enter", ConfirmSheet, Some("Sheet")),
         KeyBinding::new("escape", CloseSettings, Some("Settings")),
@@ -135,7 +131,6 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Close Pane", ClosePane),
                 MenuItem::separator(),
                 MenuItem::action("Command Palette…", OpenPalette),
-                MenuItem::action("Change This Window…", OpenAsk),
             ],
         ),
         menu(
@@ -176,7 +171,6 @@ pub fn bind_actions(shell: WeakEntity<Shell>, cx: &mut App) {
     on::<StopAgent>(cx, &shell, Shell::stop_agent);
     on::<AllowPending>(cx, &shell, Shell::allow_pending);
     on::<OpenSettings>(cx, &shell, Shell::open_settings);
-    on::<OpenAsk>(cx, &shell, Shell::open_ask);
     on::<OpenPalette>(cx, &shell, Shell::open_palette);
     on::<MaximizePane>(cx, &shell, Shell::zoom_focused);
     // splitting and closing panes change ui.json, which needs the window: the

@@ -1021,7 +1021,7 @@ impl Action {
             Action::Next => "Next Session That Needs You".into(),
             Action::Allow => "Allow".into(),
             Action::Focus => "Focus on This Session".into(),
-            Action::Customize => "Customize This Window".into(),
+            Action::Customize => "Customize This Window…".into(),
             Action::Settings => "Settings".into(),
         }
     }

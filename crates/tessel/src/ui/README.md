@@ -205,7 +205,7 @@ What a `button` does:
 | `next`            | goes to the session that has waited on you longest (⌘J)       |
 | `allow`           | allows the oldest permission request (⌘Return)                |
 | `focus`           | closes every drawer, or opens the sidebar again (⇧⌘F)         |
-| `customize`       | the ask bar (⌘K): describe a change and an agent edits this file while you watch |
+| `customize`       | Settings, at Customize. to change the window, ask any session: every agent has tessel's tools |
 | `settings`        | the settings page (⌘,)                                        |
 
 ## Conditions
@@ -369,7 +369,6 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | command | what it does | keys | arguments |
 | --- | --- | --- | --- |
 | `app.palette` | Command palette | ⌘ K |  |
-| `app.ask` | Change this window… | ⇧ ⌘ K | text?: ask straight away |
 | `app.settings` | Settings | ⌘ , |  |
 | `app.overview` | All sessions | ⇧ ⌘ \\ |  |
 | `app.sidebar` | Show or hide the sidebar | ⌥ ⌘ S |  |

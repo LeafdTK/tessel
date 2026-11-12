@@ -23,14 +23,6 @@ impl Shell {
                 self.open_palette(cx);
                 done
             }
-            "app.ask" => {
-                if let Some(text) = arg(args, "text") {
-                    self.ask_input.update(cx, |s, cx| s.set_value(text.to_owned(), window, cx));
-                    self.ask(window, cx);
-                }
-                self.open_ask(cx);
-                done
-            }
             "app.settings" => {
                 self.open_settings(cx);
                 done

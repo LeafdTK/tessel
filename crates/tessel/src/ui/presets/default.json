@@ -12,9 +12,7 @@
           {
             "type": "row", "px": 12, "py": 8, "gap": 4,
             "children": [
-              { "type": "button", "id": "settings", "action": "settings", "icon": "settings" },
-              { "type": "spacer" },
-              { "type": "button", "id": "customize", "action": "customize", "icon": "sparkles" }
+              { "type": "button", "id": "settings", "action": "settings", "icon": "settings" }
             ]
           }
         ]

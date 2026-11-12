@@ -510,11 +510,7 @@ impl Shell {
             .border_color(p.separator)
             // a pane's header is title bar: it moves the window.
             .on_double_click(|_, window, _| window.titlebar_double_click())
-            .on_mouse_move(|ev: &MouseMoveEvent, window, _| {
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    window.start_window_move();
-                }
-            })
+            .on_mouse_move(self.moves_window(cx))
             .when(live, |d| d.child(grip))
             // the conversation has its own; any other pane in the corner gets one, so the sidebar is never out of reach.
             .when(under_window_buttons && module != Some(Module::Conversation) && !self.drawer("sidebar").is_some_and(|d| d.open), |d| {

@@ -28,7 +28,7 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 6] = [
     ("conversation", "Conversation", "icons/message-square.svg"),
     ("models", "Models", "icons/box.svg"),
     ("agents", "Agents", "icons/bot.svg"),
-    ("customize", "Customize", "icons/sparkles.svg"),
+    ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
 
 impl Shell {
@@ -291,12 +291,9 @@ impl Shell {
         };
         let customize_rows = v_flex()
             .child(self.setting_row(
-                "Ask an agent",
-                "Describe the window you want. It edits ui.json and you watch it change.",
-                Button::new("settings-customize").small().outline().icon(Icon::empty().path("icons/sparkles.svg")).label("Ask…").on_click(cx.listener(|this, _, _, cx| {
-                    this.close_settings(cx);
-                    this.open_ask(cx);
-                })),
+                "From any session",
+                "Ask any agent to rearrange this window or draw something in it. Every session has tessel's tools.",
+                div(),
             ))
             .child(self.setting_row(
                 "ui.json",
@@ -455,14 +452,17 @@ impl Shell {
                         h_flex().flex_1().min_h_0().items_start().child(rail.h_full()).child(
                             v_flex()
                                 .id("settings-body")
+                                .test_support()
                                 .flex_1()
                                 .h_full()
                                 .min_w_0()
                                 .overflow_y_scroll()
                                 .p_4()
                                 .gap_2()
-                                .child(div().px_1().set(Type::Headline).child(title))
-                                .child(v_flex().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden().child(div().mt(px(-1.)).child(rows))),
+                                // a scrolling column: what's in it keeps its height, or it would
+                                // squeeze into the window and clip instead of scrolling.
+                                .child(div().flex_shrink_0().px_1().set(Type::Headline).child(title))
+                                .child(v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden().child(div().mt(px(-1.)).child(rows))),
                         ),
                     ),
             )

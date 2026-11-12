@@ -8,7 +8,6 @@
 //! motion follows two rules. only changes move, and they move from where the
 //! thing was. and nothing in a list moves while the pointer rests on it.
 
-mod ask;
 mod compose;
 mod composer;
 mod exec;
@@ -184,14 +183,6 @@ pub struct Shell {
     pub(crate) palette_ui: palette::PaletteState,
     /// the pointer is over the transcript's message rail.
     rail_open: bool,
-    // asking an agent to change the window.
-    ask_open: bool,
-    focus_ask: bool,
-    ask_sent: bool,
-    ask_focus: FocusHandle,
-    ask_input: Entity<InputState>,
-    /// the session doing it, once there is one.
-    pub(crate) layout_agent: Option<SessionId>,
     // making or cloning a project.
     sheet: Option<projects::Sheet>,
     focus_sheet: bool,
@@ -324,7 +315,6 @@ impl Shell {
         let font_input = cx.new(|cx| InputState::new(window, cx).placeholder("System"));
         let mono_input = cx.new(|cx| InputState::new(window, cx).placeholder(theme::MONO));
         let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
-        let ask_input = cx.new(|cx| InputState::new(window, cx).placeholder("Describe a change to this window…"));
         let project_name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let palette_ui = palette::PaletteState::new(window, cx);
@@ -357,11 +347,6 @@ impl Shell {
             cx.subscribe_in(&new_prompt, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = ev {
                     this.create(window, cx);
-                }
-            }),
-            cx.subscribe_in(&ask_input, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = ev {
-                    this.ask(window, cx);
                 }
             }),
             // the palette: typing searches, return runs.
@@ -513,12 +498,6 @@ impl Shell {
             git_suggestion: None,
             palette_ui,
             rail_open: false,
-            ask_open: false,
-            focus_ask: false,
-            ask_sent: false,
-            ask_focus: cx.focus_handle(),
-            ask_input,
-            layout_agent: None,
             sheet: None,
             focus_sheet: false,
             sheet_focus: cx.focus_handle(),
@@ -734,7 +713,6 @@ impl Shell {
                     self.sync_prompt(true);
                 }
             }
-            UiEvent::Aside(id) => self.layout_agent = Some(id),
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
             UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
@@ -1324,7 +1302,7 @@ impl Shell {
             .on_action(cx.listener(|this, _: &crate::OverviewDown, _, cx| this.overview_move(0, 1, cx)))
             .bg(p.window.opacity(fade))
             .child(
-                self.drag_region("overview-titlebar")
+                self.drag_region("overview-titlebar", cx)
                     .h(px(theme::TOOLBAR_H))
                     .pl(px(theme::WINDOW_BUTTONS_W + 12.))
                     .flex()
@@ -1434,15 +1412,24 @@ impl Shell {
     }
 
     /// a stretch of title bar: dragging it moves the window, double-clicking zooms.
-    fn drag_region(&self, id: &'static str) -> Stateful<Div> {
-        div()
-            .id(id)
-            .on_double_click(|_, window, _| window.titlebar_double_click())
-            .on_mouse_move(|ev: &MouseMoveEvent, window, _| {
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    window.start_window_move();
-                }
-            })
+    fn drag_region(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        div().id(id).on_double_click(|_, window, _| window.titlebar_double_click()).on_mouse_move(self.moves_window(cx))
+    }
+
+    /// what a stretch of title bar does with a held mouse: moves the window,
+    /// unless the press was for something in the window (a pane by its grip,
+    /// a divider, a row) and it's that being carried.
+    pub(crate) fn moves_window(&self, cx: &mut Context<Self>) -> impl Fn(&MouseMoveEvent, &mut Window, &mut App) + 'static {
+        cx.listener(|this, ev: &MouseMoveEvent, window, _| {
+            if ev.pressed_button == Some(MouseButton::Left) && !this.carrying() {
+                window.start_window_move();
+            }
+        })
+    }
+
+    /// something in the window is being dragged.
+    pub(crate) fn carrying(&self) -> bool {
+        self.pane_move.is_some() || self.pane_drag.is_some() || self.drag.is_some()
     }
 
     pub(crate) fn new_session_form(&self, cx: &mut Context<Self>) -> Div {
@@ -1878,9 +1865,6 @@ impl Render for Shell {
                 _ => self.project_name.update(cx, |s, cx| s.focus(window, cx)),
             }
         }
-        if std::mem::take(&mut self.focus_ask) {
-            self.ask_input.update(cx, |s, cx| s.focus(window, cx));
-        }
         if std::mem::take(&mut self.focus_settings) {
             window.focus(&self.settings_focus, cx);
             // the font fields show what the file says now.
@@ -1966,7 +1950,6 @@ impl Render for Shell {
                 )
             })
             .when(show_overview, |d| d.child(self.overview_layer(now, cx)))
-            .when(self.ask_open, |d| d.child(self.ask_layer(now, cx)))
             .when(self.palette_ui.open, |d| d.child(self.palette_layer(window, cx)))
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))

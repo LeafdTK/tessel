@@ -1016,37 +1016,6 @@ fn the_layout_file_is_watched_and_a_broken_one_keeps_the_last_that_worked(cx: &m
 }
 
 #[gpui_kit::test]
-fn asking_to_change_the_window_starts_an_agent_aside_that_knows_the_reference(cx: &mut TestAppContext) {
-    let dir = layout_dir("customize");
-    let launch = Launch { ui: Some(dir.join("ui.json")), ..Launch::default() };
-    let idle = session(1, "Fix login", RunState::Idle, None);
-    let mut rig = Rig::with_sessions_launched(cx, idle.clone(), vec![], launch);
-    rig.press(cx, "shift-cmd-k");
-    assert!(rig.exists(cx, "ask-bar"));
-    rig.typed(cx, "put the changes under the conversation");
-    rig.press(cx, "enter");
-    match rig.asked().as_slice() {
-        [Cmd::CreateAside { cwd, prompt, mode, .. }] => {
-            assert_eq!(cwd, &dir.to_string_lossy());
-            assert!(prompt.contains("ui/README.md") && prompt.contains("ui/check.txt") && prompt.ends_with("put the changes under the conversation"), "{prompt}");
-            assert_eq!(mode, "acceptEdits", "it edits without stopping to ask");
-        }
-        other => panic!("{other:?}"),
-    }
-    // it works beside what is open, which stays open.
-    let agent = session(9, "Changing this window", RunState::Working, None);
-    rig.feed(cx, vec![UiEvent::Session(agent.clone()), UiEvent::Aside(agent.id)]);
-    assert!(rig.shell.read_with(cx, |s, _| s.model.open.as_ref().map(|o| o.id) == Some(idle.id)));
-    // the next ask goes to the same agent.
-    rig.typed(cx, "and close files");
-    rig.press(cx, "enter");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Send { session, text, .. }] if *session == agent.id && text == "and close files"));
-    rig.press(cx, "escape");
-    assert!(!rig.exists(cx, "ask-bar"));
-    std::fs::remove_dir_all(&dir).unwrap();
-}
-
-#[gpui_kit::test]
 fn settings_open_from_the_keyboard_and_write_what_you_pick_to_the_layout_file(cx: &mut TestAppContext) {
     let dir = layout_dir("settings");
     let file = dir.join("ui.json");
@@ -1218,6 +1187,40 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
     rig.click(cx, "models-haiku-star");
     let favs = saved(&mut rig).unwrap();
     assert_eq!(favs.iter().map(|f| f.model.as_str()).collect::<Vec<_>>(), ["opus", "haiku"], "a star adds it at the end");
+}
+
+#[gpui_kit::test]
+fn menus_float_on_the_raised_colour_not_the_librarys_black(cx: &mut TestAppContext) {
+    let rig = Rig::new(cx);
+    let raised = rig.shell.read_with(cx, |s, _| s.palette.get().raised);
+    let popover = cx.update(|cx| gpui_kit::component::Theme::global(cx).colors.popover);
+    assert_eq!(popover, raised);
+}
+
+#[gpui_kit::test]
+fn a_long_settings_page_scrolls_to_its_end(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    let models: Vec<ModelInfo> = (0..14).map(|i| ModelInfo { value: format!("m{i}"), id: format!("m{i}"), name: format!("Model {i}"), description: "x".into(), ..ModelInfo::default() }).collect();
+    rig.feed(cx, vec![UiEvent::Models(models, vec![])]);
+    rig.shell.update(cx, |s, cx| {
+        s.settings_section = "models";
+        s.open_settings(cx);
+    });
+    rig.settle(cx);
+    let bottoms = |rig: &mut Rig, cx: &mut TestAppContext| {
+        cx.update_window(rig.window, |_, window, _| {
+            let (body, last) = (window.find("settings-body").bounds(), window.find("models-row-m13").bounds());
+            (body.origin.y + body.size.height, last.origin.y + last.size.height)
+        })
+        .unwrap()
+    };
+    let (body, last) = bottoms(&mut rig, cx);
+    assert!(last > body, "fourteen models run past the page: {last:?} {body:?}");
+    cx.update_window(rig.window, |_, window, cx| window.scroll("settings-body", gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-5000.))), cx)).unwrap();
+    rig.settle(cx);
+    let (body, last) = bottoms(&mut rig, cx);
+    assert!((last - body).abs() < gpui_kit::px(40.), "and scroll to the last one: {last:?} {body:?}");
 }
 
 #[gpui_kit::test]

@@ -21,8 +21,6 @@ pub enum Cmd {
     /// show this session (or none).
     Open(Option<SessionId>),
     Create { cwd: String, worktree: bool, prompt: String },
-    /// start a session without opening it: it works beside what you are doing.
-    CreateAside { cwd: String, goal: String, prompt: String, mode: String },
     Send { session: SessionId, text: String, attachments: Vec<Attachment> },
     SetModel { session: SessionId, model: String },
     SetEffort { session: SessionId, effort: Option<String> },
@@ -100,8 +98,6 @@ pub enum UiEvent {
     TermUpdated(TermInfo),
     TermRemoved(TermId),
     Answer { tag: &'static str, result: Result<Response, String> },
-    /// a session started aside exists, with this id.
-    Aside(SessionId),
     /// something the user did failed. shown, not fatal.
     Error(String),
 }
@@ -287,29 +283,6 @@ async fn session(
                                 let _ = ui.send(UiEvent::Created);
                                 *open = Some(id);
                                 subscribe(client, ui, open).await
-                            }
-                            Ok(_) => Ok(()),
-                            Err(e) => Err(e),
-                        }
-                    }
-                    Cmd::CreateAside { cwd, goal, prompt, mode } => {
-                        let req = Request::SessionCreate {
-                            cmd_id: Uuid::new_v4(),
-                            cwd,
-                            worktree: None,
-                            goal: Some(goal),
-                            prompt: None,
-                            model: None,
-                            parent: None,
-                        };
-                        match client.request(req).await {
-                            Ok(Response::Session { summary }) => {
-                                let id = summary.id;
-                                let _ = ui.send(UiEvent::Session(summary));
-                                let _ = ui.send(UiEvent::Aside(id));
-                                // allowed to edit before it is asked anything, so it never stops to ask.
-                                let _ = client.request(Request::SessionSetMode { cmd_id: Uuid::new_v4(), session: id, mode }).await;
-                                client.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: id, text: prompt, attachments: vec![] }).await.map(drop)
                             }
                             Ok(_) => Ok(()),
                             Err(e) => Err(e),

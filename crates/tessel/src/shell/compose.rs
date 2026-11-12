@@ -232,7 +232,10 @@ impl Shell {
             Action::Next => self.next_attention(cx),
             Action::Allow => self.allow_pending(cx),
             Action::Focus => self.toggle_focus_mode(cx),
-            Action::Customize => self.open_ask(cx),
+            Action::Customize => {
+                self.settings_section = "customize";
+                self.open_settings(cx);
+            }
             Action::Settings => self.open_settings(cx),
         }
     }
@@ -368,11 +371,7 @@ impl Shell {
                         .right_0()
                         .h(px(top))
                         .on_double_click(|_, window, _| window.titlebar_double_click())
-                        .on_mouse_move(|ev: &MouseMoveEvent, window, _| {
-                            if ev.pressed_button == Some(MouseButton::Left) {
-                                window.start_window_move();
-                            }
-                        })
+                        .on_mouse_move(self.moves_window(cx))
                 });
                 self.styled(div().relative().child(self.panes_el(n, now, cx)).children(strip), s).into_any_element()
             }
@@ -411,11 +410,7 @@ impl Shell {
             d = d.pl(px(base + theme::WINDOW_BUTTONS_W * shut));
         }
         if n.style.drag {
-            d = d.on_double_click(|_, window, _| window.titlebar_double_click()).on_mouse_move(|ev: &MouseMoveEvent, window, _| {
-                if ev.pressed_button == Some(MouseButton::Left) {
-                    window.start_window_move();
-                }
-            });
+            d = d.on_double_click(|_, window, _| window.titlebar_double_click()).on_mouse_move(self.moves_window(cx));
         }
         if n.style.scroll {
             d = d.overflow_y_scroll();
