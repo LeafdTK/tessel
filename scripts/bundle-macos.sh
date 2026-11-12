@@ -30,8 +30,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>tessel</string>
-    <key>CFBundleDisplayName</key><string>tessel</string>
+    <key>CFBundleName</key><string>Tessel</string>
+    <key>CFBundleDisplayName</key><string>Tessel</string>
     <key>CFBundleIdentifier</key><string>app.tessel.desktop</string>
     <key>CFBundleExecutable</key><string>tessel</string>
     <key>CFBundleIconFile</key><string>tessel</string>

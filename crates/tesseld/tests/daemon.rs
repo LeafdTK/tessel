@@ -1234,3 +1234,13 @@ async fn a_conversation_forks_into_a_new_tab_that_carries_on_from_it() {
     assert!(opts.resume && opts.fork, "resumed and forked");
     assert_eq!(opts.agent_session_id, parent_agent);
 }
+
+#[tokio::test]
+async fn a_chat_started_empty_is_named_by_its_first_message() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    assert_eq!(s.goal, "untitled");
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "tidy the readme please".into(), attachments: vec![] }).await.unwrap();
+    until(&c, s.id, "a name from what was said", |s| s.goal == "tidy the readme please").await;
+}

@@ -277,7 +277,23 @@ impl SidebarLayout {
     /// session under its project, newest first. a session is in one place only.
     pub fn build(model: &Model) -> Self {
         let mut entries = Vec::new();
-        let queue = model.attention_queue();
+        // a workspace is a folder, and its sessions are its tabs: one row each,
+        // standing for the tab that wants you, else the one busy most recently.
+        let mut stand_in: HashMap<&str, &SessionSummary> = HashMap::new();
+        for s in &model.sessions {
+            let keep = match stand_in.get(s.cwd.as_str()) {
+                None => true,
+                Some(cur) => {
+                    let rank = |x: &SessionSummary| (x.attention.is_some(), x.updated_ms.max(x.created_ms));
+                    rank(s) > rank(cur)
+                }
+            };
+            if keep {
+                stand_in.insert(s.cwd.as_str(), s);
+            }
+        }
+        let shown = |s: &SessionSummary| stand_in.get(s.cwd.as_str()).is_some_and(|r| r.id == s.id);
+        let queue: Vec<&SessionSummary> = model.attention_queue().into_iter().filter(|s| shown(s)).collect();
         if !queue.is_empty() {
             entries.push(Entry::Header(QUEUE_TITLE.to_owned()));
             for s in &queue {
@@ -285,7 +301,7 @@ impl SidebarLayout {
                 entries.extend(subs(s));
             }
         }
-        let mut rest: Vec<&SessionSummary> = model.sessions.iter().filter(|s| s.attention.is_none()).collect();
+        let mut rest: Vec<&SessionSummary> = model.sessions.iter().filter(|s| s.attention.is_none() && shown(s)).collect();
         rest.sort_by(|a, b| project_name(a).cmp(&project_name(b)).then(b.created_ms.cmp(&a.created_ms)).then(a.id.cmp(&b.id)));
         let mut current: Option<String> = None;
         for s in rest {
@@ -653,8 +669,18 @@ mod tests {
         assert_eq!(o.delta(&ItemId::from("a-says"), 0, "hi"), Change::Row(1));
     }
 
+    /// a session in a workspace of its own, a worktree of the project's repository.
     fn in_project(n: u128, cwd: &str, attention: Option<(AttentionReason, Millis)>) -> SessionSummary {
-        SessionSummary { cwd: cwd.into(), ..session(n, attention) }
+        let worktree = Some(tessel_proto::WorktreeInfo { repo: cwd.into(), branch: format!("tessel/s{n}") });
+        SessionSummary { cwd: format!("{cwd}-wt{n}"), worktree, ..session(n, attention) }
+    }
+
+    #[test]
+    fn a_workspace_is_one_row_standing_for_the_tab_that_wants_you_or_the_latest() {
+        let tab = |n: u128, updated: Millis, attention: Option<(AttentionReason, Millis)>| SessionSummary { cwd: "/w/api".into(), updated_ms: updated, ..session(n, attention) };
+        let names = |l: &SidebarLayout| l.entries.iter().map(|e| match e { Entry::Header(h) => format!("[{h}]"), Entry::Row(id) => id.0.as_u128().to_string(), Entry::Sub(..) => "sub".into() }).collect::<Vec<_>>();
+        assert_eq!(names(&layout(vec![tab(1, 10, None), tab(2, 30, None), tab(3, 20, None)])), ["[api]", "2"], "the one busy most recently");
+        assert_eq!(names(&layout(vec![tab(1, 10, Some((AttentionReason::NeedsPermission, 5))), tab(2, 30, None)])), [format!("[{QUEUE_TITLE}]"), "1".into()], "the one that wants you");
     }
 
     fn layout(sessions: Vec<SessionSummary>) -> SidebarLayout {

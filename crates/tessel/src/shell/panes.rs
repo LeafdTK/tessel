@@ -624,7 +624,7 @@ impl Shell {
                 if self.model.open_summary().is_some_and(|s| s.run_state.is_busy()) && !self.show_new {
                     out.push(Button::new("toolbar-stop").xsmall().outline().label("Stop").tooltip("Stop the Agent").on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))).into_any_element());
                 }
-                out.push(Button::new("toolbar-overview").ghost().xsmall().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());
+                out.push(Button::new("toolbar-overview").ghost().small().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());
                 if !self.show_new && self.model.open_summary().is_some() && self.has_pane("inspector") {
                     out.push(
                         Button::new("toolbar-inspector")
@@ -838,26 +838,25 @@ impl Shell {
         Popover::new(SharedString::from(format!("pane-{id}-new-menu")))
             .p_0()
             .anchor(Anchor::TopRight)
-            .trigger(Button::new(SharedString::from(format!("pane-{id}-new"))).ghost().xsmall().icon(Icon::empty().path("icons/plus.svg").text_color(p.tertiary)).tooltip("New Pane"))
+            .trigger(Button::new(SharedString::from(format!("pane-{id}-new"))).ghost().small().icon(Icon::empty().path("icons/plus.svg").text_color(p.secondary)).tooltip("New Pane"))
             .content(move |_, _, cx| {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };
                 let this = shell.read(cx);
                 let p = this.palette.get();
-                let list = theme::float_list(&p).w(px(256.)).child(theme::float_label(&p, "New pane beside this one"));
-                let mut grid = h_flex().flex_wrap();
+                let mut list = theme::float_list(&p).w(px(232.)).child(theme::float_label(&p, "New pane beside this one"));
                 for (_, m, title, icon, _) in MODULES {
                     // the ones there's only one of are already somewhere.
                     if this.shown_elsewhere(m, None) {
                         continue;
                     }
                     let (me, popover, t) = (me.clone(), popover.clone(), trail.clone());
-                    grid = grid.child(module_tile(&p, SharedString::from(format!("pane-{pid}-new-{}", m.name())), icon, title, false).on_click(move |_, window, cx| {
+                    list = list.child(theme::float_item(&p, SharedString::from(format!("pane-{pid}-new-{}", m.name())), Some(icon), title, None, false).on_click(move |_, window, cx| {
                         popover.update(cx, |st, cx| st.dismiss(window, cx));
                         let _ = me.update(cx, |this, cx| this.open_beside(t.clone(), m, window, cx));
                     }).test_support());
                 }
-                list.child(grid).into_any_element()
+                list.into_any_element()
             })
     }
 
@@ -877,7 +876,7 @@ impl Shell {
         Popover::new(SharedString::from(format!("pane-{id}-menu")))
             .p_0()
             .anchor(Anchor::TopRight)
-            .trigger(Button::new(SharedString::from(format!("pane-{id}-more"))).ghost().xsmall().icon(Icon::empty().path("icons/ellipsis.svg").text_color(p.tertiary)).tooltip("Pane"))
+            .trigger(Button::new(SharedString::from(format!("pane-{id}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg").text_color(p.secondary)).tooltip("Pane"))
             .content(move |_, _, cx| {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };
@@ -893,26 +892,21 @@ impl Shell {
                 };
                 let (t1, t2, t3, z) = (trail.clone(), trail.clone(), trail.clone(), pid.clone());
                 let sep = || theme::float_sep(&p);
-                // what to do with the pane, as a row of tiles; the keys are in their tooltips.
-                let actions = h_flex()
-                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-split-right")), "columns-2", "Right", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Split right  ⌘D").build(w, cx)).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
-                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-split-down")), "rows-2", "Down", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Split down  ⇧⌘D").build(w, cx)).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
-                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-zoom")), if zoomed { "minimize-2" } else { "maximize-2" }, if zoomed { "Restore" } else { "Maximize" }, false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Maximize or restore  ⇧⌘↩").build(w, cx)).on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx)))).test_support())
-                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-close")), "x", "Close", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Close pane  ⌘W").build(w, cx)).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support());
                 let mut list = theme::float_list(&p)
-                    .w(px(256.))
-                    .child(actions)
+                    .w(px(232.))
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-zoom")), Some(if zoomed { "minimize-2" } else { "maximize-2" }), if zoomed { "Restore" } else { "Maximize" }, None, Some("⇧ ⌘ ↩"), false).on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx)))).test_support())
+                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-close")), Some("x"), "Close pane", None, Some("⌘ W"), false).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support())
                     .child(sep())
                     .child(theme::float_label(&p, "Show here"));
-                let mut grid = h_flex().flex_wrap();
                 for (_, m, title, icon, _) in MODULES {
                     if current != Some(m) && this.shown_elsewhere(m, Some(pid.as_str())) {
                         continue;
                     }
                     let t = trail.clone();
-                    grid = grid.child(module_tile(&p, SharedString::from(format!("pane-{pid}-show-{}", m.name())), icon, title, current == Some(m)).on_click(act(Box::new(move |this, w, cx| this.set_pane_module(t.clone(), m, w, cx)))).test_support());
+                    list = list.child(theme::float_item(&p, SharedString::from(format!("pane-{pid}-show-{}", m.name())), Some(icon), title, None, current == Some(m)).on_click(act(Box::new(move |this, w, cx| this.set_pane_module(t.clone(), m, w, cx)))).test_support());
                 }
-                list = list.child(grid);
                 list.into_any_element()
             })
     }
@@ -1355,26 +1349,6 @@ mod tests {
     }
 }
 
-/// a module as a small tile: its icon over its name. four to a row, so a menu
-/// offering every module stays short enough for a quarter of the window.
-fn module_tile(p: &theme::Palette, id: SharedString, icon: &str, title: &str, current: bool) -> Stateful<Div> {
-    let p = *p;
-    v_flex()
-        .id(id)
-        // a quarter of the row: four across at any interface size, edge to edge.
-        .w(relative(0.25))
-        .h(theme::z(54.))
-        .items_center()
-        .justify_center()
-        .gap(px(4.))
-        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
-        .cursor_pointer()
-        .when(current, |d| d.bg(p.selection))
-        .when(!current, |d| d.hover(move |d| d.bg(p.hover)))
-        .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(16.)).text_color(if current { p.accent } else { p.secondary }))
-        .child(div().max_w_full().px(px(2.)).truncate().text_size(theme::z(11.)).text_color(if current { p.label } else { p.secondary }).child(title.to_owned()))
-}
-
 impl Shell {
     /// the open session's workspace: every session working in the same folder,
     /// oldest first. each is a tab.
@@ -1385,11 +1359,13 @@ impl Shell {
         tabs
     }
 
-    /// a new tab in the open session's workspace: the same folder, no new worktree.
+    /// a new tab in the open session's workspace: a chat in the same folder,
+    /// made at once and opened, the cursor in its message box. no form.
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(cwd) = self.model.open_summary().map(|s| s.cwd.clone()) else { return };
-        self.start_in(cwd, window, cx);
-        self.new_worktree = false;
+        self.show_new = false;
+        self.cmd(Cmd::Create { cwd, worktree: false, prompt: String::new() });
+        self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }
 

@@ -115,7 +115,7 @@ pub fn bind_keys(cx: &mut App) {
 fn set_menus(cx: &mut App) {
     let menu = |name: &'static str, items: Vec<MenuItem>| Menu { name: name.into(), items, disabled: false };
     cx.set_menus(vec![
-        menu("tessel", vec![MenuItem::action("Settings…", OpenSettings), MenuItem::separator(), MenuItem::action("Quit tessel", Quit)]),
+        menu("Tessel", vec![MenuItem::action("Settings…", OpenSettings), MenuItem::separator(), MenuItem::action("Quit Tessel", Quit)]),
         menu("File", vec![MenuItem::action("New Session", NewSession)]),
         menu(
             "View",
@@ -189,7 +189,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         window_min_size: Some(size(px(theme::CONTENT_MIN + 200.), px(420.))),
         titlebar: Some(TitlebarOptions {
-            title: Some("tessel".into()),
+            title: Some("Tessel".into()),
             appears_transparent: true,
             traffic_light_position: Some(point(px(19.), px(19.))),
         }),

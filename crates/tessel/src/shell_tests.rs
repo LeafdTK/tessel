@@ -30,8 +30,9 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
     SessionSummary {
         id: sid(n),
         goal: goal.into(),
-        cwd: "/work/api".into(),
-        worktree: None,
+        // each in a workspace of its own (a worktree of one repository), as sessions are by default.
+        cwd: format!("/work/api-{n}"),
+        worktree: Some(tessel_proto::WorktreeInfo { repo: "/work/api".into(), branch: format!("tessel/s{n}") }),
         parent: None,
         activity: match state {
             RunState::Working => Some("running cargo test".into()),
@@ -390,6 +391,7 @@ fn a_new_session_is_created_from_the_form(cx: &mut TestAppContext) {
     api.updated_ms = 2;
     let mut web = session(2, "Polish", RunState::Idle, None);
     web.cwd = "/work/web".into();
+    web.worktree = None;
     web.updated_ms = 1;
     rig.feed(cx, vec![UiEvent::Sessions(vec![api, web])]);
     rig.press(cx, "cmd-n");
@@ -754,8 +756,8 @@ fn plans_and_files_the_agent_made_collect_as_artifacts_and_open_from_there(cx: &
     let items = vec![
         tool("p1", 1, "ExitPlanMode", serde_json::json!({"plan": "1. Read the test\n2. Fix it"}), ToolStatus::Ok),
         tool("w0", 2, "Write", serde_json::json!({"file_path": "/Users/x/.claude/plans/the-plan.md"}), ToolStatus::Ok),
-        tool("w1", 3, "Write", serde_json::json!({"file_path": "/work/api/docs/notes.md"}), ToolStatus::Ok),
-        tool("w2", 4, "Write", serde_json::json!({"file_path": "/work/api/never.md"}), ToolStatus::Failed),
+        tool("w1", 3, "Write", serde_json::json!({"file_path": format!("{}/docs/notes.md", idle.cwd)}), ToolStatus::Ok),
+        tool("w2", 4, "Write", serde_json::json!({"file_path": format!("{}/never.md", idle.cwd)}), ToolStatus::Failed),
     ];
     rig.feed(cx, vec![snapshot_of(idle.clone(), items, vec![])]);
     rig.press(cx, "alt-cmd-i");
@@ -1325,7 +1327,8 @@ fn a_turn_ends_with_its_time_its_reply_and_the_files_it_changed(cx: &mut TestApp
 #[gpui_kit::test]
 fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut TestAppContext) {
     let a = session(1, "Fix login", RunState::Idle, None);
-    let b = session(2, "Write tests", RunState::Working, None);
+    // a second tab in a's workspace.
+    let b = SessionSummary { cwd: a.cwd.clone(), ..session(2, "Write tests", RunState::Working, None) };
     let mut elsewhere = session(3, "Other repo", RunState::Idle, None);
     elsewhere.cwd = "/work/web".into();
     let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
@@ -1338,10 +1341,10 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
     assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == b.id));
     rig.feed(cx, vec![snapshot(b.clone(), vec![])]);
 
-    // + is a new tab: the same folder, in place.
+    // + is a new chat at once: the same folder, in place, no form.
     rig.click(cx, "tab-new");
-    let (folder, worktree) = rig.shell.read_with(cx, |s, _| (s.new_folder(), s.new_worktree));
-    assert_eq!((folder.as_deref(), worktree), (Some("/work/api"), false));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { cwd, worktree: false, prompt }] if *cwd == a.cwd && prompt.is_empty()));
+    assert!(!rig.exists(cx, "create"), "no new-session form");
 
     // a turn's menu forks the conversation.
     let it = |id: &str, seq: u64, body: ItemBody| Item { id: ItemId::from(id), parent: None, seq, order: seq, created_ms: 0, body };

@@ -1287,6 +1287,9 @@ impl Shell {
         let label: SharedString = format!("{}, {second}", s.goal).into();
         let group = SharedString::from(format!("session-row-{sid}"));
         let menu = self.session_menu(s, group.clone(), cx);
+        let in_workspace: Vec<&SessionSummary> = self.model.sessions.iter().filter(|o| o.cwd == s.cwd).collect();
+        let tabs = in_workspace.len();
+        let workspace_title = in_workspace.iter().min_by_key(|o| (o.created_ms, o.id)).map_or_else(|| s.goal.clone(), |o| o.goal.clone());
         let hover_group = group.clone();
         h_flex()
             .group(group)
@@ -1325,7 +1328,9 @@ impl Shell {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(s.goal.clone()))
+                            // the workspace: what it was made for (its first tab), and how many tabs it has.
+                            .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(workspace_title))
+                            .when(tabs > 1, |d| d.child(theme::count_pill(&p, tabs.to_string(), false)))
                             // the time, and on hover the menu in its place: one slot at the
                             // end of the first line, wherever the line below ends.
                             // the time, which makes way for the menu on hover.

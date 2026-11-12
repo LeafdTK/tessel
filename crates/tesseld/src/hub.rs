@@ -1077,6 +1077,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             let why = format!("{} can't be attached ({}). images and pdfs can; for anything else, mention its path", bad.name, bad.media_type);
             return Err(RpcError::new(ErrorCode::Invalid, why));
         }
+        // a chat started empty (a new tab) is called what you first say to it.
+        if self.sessions.get(&session).is_some_and(|l| l.state.meta.goal == "untitled") {
+            let goal = crate::activity::truncate(text.trim());
+            if !goal.is_empty() {
+                self.apply(session, Input::SetGoal { goal })?;
+            }
+        }
         self.ensure_process(session)?;
         let live = self.sessions.get(&session).ok_or_else(|| not_found(session))?;
         if let Some(agent) = &live.agent {
