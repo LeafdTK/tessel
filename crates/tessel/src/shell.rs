@@ -314,6 +314,8 @@ pub struct Shell {
     pub(crate) mention_dismissed: Option<String>,
     /// finished thoughts the user has opened to read in full.
     thoughts_open: HashSet<ItemId>,
+    /// tool calls whose output has been opened: folded, like thoughts, until clicked.
+    tools_open: HashSet<ItemId>,
     /// diagrams and formulas already drawn, by appearance and source. drawing
     /// happens while a row is being laid out, hence the cell.
     #[cfg(feature = "rich")]
@@ -714,6 +716,7 @@ impl Shell {
             mention_sel: 0,
             mention_dismissed: None,
             thoughts_open: HashSet::new(),
+            tools_open: HashSet::new(),
             #[cfg(feature = "rich")]
             drawn: RefCell::new(HashMap::new()),
             shown: SidebarLayout::default(),
@@ -796,6 +799,19 @@ impl Shell {
     #[cfg(test)]
     pub(crate) fn thought_is_open(&self, id: &ItemId) -> bool {
         self.thoughts_open.contains(id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tool_is_open(&self, id: &ItemId) -> bool {
+        self.tools_open.contains(id)
+    }
+
+    fn toggle_tool(&mut self, id: ItemId, row: usize, cx: &mut Context<Self>) {
+        if !self.tools_open.remove(&id) {
+            self.tools_open.insert(id);
+        }
+        self.scroller.update(cx, |s, cx| s.remeasure_items(row..row + 1, cx));
+        cx.notify();
     }
 
     /// how wide the sidebar is right now. for tests.
@@ -1961,7 +1977,24 @@ impl Shell {
             ItemBody::Tool { tool, input, status, output, started_ms, finished_ms } => {
                 // how long it ran, not how long ago it was asked for.
                 let ran = started_ms.zip(*finished_ms).map(|(s, f)| f.saturating_sub(s));
-                Some(tool_row(tool, input, *status, output.as_deref(), ran, &p).into_any_element())
+                // what it printed is folded, like a thought, and opens on a click.
+                let out = output.as_deref().filter(|o| !o.trim().is_empty());
+                let open = out.is_some() && self.tools_open.contains(&item.id);
+                let row = tool_row(tool, input, *status, out, open, ran, &p);
+                Some(match out {
+                    None => row.into_any_element(),
+                    Some(_) => {
+                        let (me, id) = (me.clone(), item.id.clone());
+                        div()
+                            .id(ElementId::from(SharedString::from(format!("tool-{}", item.id))))
+                            .test_support()
+                            .aria_label(if open { "Tool output, showing" } else { "Tool output, folded" })
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| me.update(cx, |this, cx| this.toggle_tool(id.clone(), ix, cx)))
+                            .child(row)
+                            .into_any_element()
+                    }
+                })
             }
             ItemBody::Turn { started_ms, finished_ms, duration_ms, cost_usd, model, fast, usage, files } => {
                 Some(self.turn_footer(session, ix, &item.id, *started_ms, *finished_ms, *duration_ms, *cost_usd, model.as_deref(), *fast, *usage, files, me))
@@ -2845,7 +2878,7 @@ pub(crate) fn sentence(s: &str) -> String {
 }
 
 /// files the open session wrote or edited, most recently touched first, with how many times.
-fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: Option<&str>, ran_ms: Option<Millis>, p: &Palette) -> impl IntoElement {
+fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: Option<&str>, open: bool, ran_ms: Option<Millis>, p: &Palette) -> impl IntoElement {
     let (icon, kind, detail, mono) = tool_parts(tool, input);
     // the tool's own icon, tinted while it runs: the one moving dot is the
     // working line's, by the message box, so a running tool doesn't add another.
@@ -2887,13 +2920,14 @@ fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: O
                 ToolStatus::AwaitingPermission => info_blue(p),
                 _ => p.tertiary,
             }).child(n)))
-            .children(took.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t))),
+            .children(took.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t)))
+            // there's output to open: a chevron says so, and which way it is.
+            .when(output.is_some(), |d| {
+                d.child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary))
+            }),
     );
-    // output earns its space only when something went wrong.
-    if status == ToolStatus::Failed
-        && let Some(out) = output.filter(|o| !o.trim().is_empty())
-    {
-        col = col.child(div().ml(px(7.)).pl(px(16.)).border_l_1().border_color(p.separator).set(Type::Code).text_color(p.secondary).line_clamp(8).child(out.to_owned()));
+    if open && let Some(out) = output {
+        col = col.child(div().ml(px(7.)).pl(px(16.)).border_l_1().border_color(p.separator).set(Type::Code).text_color(if status == ToolStatus::Failed { p.secondary } else { p.tertiary }).line_clamp(16).child(out.to_owned()));
     }
     col
 }

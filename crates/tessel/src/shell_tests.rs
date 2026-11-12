@@ -964,6 +964,23 @@ fn a_finished_thought_is_folded_and_opens_on_a_click(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn what_a_command_printed_is_folded_even_when_it_failed_and_opens_on_a_click(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    let run = Item {
+        id: ItemId::from("t1"), parent: None, seq: 1, order: 1, created_ms: 0,
+        body: ItemBody::Tool { tool: "Bash".into(), input: serde_json::json!({"command": "cat missing", "description": "Read the notes"}), status: ToolStatus::Failed, output: Some("Exit code 1\ncat: missing: No such file".into()), started_ms: None, finished_ms: None },
+    };
+    rig.feed(cx, vec![snapshot_of(idle, vec![run], vec![])]);
+    assert!(rig.exists(cx, eid("tool-t1")));
+    assert!(rig.shell.read_with(cx, |s, _| !s.tool_is_open(&ItemId::from("t1"))), "folded, failure or not");
+    rig.click(cx, eid("tool-t1"));
+    assert!(rig.shell.read_with(cx, |s, _| s.tool_is_open(&ItemId::from("t1"))));
+    rig.click(cx, eid("tool-t1"));
+    assert!(rig.shell.read_with(cx, |s, _| !s.tool_is_open(&ItemId::from("t1"))), "and folds again");
+}
+
+#[gpui_kit::test]
 fn a_thought_being_written_is_folded_too_and_opens_on_a_click(cx: &mut TestAppContext) {
     let busy = session(1, "Fix login", RunState::Working, None);
     let mut rig = Rig::with_sessions(cx, busy.clone(), vec![]);
