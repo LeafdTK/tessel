@@ -245,7 +245,7 @@ impl Shell {
             Action::Stop => self.stop_agent(cx),
             Action::Send => self.send(window, cx),
             Action::Attach => self.choose_attachments(window, cx),
-            Action::Next => self.next_attention(cx),
+            Action::Next => self.next_attention(window, cx),
             Action::Allow => self.allow_pending(cx),
             Action::Focus => self.toggle_focus_mode(cx),
             Action::Customize => {

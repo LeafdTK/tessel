@@ -122,7 +122,7 @@ impl Shell {
                 }
             },
             "session.next" => {
-                self.next_attention(cx);
+                self.next_attention(window, cx);
                 done
             }
             "session.open" => {

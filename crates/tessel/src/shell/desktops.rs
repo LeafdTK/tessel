@@ -197,6 +197,28 @@ impl Shell {
         h_flex().gap(theme::z(4.)).items_center().child(div().flex_1().min_w_0().child(row)).child(add).into_any_element()
     }
 
+    /// the desktop a chat belongs on: the one showing it (this one first),
+    /// else one that lists its project, else this one if it lists everything.
+    /// none: stay, and show it here.
+    pub(crate) fn desktop_for(&self, session: SessionId) -> Option<usize> {
+        if self.ui.desktops.len() < 2 {
+            return None;
+        }
+        let here = self.model.open.as_ref().is_some_and(|o| o.id == session) || self.in_a_view(session);
+        if here {
+            return Some(self.ui.desktop);
+        }
+        if let Some(at) = self.ui.desktops.iter().position(|d| self.stashed.get(&d.id).is_some_and(|st| st.open == Some(session) || st.views.values().any(|v| v.session == session))) {
+            return Some(at);
+        }
+        let project = self.model.sessions.iter().find(|s| s.id == session).map(crate::model::project_name)?;
+        let lists = |d: &crate::ui::Desktop| d.scope.is_empty() || d.scope.contains(&project);
+        if self.ui.desktops.get(self.ui.desktop).is_some_and(lists) {
+            return Some(self.ui.desktop);
+        }
+        self.ui.desktops.iter().position(|d| d.scope.contains(&project)).or_else(|| self.ui.desktops.iter().position(lists))
+    }
+
     /// ⌘1…⌘9: that desktop, when there is one.
     pub(crate) fn go_desktop(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         if n >= 1 && n <= self.ui.desktops.len() && n - 1 != self.ui.desktop {

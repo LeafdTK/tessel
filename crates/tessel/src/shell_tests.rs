@@ -2099,7 +2099,17 @@ fn desktops_keep_their_own_chats_and_projects(cx: &mut TestAppContext) {
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(saved["desktops"][1]["open"], serde_json::json!(web.id.0.to_string()));
 
-    // the next desktop, by key binding's command; then closing it goes back.
+    // the landing page asks something while you're on Main: ⌘J takes you to its desktop.
+    let mut asking = web.clone();
+    asking.run_state = RunState::NeedsInput;
+    asking.attention = Some(tessel_proto::Attention { reason: AttentionReason::NeedsInput, since_ms: 5, seq: 9 });
+    rig.feed(cx, vec![UiEvent::Session(asking)]);
+    rig.press(cx, "cmd-j");
+    assert_eq!(rig.shell.read_with(cx, |s, _| (s.ui.desktop, s.model.open.as_ref().map(|o| o.id))), (1, Some(web.id)), "on Web, with the landing page open");
+
+    // the previous desktop, then the next; then closing it goes back.
+    exec(&mut rig, cx, "desktop.prev", serde_json::json!({})).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 0);
     exec(&mut rig, cx, "desktop.next", serde_json::json!({})).unwrap();
     assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 1);
     exec(&mut rig, cx, "desktop.close", serde_json::json!({})).unwrap();

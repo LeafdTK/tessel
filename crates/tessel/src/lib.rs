@@ -205,7 +205,6 @@ pub fn bind_actions(shell: WeakEntity<Shell>, cx: &mut App) {
     on::<ToggleInspector>(cx, &shell, Shell::toggle_inspector);
     on::<ToggleFocusMode>(cx, &shell, Shell::toggle_focus_mode);
     on::<ToggleOverview>(cx, &shell, Shell::toggle_overview);
-    on::<NextAttention>(cx, &shell, Shell::next_attention);
     on::<StopAgent>(cx, &shell, Shell::stop_agent);
     on::<AllowPending>(cx, &shell, Shell::allow_pending);
     on::<OpenSettings>(cx, &shell, Shell::open_settings);

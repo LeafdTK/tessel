@@ -1080,11 +1080,21 @@ impl Shell {
     }
 
     /// jump to the session that has been waiting on you longest.
-    pub fn next_attention(&mut self, cx: &mut Context<Self>) {
+    /// the next chat that wants you, wherever it is: on the desktop that has
+    /// it, in the pane already showing it, else in the focused pane.
+    pub fn next_attention(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let current = self.model.open.as_ref().map(|o| o.id);
-        if let Some(next) = self.model.next_attention(current) {
-            self.open(next, cx);
+        let Some(next) = self.model.next_attention(current) else { return };
+        if let Some(at) = self.desktop_for(next)
+            && at != self.ui.desktop
+        {
+            self.use_desktop(at, window, cx);
         }
+        match self.views.iter().find(|(_, v)| v.session == next).map(|(pane, _)| pane.clone()) {
+            Some(pane) => self.focus_chat_pane(&pane, cx),
+            None => self.open(next, cx),
+        }
+        cx.notify();
     }
 
     pub fn show_new_session(&mut self, cx: &mut Context<Self>) {
@@ -2330,6 +2340,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &crate::NextEffort, window, cx| this.run_key("model.effort", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::ToggleFast, window, cx| this.run_key("model.fast", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::AttachFiles, window, cx| this.run_key("composer.attach", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::NextAttention, window, cx| this.next_attention(window, cx)))
             .on_action(cx.listener(|this, _: &crate::NextDesktop, window, cx| this.run_key("desktop.next", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::PrevDesktop, window, cx| this.run_key("desktop.prev", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::NewDesktop, window, cx| this.run_key("desktop.new", serde_json::json!({}), window, cx)))
