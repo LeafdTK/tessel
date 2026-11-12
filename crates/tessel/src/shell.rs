@@ -1888,10 +1888,12 @@ impl Shell {
                 Some(div().set(Type::Callout).text_color(p.secondary).child("Thinking…").into_any_element())
             }
             ItemBody::Thinking { .. } if self.transcript_opts.thoughts == Show::Hidden => None,
-            // the agent's reasoning: shown in full while it is being written,
-            // then folded to its one line, opening again on a click.
+            // the agent's reasoning: folded, while it's written and after, and
+            // opened with a click. while it's being written, folded shows the
+            // line it's on, so it can be seen moving.
             ItemBody::Thinking { text, streaming } => {
-                let open = *streaming || self.thoughts_open.contains(&item.id);
+                let open = self.thoughts_open.contains(&item.id);
+                let latest = (*streaming && !open).then(|| text.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().to_owned());
                 let (me, id) = (me.clone(), item.id.clone());
                 Some(
                     v_flex()
@@ -1908,8 +1910,11 @@ impl Shell {
                                 .italic()
                                 .text_color(p.tertiary)
                                 .child(if *streaming { "Thinking…" } else { "Thought" })
-                                .when(!*streaming, |d| d.child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary))),
+                                .child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary)),
                         )
+                        .when_some(latest.filter(|l| !l.is_empty()), |d, line| {
+                            d.child(div().pl(px(14.)).min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().set(Type::Callout).italic().text_color(p.tertiary).child(line))
+                        })
                         // folded, a thought is its one line; open, all of it.
                         .when(open, |d| d.child(div().pl(px(14.)).set(Type::Callout).italic().text_color(p.secondary).child(text.trim_end().to_owned())))
                         .into_any_element(),
@@ -2834,17 +2839,21 @@ pub(crate) fn sentence(s: &str) -> String {
 /// files the open session wrote or edited, most recently touched first, with how many times.
 fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: Option<&str>, ran_ms: Option<Millis>, p: &Palette) -> impl IntoElement {
     let (icon, kind, detail, mono) = tool_parts(tool, input);
-    // the tool's own icon at rest; while it isn't done, what state it's in.
-    let lead = match status {
-        ToolStatus::Ok => div()
+    // the tool's own icon, tinted while it runs: the one moving dot is the
+    // working line's, by the message box, so a running tool doesn't add another.
+    let own = |ink: Hsla| {
+        div()
             .size(px(15.))
             .flex_shrink_0()
             .flex()
             .items_center()
             .justify_center()
-            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(15.)).text_color(p.secondary))
-            .into_any_element(),
-        ToolStatus::Pending | ToolStatus::Running => mark(Mark::Working(p.blocked)).into_any_element(),
+            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(15.)).text_color(ink))
+            .into_any_element()
+    };
+    let lead = match status {
+        ToolStatus::Ok => own(p.secondary),
+        ToolStatus::Pending | ToolStatus::Running => own(p.blocked),
         ToolStatus::AwaitingPermission => mark(Mark::Diamond(info_blue(p))).into_any_element(),
         ToolStatus::Failed => mark(Mark::Cross(p.failed)).into_any_element(),
         ToolStatus::Denied | ToolStatus::Aborted | ToolStatus::Unknown => mark(Mark::Ring(p.tertiary)).into_any_element(),

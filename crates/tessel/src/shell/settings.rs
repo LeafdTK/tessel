@@ -304,7 +304,7 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Thinking",
-                "What the agent thinks before it answers, folded once it's done.",
+                "What the agent thinks before it answers, folded. Click one to read it.",
                 self.segmented("thoughts", &[("shown", "Show"), ("hidden", "Hide")], if t.thoughts == Show::Hidden { "hidden" } else { "shown" }, cx, |this, v, w, cx| {
                     this.edit_ui(|f| Self::set_in(f, "transcript", "thoughts", Some(json!(v))), w, cx)
                 }),

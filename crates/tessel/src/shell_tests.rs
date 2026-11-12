@@ -939,6 +939,20 @@ fn a_finished_thought_is_folded_and_opens_on_a_click(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_thought_being_written_is_folded_too_and_opens_on_a_click(cx: &mut TestAppContext) {
+    let busy = session(1, "Fix login", RunState::Working, None);
+    let mut rig = Rig::with_sessions(cx, busy.clone(), vec![]);
+    let thought = Item {
+        id: ItemId::from("th1"), parent: None, seq: 1, order: 1, created_ms: 0,
+        body: ItemBody::Thinking { text: "First I will read the test.\n\nThen I will run it".into(), streaming: true },
+    };
+    rig.feed(cx, vec![snapshot_of(busy, vec![thought], vec![])]);
+    assert!(rig.shell.read_with(cx, |s, _| !s.thought_is_open(&ItemId::from("th1"))), "folded while it's written");
+    rig.click(cx, eid("thought-th1"));
+    assert!(rig.shell.read_with(cx, |s, _| s.thought_is_open(&ItemId::from("th1"))), "and opens on a click, before it's done");
+}
+
+#[gpui_kit::test]
 fn subagents_show_under_their_session_and_take_you_to_it(cx: &mut TestAppContext) {
     let mut rig = Rig::new(cx);
     let mut busy = session(1, "Refactor auth", RunState::Working, None);
