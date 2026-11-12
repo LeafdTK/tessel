@@ -2343,3 +2343,25 @@ fn work_ships_by_pull_request_or_straight_into_main_and_conflicts_go_to_the_agen
     rig.feed(cx, vec![UiEvent::Answer { tag: "ship", result: Ok(Response::Shipped { said: "Opened a pull request into main.".into(), url: Some("https://github.com/o/r/pull/7".into()) }) }]);
     assert!(rig.exists(cx, "shipped-open"), "with its link");
 }
+
+#[gpui_kit::test]
+fn a_turns_changes_can_be_taken_back_and_that_undone(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    let it = |id: &str, seq: u64, body: ItemBody| Item { id: ItemId::from(id), parent: None, seq, order: seq, created_ms: 0, body };
+    let turn = ItemBody::Turn { started_ms: 0, finished_ms: 1, duration_ms: None, cost_usd: None, model: None, fast: false, usage: None, files: vec![] };
+    rig.feed(cx, vec![snapshot_of(a.clone(), vec![it("u1", 1, ItemBody::User { text: "hi".into(), attachments: vec![] }), it("turn/2", 2, turn)], vec![])]);
+    rig.asked();
+    rig.click(cx, "turn-turn/2-more");
+    rig.click(cx, "turn-rewind");
+    let rewind = |rig: &mut Rig| {
+        rig.asked().into_iter().find_map(|c| match c {
+            Cmd::Ask { tag: "rewind", req: tessel_proto::Request::Rewind { session, turn } } => Some((session, turn)),
+            _ => None,
+        })
+    };
+    assert_eq!(rewind(&mut rig), Some((a.id, Some(ItemId::from("turn/2")))));
+    rig.feed(cx, vec![UiEvent::Answer { tag: "rewind", result: Ok(Response::Shipped { said: "The files are back as they were before that turn.".into(), url: None }) }]);
+    rig.click(cx, "shipped-undo");
+    assert_eq!(rewind(&mut rig), Some((a.id, None)), "and going back is undone");
+}

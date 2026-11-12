@@ -196,6 +196,8 @@ pub struct Shell {
     /// a ship step under way, and what the last one did.
     pub(crate) shipping: bool,
     pub(crate) shipped: Option<Result<(String, Option<String>), String>>,
+    /// the files were just put back to before a turn: the result line offers to undo it.
+    pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
     pub(crate) draft_append: Option<String>,
     /// Settings → Scripts, while it's showing.
@@ -632,6 +634,7 @@ impl Shell {
             draft_append: None,
             shipping: false,
             shipped: None,
+            rewound: false,
             desktop_slide: Spring::unit(0.0),
             swipe: (0.0, false, None),
             pane_zoom: None,
@@ -934,6 +937,7 @@ impl Shell {
             }
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
+            UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
             ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),
             UiEvent::Answer { .. } => {}
@@ -2065,6 +2069,7 @@ impl Shell {
     /// what can be done from the end of a turn: carry the conversation on elsewhere.
     fn turn_menu(&self, id: &ItemId, me: &Entity<Self>) -> AnyElement {
         let me = me.downgrade();
+        let turn = id.clone();
         gpui_kit::component::popover::Popover::new(SharedString::from(format!("turn-{id}-menu")))
             .p_0()
             .anchor(Anchor::TopLeft)
@@ -2084,6 +2089,14 @@ impl Shell {
                     .w(px(240.))
                     .child(theme::float_item(&p, "turn-fork-tab", Some("message-square-plus"), "Fork to new tab", Some("Same workspace, the conversation so far"), false).test_support().on_click(fork(false)))
                     .child(theme::float_item(&p, "turn-fork-workspace", Some("git-fork"), "Fork to new workspace", Some("A new branch from here, the conversation so far"), false).test_support().on_click(fork(true)))
+                    .child(theme::float_sep(&p))
+                    .child(theme::float_item(&p, "turn-rewind", Some("undo-2"), "Go back to before this turn", Some("The files as they were; the chat stays"), false).test_support().on_click({
+                        let (me, popover, turn) = (me.clone(), popover.clone(), turn.clone());
+                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                            popover.update(cx, |st, cx| st.dismiss(window, cx));
+                            let _ = me.update(cx, |this, cx| this.rewind(Some(turn.clone()), cx));
+                        }
+                    }))
                     .into_any_element()
             })
             .into_any_element()

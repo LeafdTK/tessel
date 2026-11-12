@@ -179,6 +179,13 @@ pub enum Request {
         session: SessionId,
         step: crate::workspace::ShipStep,
     },
+    /// put a session's files back as they were before one of its turns (a
+    /// `Turn` item); or, with no turn, take back the last time that was done.
+    Rewind {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn: Option<crate::ItemId>,
+    },
     /// do something to a session's page (see `BrowserAct`). `agent`: the
     /// agent did it, so watchers are shown.
     Browser {

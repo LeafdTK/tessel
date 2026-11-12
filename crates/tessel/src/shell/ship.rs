@@ -39,6 +39,22 @@ impl Shell {
         self.workspace_touched();
     }
 
+    /// put the files back to before a turn; none: take that back.
+    pub(crate) fn rewind(&mut self, turn: Option<tessel_proto::ItemId>, cx: &mut Context<Self>) {
+        let Some(session) = self.model.open.as_ref().map(|o| o.id) else { return };
+        self.shipping = true;
+        self.shipped = None;
+        self.rewound = turn.is_some();
+        self.cmd(Cmd::Ask { tag: "rewind", req: Request::Rewind { session, turn } });
+        cx.notify();
+    }
+
+    pub(crate) fn rewind_answer(&mut self, result: Result<tessel_proto::Response, String>) {
+        let went_back = self.rewound;
+        self.ship_answer(result);
+        self.rewound = went_back && matches!(self.shipped, Some(Ok(_)));
+    }
+
     /// a conflict, for the agent to sort out: what to do, in so many words.
     fn resolve_with_agent(&mut self, said: &str, cx: &mut Context<Self>) {
         let Some(session) = self.model.open.as_ref().map(|o| o.id) else { return };
@@ -73,6 +89,9 @@ impl Shell {
                 .items_center()
                 .child(div().flex_1().min_w_0().set(Type::Callout).text_color(ink).child(text.clone()))
                 .when_some(url, |d, url| d.child(Button::new("shipped-open").ghost().small().label("Open").icon(Icon::empty().path("icons/arrow-up-right.svg")).on_click(move |_, _, cx| cx.open_url(&url))))
+                .when(self.rewound, |d| {
+                    d.child(Button::new("shipped-undo").outline().small().label("Undo").on_click(cx.listener(|this, _, _, cx| this.rewind(None, cx))))
+                })
                 .when(conflict, |d| {
                     d.child(Button::new("shipped-agent").outline().small().label("Have the agent resolve it").on_click(cx.listener(move |this, _, _, cx| this.resolve_with_agent(&text, cx))))
                 })

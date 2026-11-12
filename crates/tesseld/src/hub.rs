@@ -580,6 +580,10 @@ impl Hub {
                     }
                     self.store.delete(session);
                     self.browser_watch.remove(&session);
+                    {
+                        let cwd = live.state.meta.cwd.clone();
+                        tokio::spawn(async move { crate::checkpoint::forget(Path::new(&cwd), session).await });
+                    }
                     let b = self.browser.clone();
                     tokio::spawn(async move { b.close(session).await });
                     let dir = self.cfg.paths.session_dir(&session);
@@ -854,6 +858,23 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 return self.in_workdir(client, id, session, move |dir| async move {
                     let scripts = tokio::task::spawn_blocking(move || crate::setup::load(&dir, std::path::Path::new(&root))).await.unwrap_or_default();
                     Ok(Response::Scripts { scripts, port })
+                });
+            }
+            Request::Rewind { session, turn } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let started = match &turn {
+                    None => None,
+                    Some(id) => match live.state.item(id).map(|i| &i.body) {
+                        Some(tessel_proto::ItemBody::Turn { started_ms, .. }) => Some(*started_ms),
+                        _ => return Some(Err(RpcError::new(ErrorCode::NotFound, format!("{id} isn't a turn of this session")))),
+                    },
+                };
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let r = match started {
+                        Some(ms) => crate::checkpoint::before(&dir, session, ms).await,
+                        None => crate::checkpoint::undo(&dir, session).await,
+                    };
+                    r.map(|said| Response::Shipped { said, url: None }).map_err(|e| RpcError::new(ErrorCode::Invalid, e))
                 });
             }
             Request::Ship { session, step } => {
@@ -1261,6 +1282,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if let Some(bad) = attachments.iter().find(|a| !a.is_supported()) {
             let why = format!("{} can't be attached ({}). images and pdfs can; for anything else, mention its path", bad.name, bad.media_type);
             return Err(RpcError::new(ErrorCode::Invalid, why));
+        }
+        // the files as they are before this message, so its turn can be taken back.
+        if let Some(cwd) = self.sessions.get(&session).map(|l| l.state.meta.cwd.clone()) {
+            let at = now_ms();
+            tokio::spawn(async move {
+                let _ = crate::checkpoint::take(Path::new(&cwd), session, at).await;
+            });
         }
         // a chat started empty (a new tab) is called what you first say to it.
         if self.sessions.get(&session).is_some_and(|l| l.state.meta.goal == "untitled") {
