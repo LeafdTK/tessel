@@ -120,6 +120,11 @@ pub static COMMANDS: &[Spec] = &[
     c("workspace.setup", "Run the workspace's setup again", "rotate-ccw", None, "{}", ""),
     c("workspace.write_scripts", "Set up scripts with an agent", "sparkles", None, "{}", "a new chat that writes .tessel/settings.toml"),
     q("workspace.scripts", "The workspace's scripts and ports", ""),
+    // shipping the work
+    c("ship.pr", "Create a pull request", "git-pull-request", None, "{}", "draft?: true for a draft"),
+    c("ship.merge", "Merge the pull request", "git-merge", None, "{}", "rebase?: true to rebase instead of squash"),
+    c("ship.update", "Update from main", "refresh-cw", None, "{}", ""),
+    c("ship.into_main", "Squash into main", "git-commit-horizontal", None, "{}", "push?: true to push main too; rebase?: true to keep every commit"),
     // the browser
     c("browser.open", "Open the browser", "globe", None, "{}", "url?: where to go (the workspace's server if not given)"),
     c("browser.pick", "Point at part of the page", "mouse-pointer-click", None, "{}", ""),

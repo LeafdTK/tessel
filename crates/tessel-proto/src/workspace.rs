@@ -175,3 +175,34 @@ pub struct PrStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
+
+/// a step towards getting a workspace's work into the main branch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum ShipStep {
+    /// push the branch to `origin`.
+    Push,
+    /// push, then open a pull request into the main branch.
+    PullRequest {
+        title: String,
+        #[serde(default)]
+        body: String,
+        #[serde(default)]
+        draft: bool,
+    },
+    /// merge the open pull request: squashed into one commit, or rebased.
+    MergePullRequest { squash: bool },
+    /// replay the branch on the main branch as it is on `origin` now. on a
+    /// conflict nothing is changed, and the answer names the files.
+    Update,
+    /// no pull request: put the branch on the main branch here (rebased, and
+    /// squashed into one commit with `message` if `squash`), moving the main
+    /// checkout forward to it; `push` sends the main branch to `origin` too.
+    MergeIntoMain {
+        squash: bool,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        push: bool,
+    },
+}

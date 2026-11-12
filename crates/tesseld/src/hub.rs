@@ -856,6 +856,17 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     Ok(Response::Scripts { scripts, port })
                 });
             }
+            Request::Ship { session, step } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let root = live.state.meta.worktree.as_ref().map_or_else(|| live.state.meta.cwd.clone(), |w| w.repo.clone());
+                let goal = live.state.meta.goal.clone();
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    crate::ship::ship(&dir, std::path::Path::new(&root), &goal, step)
+                        .await
+                        .map(|(said, url)| Response::Shipped { said, url })
+                        .map_err(|e| RpcError::new(ErrorCode::Invalid, e))
+                });
+            }
             Request::Browser { session, act, agent } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 let cwd = live.state.meta.cwd.clone();

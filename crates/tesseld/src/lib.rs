@@ -10,6 +10,7 @@ pub mod paths;
 pub mod reducer;
 pub mod server;
 pub mod setup;
+pub mod ship;
 pub mod store;
 pub mod term;
 pub mod workspace;

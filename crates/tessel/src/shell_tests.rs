@@ -2313,3 +2313,33 @@ fn the_browser_pane_shows_the_chats_page_and_a_pick_goes_in_your_message(cx: &mu
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "browser.install", .. })));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[gpui_kit::test]
+fn work_ships_by_pull_request_or_straight_into_main_and_conflicts_go_to_the_agent(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    let shipped = |rig: &mut Rig| {
+        rig.asked().into_iter().find_map(|c| match c {
+            Cmd::Ask { tag: "ship", req: tessel_proto::Request::Ship { session, step } } => Some((session, step)),
+            _ => None,
+        })
+    };
+    rig.click(cx, "ship");
+    rig.click(cx, "ship-main");
+    assert_eq!(shipped(&mut rig), Some((a.id, tessel_proto::ShipStep::MergeIntoMain { squash: true, message: "Fix login".into(), push: false })), "one commit, named for the work");
+    assert!(rig.exists(cx, "shipped"), "it says it's working on it");
+
+    // a conflict: said, and one click hands it to the agent.
+    rig.feed(cx, vec![UiEvent::Answer { tag: "ship", result: Err("Conflicts in src/login.rs. Nothing was changed.".into()) }]);
+    rig.click(cx, "shipped-agent");
+    match rig.asked().iter().find(|c| matches!(c, Cmd::Send { .. })) {
+        Some(Cmd::Send { session, text, .. }) => assert!(*session == a.id && text.contains("src/login.rs") && text.contains("rebase")),
+        other => panic!("{other:?}"),
+    }
+
+    // a pull request, from the palette's command too.
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("ship.pr", &serde_json::json!({"draft": true}), window, cx))).unwrap().unwrap();
+    assert!(matches!(shipped(&mut rig), Some((_, tessel_proto::ShipStep::PullRequest { draft: true, .. }))));
+    rig.feed(cx, vec![UiEvent::Answer { tag: "ship", result: Ok(Response::Shipped { said: "Opened a pull request into main.".into(), url: Some("https://github.com/o/r/pull/7".into()) }) }]);
+    assert!(rig.exists(cx, "shipped-open"), "with its link");
+}

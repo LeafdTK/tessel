@@ -35,6 +35,18 @@ impl Shell {
                 self.open_settings(cx);
                 done
             }
+            "ship.pr" | "ship.merge" | "ship.update" | "ship.into_main" => {
+                let goal = self.model.open_summary().map(|s| s.goal.clone()).ok_or("open a chat first")?;
+                let yes = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
+                let step = match cmd {
+                    "ship.pr" => tessel_proto::ShipStep::PullRequest { title: goal, body: String::new(), draft: yes("draft") },
+                    "ship.merge" => tessel_proto::ShipStep::MergePullRequest { squash: !yes("rebase") },
+                    "ship.update" => tessel_proto::ShipStep::Update,
+                    _ => tessel_proto::ShipStep::MergeIntoMain { squash: !yes("rebase"), message: goal, push: yes("push") },
+                };
+                self.ship(step, cx);
+                done
+            }
             "browser.open" => {
                 let session = self.model.open.as_ref().map(|o| o.id).ok_or("open a chat first: the browser is the chat's")?;
                 self.show_browser(window, cx);

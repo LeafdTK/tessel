@@ -628,6 +628,7 @@ impl Shell {
                 // the workspace's scripts: the dev server a click away.
                 if !self.views.contains_key(pane_id) {
                     out.extend(self.run_button(cx));
+                    out.extend(self.ship_button(cx));
                 }
                 out.push(Button::new("toolbar-overview").ghost().small().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());
                 if !self.show_new && self.model.open_summary().is_some() && self.has_pane("inspector") {
@@ -777,6 +778,7 @@ impl Shell {
             .size_full()
             .children(self.workspace_tabs_el(cx))
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
+            .children(self.shipped_el(cx))
             .child(div().flex_1().min_h_0().relative().child(self.transcript_el(cx).size_full()).child(self.message_rail(cx)))
             .child(h_flex().justify_center().children(self.prompts_el(cx).map(|d| column().child(d))))
             .child(h_flex().justify_center().pb_4().pt_1().child(column().child(composer)))

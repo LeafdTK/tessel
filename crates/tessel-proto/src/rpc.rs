@@ -173,6 +173,12 @@ pub enum Request {
     Scripts {
         session: SessionId,
     },
+    /// a step towards the main branch for a session's work: push, pull
+    /// request, merge, update, or straight into main.
+    Ship {
+        session: SessionId,
+        step: crate::workspace::ShipStep,
+    },
     /// do something to a session's page (see `BrowserAct`). `agent`: the
     /// agent did it, so watchers are shown.
     Browser {
@@ -556,6 +562,12 @@ pub enum Response {
         scripts: WorkspaceScripts,
         /// the first of the ten ports the workspace has (`$TESSEL_PORT`).
         port: u16,
+    },
+    /// what a ship step did, in words, and a link if it made one (a pull request).
+    Shipped {
+        said: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
     },
     Browser {
         state: crate::BrowserState,

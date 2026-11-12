@@ -421,6 +421,10 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `workspace.setup` | Run the workspace's setup again |  |  |
 | `workspace.write_scripts` | Set up scripts with an agent |  | a new chat that writes .tessel/settings.toml |
 | `workspace.scripts` | The workspace's scripts and ports |  |  |
+| `ship.pr` | Create a pull request |  | draft?: true for a draft |
+| `ship.merge` | Merge the pull request |  | rebase?: true to rebase instead of squash |
+| `ship.update` | Update from main |  |  |
+| `ship.into_main` | Squash into main |  | push?: true to push main too; rebase?: true to keep every commit |
 | `browser.open` | Open the browser |  | url?: where to go (the workspace's server if not given) |
 | `browser.pick` | Point at part of the page |  |  |
 | `desktop.next` | Next desktop | ⌥ ⌘ → |  |

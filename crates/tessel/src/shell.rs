@@ -27,6 +27,7 @@ mod panes;
 mod projects;
 mod settings;
 mod scripts;
+mod ship;
 mod sidebar;
 mod surface;
 mod terminal;
@@ -192,6 +193,9 @@ pub struct Shell {
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
     pub(crate) browser_moved: Option<Instant>,
+    /// a ship step under way, and what the last one did.
+    pub(crate) shipping: bool,
+    pub(crate) shipped: Option<Result<(String, Option<String>), String>>,
     /// words to add to the message box at the next frame (a pick from the page).
     pub(crate) draft_append: Option<String>,
     /// Settings → Scripts, while it's showing.
@@ -626,6 +630,8 @@ impl Shell {
             browser_show_next: false,
             browser_moved: None,
             draft_append: None,
+            shipping: false,
+            shipped: None,
             desktop_slide: Spring::unit(0.0),
             swipe: (0.0, false, None),
             pane_zoom: None,
@@ -927,6 +933,7 @@ impl Shell {
                 }
             }
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
+            UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
             ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),
             UiEvent::Answer { .. } => {}
