@@ -46,6 +46,9 @@ pub struct Ui {
     pub theme: ThemeSpec,
     /// drawn exactly as written: no scales, no contrast fixes, no warnings.
     pub freestyle: bool,
+    /// the agents at work, drawn around the camera notch. none: on where
+    /// there is a notch, off where there isn't.
+    pub notch: Option<bool>,
     /// what was adjusted to fit tessel's scales, and what still reads badly.
     pub report: harmony::Report,
 }
@@ -106,8 +109,9 @@ pub fn parse(text: &str) -> Result<Ui, String> {
 
 fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
     let obj = v.as_object().ok_or("ui.json must be an object with \"root\" and/or \"preset\"")?;
-    keys(obj, "ui.json", &["$schema", "preset", "theme", "root", "freestyle", "transcript", "sessions"])?;
+    keys(obj, "ui.json", &["$schema", "preset", "theme", "root", "freestyle", "transcript", "sessions", "notch"])?;
     let freestyle = obj.get("freestyle").map(|v| flag(v, "freestyle")).transpose()?.unwrap_or(false);
+    let notch = obj.get("notch").map(|v| flag(v, "notch")).transpose()?;
     let base = match obj.get("preset") {
         None => None,
         Some(Value::String(name)) if depth < 4 => {
@@ -128,6 +132,7 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
         (None, Some(b)) => b.root.clone(),
         (None, None) => return Err("a preset needs a \"root\" node".into()),
     };
+    let base_notch = base.as_ref().map(|b| b.notch);
     let mut theme = base.map(|b| b.theme).unwrap_or_default();
     if let Some(t) = obj.get("theme") {
         theme.merge(ThemeSpec::parse(t)?);
@@ -177,7 +182,8 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
             return Err(format!("{key}: this layout has no \"{}\" for these options to apply to", kind.name()));
         }
     }
-    let mut ui = Ui { root, theme, freestyle, report: harmony::Report::default() };
+    let notch = notch.or(base_notch.flatten());
+    let mut ui = Ui { root, theme, freestyle, notch, report: harmony::Report::default() };
     check(&ui)?;
     ui.report = harmony::harmonize(&mut ui);
     Ok(ui)
@@ -1534,6 +1540,15 @@ mod tests {
         assert_eq!(ui.find(Kind::Sessions).unwrap().props.trace, Some(false));
         let e = parse(r#"{"transcript": {"side": "right"}}"#).unwrap_err();
         assert!(e.contains("transcript") && e.contains("user"), "{e}");
+    }
+
+    #[test]
+    fn the_notch_follows_the_screen_unless_set() {
+        assert_eq!(Ui::default_layout().notch, None, "decided by whether the screen has one");
+        assert_eq!(parse(r#"{"theme": "orchard"}"#).unwrap().notch, None);
+        assert_eq!(parse(r#"{"notch": false}"#).unwrap().notch, Some(false));
+        assert_eq!(parse(r#"{"notch": true}"#).unwrap().notch, Some(true));
+        assert!(parse(r#"{"notch": "off"}"#).unwrap_err().contains("notch"));
     }
 
     #[test]

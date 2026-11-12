@@ -37,6 +37,7 @@ quickest way to see how the pieces fit.
 | `freestyle` | `true` turns off every guardrail below: drawn exactly as written           |
 | `transcript` | the transcript's options (`user`, `thoughts`, `tools`), wherever the layout put it |
 | `sessions` | the session list's options (`trace`)                                          |
+| `notch` | the agents drawn around the camera notch. on where there is one; `false` hides it, `true` shows it on a Mac without one, mid menu bar |
 
 A file with only a `"theme"` restyles the default layout. A file with `"root"` is your
 own layout. `transcript` and `sessions` set the
@@ -411,6 +412,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
 | `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
+| `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |

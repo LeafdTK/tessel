@@ -8,6 +8,7 @@ pub mod commands;
 pub mod graph;
 pub mod model;
 pub mod motion;
+pub mod notch;
 pub mod rich;
 pub mod shell;
 #[cfg(test)]
@@ -226,8 +227,9 @@ pub fn run(mut launch: Launch) {
 
         let (bridge, events) = bridge::start(home.clone());
         let options = window_options(cx);
-        let (_, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(bridge, events, launch, window, cx)))
+        let (main, shell) = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Shell::new(bridge, events, launch, window, cx)))
             .expect("failed to open the window");
+        notch::Notch::open(&shell, main, cx);
         bind_actions(shell.downgrade(), cx);
         set_menus(cx);
         cx.activate(true);

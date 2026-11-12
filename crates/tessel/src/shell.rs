@@ -301,7 +301,7 @@ pub struct Shell {
 #[cfg(feature = "rich")]
 type Drawn = Result<(Arc<Image>, f32, f32), String>;
 
-fn now_ms() -> Millis {
+pub(crate) fn now_ms() -> Millis {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as Millis).unwrap_or(0)
 }
 
@@ -1009,6 +1009,12 @@ impl Shell {
     }
 
     /// stop the open session's agent. the mac "cancel" key, ⌘-period.
+    /// stop whatever this session's agent is doing, open or not.
+    pub(crate) fn interrupt(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        self.cmd(Cmd::Interrupt(id));
+        cx.notify();
+    }
+
     pub fn stop_agent(&mut self, cx: &mut Context<Self>) {
         if let Some(s) = self.model.open_summary().filter(|s| s.run_state.is_busy()) {
             self.cmd(Cmd::Interrupt(s.id));
@@ -2300,7 +2306,7 @@ fn row_lines(s: &SessionSummary, in_queue: bool, now: Millis) -> (String, Option
 /// the trace: how much the agent produced in each of the last sixty seconds'
 /// two-second slices, oldest on the left. drawn as one element that paints
 /// its bars, so thirty of them cost nothing to lay out.
-fn trace(values: &[u16], color: Hsla, width: f32, height: f32) -> impl IntoElement {
+pub(crate) fn trace(values: &[u16], color: Hsla, width: f32, height: f32) -> impl IntoElement {
     let values = values.to_vec();
     // a quiet agent's few bytes must not be scaled up to look busy.
     let scale = f32::from(values.iter().copied().max().unwrap_or(0)).max(240.0);
@@ -2323,7 +2329,7 @@ fn trace(values: &[u16], color: Hsla, width: f32, height: f32) -> impl IntoEleme
     .flex_shrink_0()
 }
 
-fn state_word(s: &RunState) -> &'static str {
+pub(crate) fn state_word(s: &RunState) -> &'static str {
     match s {
         RunState::Starting => "Starting",
         RunState::Working => "Working",

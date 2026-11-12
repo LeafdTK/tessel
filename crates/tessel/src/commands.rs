@@ -114,6 +114,8 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, "backdrop: none|dither|space"),
     c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, ""),
     c("theme.backdrop", "Backdrop: Space", "orbit", None, r#"{"backdrop":"space"}"#, ""),
+    c("app.notch", "Notch: Show agents", "panel-top", None, r#"{"show":true}"#, "show: true|false. the agents at work, around the camera"),
+    c("app.notch", "Notch: Hide", "panel-top-close", None, r#"{"show":false}"#, ""),
     c("backdrop.next", "Next space photo", "refresh-cw", None, "{}", "another photograph from NASA's library, for the Space backdrop"),
     c("terminal.look", "Terminal colours: Theme", "square-terminal", None, r#"{"colors":"theme"}"#, "size?: 9 to 24 points; colors?: theme|ink|paper|midnight"),
     c("terminal.look", "Terminal colours: Ink", "square-terminal", None, r#"{"colors":"ink"}"#, ""),

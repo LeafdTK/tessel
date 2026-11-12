@@ -7480,6 +7480,8 @@ dependencies = [
  "chrono",
  "gpui-kit",
  "image",
+ "objc2 0.6.5",
+ "raw-window-handle",
  "serde_json",
  "tessel-client",
  "tessel-proto",

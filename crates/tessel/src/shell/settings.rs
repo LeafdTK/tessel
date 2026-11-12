@@ -426,6 +426,24 @@ impl Shell {
             },
         ));
 
+        let notched = crate::notch::has_notch();
+        let notch_about = if notched {
+            "The agents at work, around the camera. Hover it to see each one; click one to go to it."
+        } else {
+            "This screen has no notch, so it's off. Turned on, it hangs from the middle of the menu bar."
+        };
+        let agents_rows = agents_rows.child(self.setting_row("In the notch", notch_about, {
+            let me = cx.entity().downgrade();
+            Switch::new("notch").checked(self.ui.notch.unwrap_or(notched)).on_click(move |on, window, cx| {
+                let on = *on;
+                let _ = me.update(cx, |this, cx| {
+                    if let Err(e) = this.exec("app.notch", &json!({"show": on}), window, cx) {
+                        this.error = Some(e);
+                    }
+                });
+            })
+        }));
+
         let current = self.settings_section;
         let (title, rows) = match current {
             "conversation" => ("Conversation", conversation_rows),

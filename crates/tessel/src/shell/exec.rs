@@ -199,6 +199,23 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);
                 done
             }
+            "app.notch" => {
+                let show = args.get("show").and_then(|v| v.as_bool()).ok_or("show: true or false")?;
+                // what the screen would choose isn't written down, so it keeps following the screen.
+                let auto = crate::notch::has_notch();
+                self.edit_ui(
+                    |f| {
+                        if show == auto {
+                            f.remove("notch");
+                        } else {
+                            f.insert("notch".into(), json!(show));
+                        }
+                    },
+                    window,
+                    cx,
+                );
+                done
+            }
             "theme.backdrop" => {
                 let b = arg(args, "backdrop").ok_or("backdrop: none, dither or space")?;
                 if !matches!(b, "none" | "dither" | "space") {

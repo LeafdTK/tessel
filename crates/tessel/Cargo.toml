@@ -35,3 +35,9 @@ tessel-rich = { path = "../tessel-rich", optional = true }
 [features]
 default = ["rich"]
 rich = ["dep:tessel-rich"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# the notch: how big it is, and a window over the menu bar around it. both are
+# already in the build through gpui, with these same features.
+objc2 = "0.6"
+raw-window-handle = "0.6"
