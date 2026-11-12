@@ -13,8 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 fn main() -> anyhow::Result<()> {
-    let mut args = std::env::args().skip(1);
-    while let Some(a) = args.next() {
+    if let Some(a) = std::env::args().nth(1) {
         match a.as_str() {
             "--version" | "-V" => {
                 println!("tesseld {} (protocol {}.{})", env!("CARGO_PKG_VERSION"), tessel_proto::PROTO_MAJOR, tessel_proto::PROTO_MINOR);

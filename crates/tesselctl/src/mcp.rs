@@ -209,7 +209,7 @@ impl Server {
                 for c in all.as_array().into_iter().flatten() {
                     let id = c["id"].as_str().unwrap_or("");
                     if seen.insert(id.to_owned()) {
-                        out.push_str(&format!("{id}: {}{}\n", c["title"].as_str().unwrap_or(""), c["args"].as_str().filter(|a| !a.is_empty()).map(|a| format!(" — {a}")).unwrap_or_default()));
+                        out.push_str(&format!("{id}: {}{}\n", c["title"].as_str().unwrap_or(""), c["args"].as_str().filter(|a| !a.is_empty()).map(|a| format!(": {a}")).unwrap_or_default()));
                     }
                 }
                 out

@@ -1049,7 +1049,7 @@ impl Shell {
                     .small()
                     .when(armed, |b| b.danger())
                     .when(!armed, |b| b.outline())
-                    .label(if armed { "Delete — Press Again" } else { "Delete Session" })
+                    .label(if armed { "Click Again to Delete" } else { "Delete Session" })
                     .on_click(cx.listener(move |this, _, _, cx| this.delete(sid, cx))),
             ),
         )

@@ -276,10 +276,12 @@ pub async fn git_diff_index(dir: &Path, rel: &str, staged: bool) -> Result<FileD
     let out = run("git", dir, &args, QUICK).await.map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
     let mut unified = String::from_utf8_lossy(&out.stdout).into_owned();
     // a file git doesn't know yet is all new.
-    if unified.is_empty() && !staged && diff.old.is_none() {
-        if let Ok(o) = run("git", dir, &["diff", "--no-index", "--no-color", "--", "/dev/null", rel], QUICK).await {
-            unified = String::from_utf8_lossy(&o.stdout).into_owned();
-        }
+    if unified.is_empty()
+        && !staged
+        && diff.old.is_none()
+        && let Ok(o) = run("git", dir, &["diff", "--no-index", "--no-color", "--", "/dev/null", rel], QUICK).await
+    {
+        unified = String::from_utf8_lossy(&o.stdout).into_owned();
     }
     diff.unified = unified;
     Ok(diff)
@@ -945,13 +947,13 @@ pub async fn stage_lines(dir: &Path, path: &str, start: u32, end: u32, unstage: 
     let in_range = |h: &Hunk| {
         if old_side {
             // removed lines, picked where they were.
-            return h.old_len > 0 && h.old_start <= end && h.old_start + h.old_len - 1 >= start;
+            return h.old_len > 0 && h.old_start <= end && h.old_start + h.old_len > start;
         }
         if h.new_len == 0 {
             // a deletion sits after line `new_start`.
             h.new_start + 1 >= start && h.new_start <= end
         } else {
-            h.new_start <= end && h.new_start + h.new_len - 1 >= start
+            h.new_start <= end && h.new_start + h.new_len > start
         }
     };
     let has_head = git(dir, &["rev-parse", "--verify", "-q", "HEAD"]).await.is_some();

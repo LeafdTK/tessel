@@ -711,10 +711,7 @@ impl Hub {
                         }
                         GitUndo::Commit { sha, .. } => workspace::uncommit(&dir, sha).await,
                     };
-                    if let Err(e) = result {
-                        // what couldn't be undone stays undoable no more: something else moved.
-                        return Err(e);
-                    }
+                    result?;
                     Ok(Response::WorkTree { tree: tree_with_undo(&dir, &undo, session).await })
                 });
             }
@@ -922,7 +919,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 let targets: Vec<ClientId> = self
                     .clients
                     .iter()
-                    .filter(|(_, c)| c.ready && c.ui_kinds.as_ref().is_some_and(|k| k.is_empty() || k.iter().any(|k| *k == kind)))
+                    .filter(|(_, c)| c.ready && c.ui_kinds.as_ref().is_some_and(|k| k.is_empty() || k.contains(&kind)))
                     .map(|(id, _)| *id)
                     .collect();
                 for t in targets {
