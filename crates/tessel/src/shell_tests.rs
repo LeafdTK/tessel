@@ -160,7 +160,10 @@ impl Rig {
     fn asked(&mut self) -> Vec<Cmd> {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
-            out.push(c);
+            // asking whether a folder is a repository is the form's own plumbing.
+            if !matches!(c, Cmd::Ask { tag: "folder.info", .. }) {
+                out.push(c);
+            }
         }
         out
     }
@@ -1247,6 +1250,31 @@ fn a_pane_takes_whatever_share_it_is_given(cx: &mut TestAppContext) {
     assert!(exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 0.5, "dir": "height"})).is_err(), "nothing above or below it");
     assert!(exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 1.4})).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn a_new_session_gets_a_worktree_unless_its_folder_isnt_a_repository(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![session(1, "Fix login", RunState::Idle, None)])]);
+    rig.asked();
+    rig.press(cx, "cmd-n");
+    rig.click(cx, "new-prompt");
+    rig.typed(cx, "tidy up");
+    // the daemon says /work/api is a plain folder.
+    rig.feed(cx, vec![UiEvent::Answer { tag: "folder.info", result: Ok(Response::FolderInfo { git_root: None }) }]);
+    rig.click(cx, "create");
+    let asked = rig.asked();
+    let known = rig.shell.read_with(cx, |s, _| format!("{:?}", s.folder_git.borrow()));
+    assert!(matches!(asked.as_slice(), [Cmd::Create { worktree: false, .. }]), "a plain folder works in place: {asked:?} {known}");
+    // a repository: a workspace of its own, unasked.
+    rig.shell.update(cx, |s, _| {
+        s.folder_git.borrow_mut().insert("/work/api".into(), Some(true));
+    });
+    rig.press(cx, "cmd-n");
+    rig.click(cx, "new-prompt");
+    rig.typed(cx, "and again");
+    rig.click(cx, "create");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { worktree: true, .. }]));
 }
 
 #[gpui_kit::test]

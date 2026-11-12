@@ -30,6 +30,11 @@ async fn git(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, Str
 
 const QUICK: Duration = Duration::from_secs(10);
 
+/// the top of the repository holding `dir`, if it's in one.
+pub async fn repo_root(dir: &str) -> Option<String> {
+    git(Path::new(dir), &["rev-parse", "--show-toplevel"], QUICK).await.ok()
+}
+
 /// make a fresh worktree of the repo containing `cwd`, on a new branch.
 pub async fn create(cwd: &str, spec: &WorktreeSpec, root: &Path, hint: &str) -> Result<Created, RpcError> {
     let cwd = Path::new(cwd);

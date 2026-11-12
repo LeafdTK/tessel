@@ -181,7 +181,8 @@ impl Shell {
                                 .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
                                 .bg(p.fill)
                                 .child(div().flex_shrink_0().size(theme::z(15.)).flex().items_center().justify_center().child(Icon::empty().path("icons/pencil.svg").size(theme::z(15.)).text_color(p.secondary)))
-                                .child(div().flex_1().text_size(theme::z(13.5)).child(Input::new(&rename).id(SharedString::from(format!("session-{sid}-name"))).appearance(false))),
+                                // the field's own inset off: the name starts where every item's label does.
+                                .child(div().flex_1().text_size(theme::z(13.5)).child(Input::new(&rename).id(SharedString::from(format!("session-{sid}-name"))).appearance(false).px_0())),
                         )
                         .child(theme::float_sep(&p))
                         .child(theme::float_item(&p, "session-menu-finder", Some("folder-open"), "Open in Finder", None, false).on_click(act(Box::new(move |_, _, _| reveal(&f)), true)))

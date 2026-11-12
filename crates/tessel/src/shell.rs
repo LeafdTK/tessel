@@ -112,6 +112,11 @@ pub struct Shell {
     pub(crate) new_project: Option<String>,
     new_prompt: Entity<InputState>,
     new_worktree: bool,
+    /// whether a folder is in a git repository, as the daemon said; `None`
+    /// while it's being asked. a folder that isn't one can't have a worktree.
+    pub(crate) folder_git: std::cell::RefCell<HashMap<String, Option<bool>>>,
+    /// the folder last asked about: the answer doesn't name it.
+    folder_asked: std::cell::RefCell<Option<String>>,
     show_new: bool,
 
     // the layout, from ui.json, and the state it implies.
@@ -474,7 +479,10 @@ impl Shell {
             composer,
             new_project: std::env::var("TESSEL_DEFAULT_CWD").ok().filter(|d| !d.is_empty()),
             new_prompt,
-            new_worktree: false,
+            // each session in a workspace of its own, as Conductor does it, where the folder allows.
+            new_worktree: true,
+            folder_git: Default::default(),
+            folder_asked: Default::default(),
             show_new: true,
             ui: Rc::new(crate::ui::Ui::default_layout()),
             ui_path: launch.ui.clone(),
@@ -745,6 +753,16 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
+            UiEvent::Answer { tag: "folder.info", result } => {
+                if let Some(path) = self.folder_asked.borrow_mut().take() {
+                    let git = match result {
+                        Ok(tessel_proto::Response::FolderInfo { git_root }) => Some(git_root.is_some()),
+                        // an older daemon, or it couldn't look: don't stand in the way.
+                        _ => Some(true),
+                    };
+                    self.folder_git.borrow_mut().insert(path, git);
+                }
+            }
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
             UiEvent::Created => {
@@ -1027,7 +1045,8 @@ impl Shell {
             cx.notify();
             return;
         };
-        self.cmd(Cmd::Create { cwd, worktree: self.new_worktree, prompt });
+        let worktree = self.new_worktree && self.folder_is_git(&cwd) != Some(false);
+        self.cmd(Cmd::Create { cwd, worktree, prompt });
         self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
     }
 
@@ -1255,6 +1274,7 @@ impl Shell {
         let label: SharedString = format!("{}, {second}", s.goal).into();
         let group = SharedString::from(format!("session-row-{sid}"));
         let menu = self.session_menu(s, group.clone(), cx);
+        let hover_group = group.clone();
         h_flex()
             .group(group)
             .id(ElementId::from(sid.0))
@@ -1292,7 +1312,17 @@ impl Shell {
                         h_flex()
                             .gap_2()
                             .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(s.goal.clone()))
-                            .children(time.map(|t| div().flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).child(t))),
+                            // the time, and on hover the menu in its place: one slot at the
+                            // end of the first line, wherever the line below ends.
+                            .child(
+                                h_flex()
+                                    .relative()
+                                    .flex_shrink_0()
+                                    .min_w(px(24.))
+                                    .justify_end()
+                                    .children(time.map(|t| div().set(Type::Subheadline).text_color(p.secondary).group_hover(hover_group.clone(), |d| d.invisible()).child(t)))
+                                    .child(h_flex().absolute().right(px(-4.)).top(px(-4.)).bottom(px(-4.)).items_center().child(menu)),
+                            ),
                     )
                     .child(
                         h_flex()
@@ -1301,7 +1331,6 @@ impl Shell {
                             .when(self.sessions_trace && !s.trace.is_empty(), |d| d.child(trace(&s.trace, p.tertiary, 56., 11.))),
                     ),
             )
-            .child(menu)
     }
 
     fn overview_layer(&self, now: Millis, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1459,20 +1488,39 @@ impl Shell {
         self.pane_move.is_some() || self.pane_drag.is_some() || self.drag.is_some()
     }
 
+    /// whether a folder is in a git repository: asked of the daemon the first
+    /// time, `None` until it has answered.
+    pub(crate) fn folder_is_git(&self, folder: &str) -> Option<bool> {
+        if let Some(known) = self.folder_git.borrow().get(folder) {
+            return *known;
+        }
+        if self.folder_asked.borrow().is_none() {
+            *self.folder_asked.borrow_mut() = Some(folder.to_owned());
+            self.folder_git.borrow_mut().insert(folder.to_owned(), None);
+            self.cmd(Cmd::Ask { tag: "folder.info", req: tessel_proto::Request::FolderInfo { path: folder.to_owned() } });
+        }
+        None
+    }
+
     pub(crate) fn new_session_form(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
-        let worktree = self.new_worktree;
+        let folder = self.new_folder();
+        let plain = folder.as_deref().and_then(|f| self.folder_is_git(f)) == Some(false);
+        let worktree = self.new_worktree && !plain;
         let picker = self.project_picker(cx);
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
+            let disabled = set && plain;
             theme::segment(&p, id, label, on)
                 .test_support()
-                .aria_label(SharedString::from(format!("{label}{}", if on { ", selected" } else { "" })))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.new_worktree = set;
-                    cx.notify();
-                }))
+                .aria_label(SharedString::from(format!("{label}{}", if on { ", selected" } else if disabled { ", not available here" } else { "" })))
+                .when(disabled, |d| d.opacity(0.4))
+                .when(!disabled, |d| {
+                    d.on_click(cx.listener(move |this, _, _, cx| {
+                        this.new_worktree = set;
+                        cx.notify();
+                    }))
+                })
         };
-        let folder = self.new_folder();
         let card = v_flex()
             .w_full()
             .p_3()
@@ -1504,7 +1552,8 @@ impl Shell {
                 // what the choice means, inside the card: it stays readable over the backdrop.
                 .child(card.child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(match (&folder, worktree) {
                     (None, _) => "Pick a project, or open a new one, for it to work in.".to_owned(),
-                    (Some(_), true) => "Gets its own branch and folder. Your checkout is untouched.".to_owned(),
+                    (Some(f), false) if plain => format!("Works directly in {}. It isn't a git repository, so it can't have a workspace of its own.", projects::tilde(f)),
+                    (Some(_), true) => "A workspace of its own: a new branch and folder. Your checkout is untouched.".to_owned(),
                     (Some(f), false) => format!("Works directly in {}.", projects::tilde(f)),
                 }))),
         )
@@ -1582,7 +1631,7 @@ impl Shell {
             }
             ItemBody::Thinking { .. } if self.transcript_opts.thoughts == Show::Hidden => None,
             // the agent's reasoning: shown in full while it is being written,
-            // then folded to two lines that open again on a click.
+            // then folded to its one line, opening again on a click.
             ItemBody::Thinking { text, streaming } => {
                 let open = *streaming || self.thoughts_open.contains(&item.id);
                 let (me, id) = (me.clone(), item.id.clone());
@@ -1602,7 +1651,8 @@ impl Shell {
                                 .child(if *streaming { "Thinking…" } else { "Thought" })
                                 .when(!*streaming, |d| d.child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary))),
                         )
-                        .child(div().pl(px(14.)).set(Type::Callout).italic().text_color(p.secondary).when(!open, |d| d.line_clamp(2).text_ellipsis()).child(text.trim_end().to_owned()))
+                        // folded, a thought is its one line; open, all of it.
+                        .when(open, |d| d.child(div().pl(px(14.)).set(Type::Callout).italic().text_color(p.secondary).child(text.trim_end().to_owned())))
                         .into_any_element(),
                 )
             }

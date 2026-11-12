@@ -841,7 +841,7 @@ impl Shell {
                 let this = shell.read(cx);
                 let p = this.palette.get();
                 let list = theme::float_list(&p).w(px(256.)).child(theme::float_label(&p, "New pane beside this one"));
-                let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
+                let mut grid = h_flex().flex_wrap();
                 for (_, m, title, icon, _) in MODULES {
                     // the ones there's only one of are already somewhere.
                     if this.shown_elsewhere(m, None) {
@@ -889,18 +889,18 @@ impl Shell {
                 };
                 let (t1, t2, t3, z) = (trail.clone(), trail.clone(), trail.clone(), pid.clone());
                 let sep = || theme::float_sep(&p);
+                // what to do with the pane, as a row of tiles; the keys are in their tooltips.
+                let actions = h_flex()
+                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-split-right")), "columns-2", "Right", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Split right  ⌘D").build(w, cx)).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
+                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-split-down")), "rows-2", "Down", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Split down  ⇧⌘D").build(w, cx)).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
+                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-zoom")), if zoomed { "minimize-2" } else { "maximize-2" }, if zoomed { "Restore" } else { "Maximize" }, false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Maximize or restore  ⇧⌘↩").build(w, cx)).on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx)))).test_support())
+                    .child(module_tile(&p, SharedString::from(format!("pane-{pid}-close")), "x", "Close", false).tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("Close pane  ⌘W").build(w, cx)).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support());
                 let mut list = theme::float_list(&p)
                     .w(px(256.))
-                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
-                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
-                    .child(
-                        theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-zoom")), Some(if zoomed { "minimize-2" } else { "maximize-2" }), if zoomed { "Restore" } else { "Maximize" }, None, Some("⇧ ⌘ ↩"), false)
-                            .on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx))))
-                            .test_support(),
-                    )
+                    .child(actions)
                     .child(sep())
                     .child(theme::float_label(&p, "Show here"));
-                let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
+                let mut grid = h_flex().flex_wrap();
                 for (_, m, title, icon, _) in MODULES {
                     if current != Some(m) && this.shown_elsewhere(m, Some(pid.as_str())) {
                         continue;
@@ -909,9 +909,7 @@ impl Shell {
                     grid = grid.child(module_tile(&p, SharedString::from(format!("pane-{pid}-show-{}", m.name())), icon, title, current == Some(m)).on_click(act(Box::new(move |this, w, cx| this.set_pane_module(t.clone(), m, w, cx)))).test_support());
                 }
                 list = list.child(grid);
-                list.child(sep())
-                    .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-close")), Some("x"), "Close pane", None, Some("⌘ W"), false).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support())
-                    .into_any_element()
+                list.into_any_element()
             })
     }
 
@@ -1359,8 +1357,9 @@ fn module_tile(p: &theme::Palette, id: SharedString, icon: &str, title: &str, cu
     let p = *p;
     v_flex()
         .id(id)
-        .w(px(61.))
-        .h(px(52.))
+        // a quarter of the row: four across at any interface size, edge to edge.
+        .w(relative(0.25))
+        .h(theme::z(54.))
         .items_center()
         .justify_center()
         .gap(px(4.))
@@ -1368,6 +1367,6 @@ fn module_tile(p: &theme::Palette, id: SharedString, icon: &str, title: &str, cu
         .cursor_pointer()
         .when(current, |d| d.bg(p.selection))
         .when(!current, |d| d.hover(move |d| d.bg(p.hover)))
-        .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(16.)).text_color(if current { p.accent } else { p.secondary }))
-        .child(div().max_w_full().truncate().text_size(px(11.)).text_color(if current { p.label } else { p.secondary }).child(title.to_owned()))
+        .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(16.)).text_color(if current { p.accent } else { p.secondary }))
+        .child(div().max_w_full().px(px(2.)).truncate().text_size(theme::z(11.)).text_color(if current { p.label } else { p.secondary }).child(title.to_owned()))
 }

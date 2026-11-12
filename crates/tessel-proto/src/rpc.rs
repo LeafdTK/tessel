@@ -180,6 +180,11 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         index: Option<bool>,
     },
+    /// what a folder is, before there's a session in it: whether it's in a git
+    /// repository (so a session there can have a worktree of its own).
+    FolderInfo {
+        path: String,
+    },
     /// every file in the session's folder that isn't ignored, for finding by name.
     FsIndex {
         session: SessionId,
@@ -466,6 +471,10 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    FolderInfo {
+        /// the repository's top folder, when the folder is inside one.
+        git_root: Option<String>,
     },
     Paths {
         paths: Vec<String>,

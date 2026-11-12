@@ -585,6 +585,14 @@ impl Hub {
                     diff.map(|diff| Response::Diff { diff })
                 });
             }
+            Request::FolderInfo { path } => {
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let git_root = worktree::repo_root(&path).await;
+                    let _ = tx.send(HubMsg::Reply { client, id, result: Ok(Response::FolderInfo { git_root }) });
+                });
+                return None;
+            }
             Request::FsIndex { session } => {
                 return self.in_workdir(client, id, session, |dir| async move { workspace::index(&dir).await.map(|(paths, more)| Response::Paths { paths, more }) });
             }

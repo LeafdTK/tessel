@@ -298,7 +298,6 @@ impl Shell {
                 super::composer::tool_button("new-project")
                     .bg(p.fill)
                     .max_w(theme::z(280.))
-                    .tooltip(folder.as_deref().map_or_else(|| "Choose a project".to_owned(), tilde))
                     .child(
                         h_flex()
                             .min_w_0()
