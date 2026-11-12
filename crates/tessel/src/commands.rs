@@ -35,6 +35,7 @@ const fn q(id: &'static str, title: &'static str, args: &'static str) -> Spec {
 pub static COMMANDS: &[Spec] = &[
     // the window
     c("app.palette", "Command palette", "command", Some("⌘ K"), "{}", ""),
+    c("app.tour", "Take the tour", "map", None, "{}", ""),
     c("app.settings", "Settings", "settings", Some("⌘ ,"), "{}", "section?: appearance, themes, models… opens there"),
     c("app.overview", "All sessions", "layout-grid", Some("⇧ ⌘ \\"), "{}", ""),
     c("app.sidebar", "Show or hide the sidebar", "panel-left", Some("⌥ ⌘ S"), "{}", ""),

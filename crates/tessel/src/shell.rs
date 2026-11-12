@@ -29,6 +29,7 @@ mod settings;
 mod scripts;
 mod ship;
 mod sidebar;
+mod tour;
 mod surface;
 mod terminal;
 
@@ -88,6 +89,9 @@ pub struct Launch {
     /// the layout file to draw from and watch. without one the window uses
     /// the default layout and never looks at the disk (tests rely on that).
     pub ui: Option<PathBuf>,
+    /// the file that says the tour has been seen: without it, the tour starts.
+    /// none (tests): no tour unless asked for, and nothing written.
+    pub tour_seen: Option<PathBuf>,
 }
 
 /// a divider being dragged.
@@ -193,6 +197,9 @@ pub struct Shell {
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
     pub(crate) browser_moved: Option<Instant>,
+    /// the tour's step showing, and where seeing it is remembered.
+    pub(crate) tour: Option<usize>,
+    pub(crate) tour_seen: Option<PathBuf>,
     /// the account's usage limits, as the daemon last said.
     pub(crate) usage: Vec<tessel_proto::UsageWindow>,
     /// a ship step under way, and what the last one did.
@@ -636,6 +643,8 @@ impl Shell {
             draft_append: None,
             shipping: false,
             usage: Vec::new(),
+            tour: launch.tour_seen.as_ref().is_some_and(|p| !p.exists()).then_some(0),
+            tour_seen: launch.tour_seen.clone(),
             shipped: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
@@ -2487,6 +2496,7 @@ impl Render for Shell {
                 )
             })
             .when(show_overview, |d| d.child(self.overview_layer(now, cx)))
+            .children(self.tour_layer(cx))
             .when(self.palette_ui.open, |d| d.child(self.palette_layer(window, cx)))
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))

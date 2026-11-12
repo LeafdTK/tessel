@@ -2378,3 +2378,24 @@ fn the_tightest_usage_limit_shows_beside_the_message_box(cx: &mut TestAppContext
     assert_eq!(crate::shell::composer::usage_name("seven_day_opus"), "Weekly Opus limit");
     assert_eq!(crate::shell::composer::usage_name("monthly_cap"), "Monthly cap");
 }
+
+#[gpui_kit::test]
+fn the_tour_shows_once_and_can_be_taken_again(cx: &mut TestAppContext) {
+    let dir = layout_dir("tour");
+    let seen = dir.join("tour-seen");
+    let mut rig = Rig::launched(cx, Launch { tour_seen: Some(seen.clone()), ..Launch::default() });
+    rig.settle(cx);
+    assert!(rig.exists(cx, "tour-card"), "the first time, it starts by itself");
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.tour), Some(0));
+    rig.click(cx, "tour-next");
+    rig.click(cx, "tour-next");
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.tour), Some(2));
+    rig.click(cx, "tour-back");
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.tour), Some(1));
+    rig.click(cx, "tour-skip");
+    assert!(!rig.exists(cx, "tour-card") && seen.exists(), "skipped, and remembered");
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("app.tour", &serde_json::json!({}), window, cx))).unwrap().unwrap();
+    rig.settle(cx);
+    assert!(rig.exists(cx, "tour-card"), "and taken again when asked");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

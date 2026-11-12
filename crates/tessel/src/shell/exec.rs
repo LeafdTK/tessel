@@ -19,6 +19,10 @@ impl Shell {
     pub(crate) fn exec(&mut self, cmd: &str, args: &Value, window: &mut Window, cx: &mut Context<Self>) -> Result<Value, String> {
         let done = Ok(Value::Null);
         let out = match cmd {
+            "app.tour" => {
+                self.start_tour(cx);
+                done
+            }
             "app.palette" => {
                 self.open_palette(cx);
                 done

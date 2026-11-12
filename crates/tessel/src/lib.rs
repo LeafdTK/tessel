@@ -53,6 +53,7 @@ actions!(
         ToggleFast,
         AttachFiles,
         NextDesktop,
+        TakeTour,
         PrevDesktop,
         NewDesktop,
         Desktop1,
@@ -160,6 +161,7 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Command Palette…", OpenPalette),
             ],
         ),
+        menu("Help", vec![MenuItem::action("Take the Tour", TakeTour)]),
         menu(
             "Desktop",
             vec![
@@ -210,6 +212,7 @@ pub fn bind_actions(shell: WeakEntity<Shell>, cx: &mut App) {
     on::<OpenSettings>(cx, &shell, Shell::open_settings);
     on::<OpenPalette>(cx, &shell, Shell::open_palette);
     on::<MaximizePane>(cx, &shell, Shell::zoom_focused);
+    on::<TakeTour>(cx, &shell, Shell::start_tour);
     // splitting and closing panes change ui.json, which needs the window: the
     // window's root handles those (see `Shell::render`).
 }
@@ -251,6 +254,7 @@ pub fn run(mut launch: Launch) {
     let home = tessel_proto::local::home();
     write_reference(&home);
     launch.ui.get_or_insert_with(|| home.join("ui.json"));
+    launch.tour_seen.get_or_insert_with(|| home.join("tour-seen"));
     // the whole lucide catalog, not the kit's default handful: a layout may name any icon.
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
         gpui_kit::init(cx);
