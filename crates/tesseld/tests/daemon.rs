@@ -209,6 +209,20 @@ async fn nothing_works_before_hello_and_a_wrong_version_is_refused_with_a_reason
         decoder.push(&buf[..n]);
     };
     assert!(matches!(r, Envelope::Res { id: 6, err: Some(RpcError { code: ErrorCode::Invalid, .. }), .. }), "{r:?}");
+
+    // a known request with something new inside it (a newer client's browser act) is answered too,
+    // with why: an agent's tool once waited half an hour on one of these.
+    let raw = br#"{"t":"req","id":7,"req":{"method":"browser","session":"00000000-0000-0000-0000-000000000001","act":{"act":"teleport"}}}"#;
+    stream.write_all(&encode(KIND_JSON, raw).unwrap()).await.unwrap();
+    let r: Envelope = loop {
+        if let Some(f) = decoder.next_frame().unwrap() {
+            break serde_json::from_slice(&f.payload).unwrap();
+        }
+        let n = stream.read(&mut buf).await.unwrap();
+        decoder.push(&buf[..n]);
+    };
+    let Envelope::Res { id: 7, err: Some(e), .. } = r else { panic!("{r:?}") };
+    assert!(e.message.contains("older than the client"), "{}", e.message);
 }
 
 #[tokio::test]

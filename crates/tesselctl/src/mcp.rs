@@ -10,6 +10,7 @@
 use tessel_client::Client;
 use tessel_proto::surface::{KINDS, SurfaceOp};
 use tessel_proto::{Request, Response, SessionId};
+use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -149,7 +150,8 @@ impl Server {
         if let Some((_, why)) = FOR_PEOPLE.iter().find(|(c, _)| *c == cmd) {
             anyhow::bail!("{cmd} is for the person to do, not an agent: {why}. ask them if it's needed");
         }
-        let reply = self.client().await?.request(Request::UiExec { window: None, cmd: cmd.to_owned(), args }).await?;
+        // a window that doesn't answer is said to, rather than waited on for ever.
+        let reply = within(Duration::from_secs(30), "the window", self.client().await?.request(Request::UiExec { window: None, cmd: cmd.to_owned(), args })).await??;
         match reply {
             Response::UiResult { value } => Ok(value),
             other => anyhow::bail!("unexpected reply: {other:?}"),
@@ -283,7 +285,7 @@ impl Server {
             "scroll" => BrowserAct::Scroll { dx: n("dx").unwrap_or(0.0), dy: n("dy").unwrap_or(400.0), x: n("x"), y: n("y") },
             other => anyhow::bail!("tessel_browser has no op {other:?}: open, back, forward, reload, snapshot, read, screenshot, click, type, select, key or scroll"),
         };
-        let reply = self.client().await?.request(Request::Browser { session, act, agent: true }).await?;
+        let reply = within(Duration::from_secs(90), "the browser", self.client().await?.request(Request::Browser { session, act, agent: true })).await??;
         let Response::Browser { state, text, image } = reply else { anyhow::bail!("unexpected reply: {reply:?}") };
         let at = format!("{} ({})", if state.title.is_empty() { "untitled" } else { &state.title }, state.url);
         Ok(match (text, image) {
@@ -382,4 +384,10 @@ pub async fn serve() -> anyhow::Result<()> {
         out.flush().await?;
     }
     Ok(())
+}
+
+/// `fut`, or after `limit` an error saying what didn't answer: a tool call must
+/// end, so the agent can carry on (a frozen page, an older daemon).
+async fn within<T>(limit: Duration, what: &str, fut: impl std::future::Future<Output = T>) -> anyhow::Result<T> {
+    tokio::time::timeout(limit, fut).await.map_err(|_| anyhow::anyhow!("{what} didn't answer in {}s. the page may be frozen (a script that never yields), or tessel may need restarting", limit.as_secs()))
 }

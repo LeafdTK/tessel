@@ -777,9 +777,13 @@ impl Shell {
             .child(hint("@", "files"));
         // while the agent works, say so right where you're looking: orchard's
         // orbiting dot, what it's doing, and for how long.
-        let working = self.model.open_summary().filter(|s| !self.show_new && matches!(s.run_state, RunState::Working | RunState::Starting)).map(|s| {
+        let working = self.model.open_summary().filter(|s| !self.show_new && matches!(s.run_state, RunState::Working | RunState::Starting | RunState::Stalled)).map(|s| {
+            // stuck (silent, or one step taking far too long): said so, with a way out.
+            let stuck = s.run_state == RunState::Stalled;
             let what = match (&s.run_state, &s.activity) {
                 (RunState::Starting, _) => "Starting".to_owned(),
+                (RunState::Stalled, Some(a)) => format!("Looks stuck: {a}"),
+                (RunState::Stalled, None) => "Looks stuck: nothing heard for a while".to_owned(),
                 (_, Some(a)) => sentence(a),
                 _ => "Working".to_owned(),
             };
@@ -791,9 +795,19 @@ impl Shell {
                 .pb(theme::z(8.))
                 .gap(theme::z(10.))
                 .set(Type::Callout)
-                .child(live_dot(p.blocked, &p))
+                .child(live_dot(if stuck { p.failed } else { p.blocked }, &p))
                 .child(div().min_w_0().truncate().text_color(p.label).child(what))
                 .children(since.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t)))
+                .when(stuck, |d| {
+                    d.child(
+                        Button::new("working-stop")
+                            .outline()
+                            .xsmall()
+                            .label("Stop")
+                            .tooltip("Stop this turn. The conversation carries on from here")
+                            .on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))),
+                    )
+                })
         });
         let composer = v_flex().children(working).child(composer).child(hints);
         v_flex()

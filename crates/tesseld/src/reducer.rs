@@ -25,8 +25,13 @@ use tessel_proto::{TRACE_BUCKET_MS, TRACE_BUCKETS};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// a turn with nothing in flight that has been silent this long is "stalled".
-/// a running tool is never a stall, however long it takes.
 pub const STALL_MS: Millis = 120_000;
+
+/// how long a tool may run before it looks stuck. a tool server's call (tessel's
+/// own included) or a web fetch answers in seconds; a build or a test suite
+/// can take a while, so it gets an hour.
+pub const STUCK_QUICK_MS: Millis = 5 * 60_000;
+pub const STUCK_SLOW_MS: Millis = 60 * 60_000;
 
 /// tool output kept on the item. the full output is always in the raw log.
 pub const MAX_OUTPUT: usize = 48 * 1024;
@@ -317,6 +322,18 @@ impl SessionState {
         !self.open.is_empty()
     }
 
+    /// a tool still running long past what its kind takes: stuck, most likely.
+    fn overdue_tool(&self, now: Millis) -> bool {
+        self.open.iter().filter_map(|id| self.item(id)).any(|i| match &i.body {
+            ItemBody::Tool { tool, started_ms, .. } => {
+                let quick = tool.starts_with("mcp__") || matches!(tool.as_str(), "WebFetch" | "WebSearch");
+                let limit = if quick { STUCK_QUICK_MS } else { STUCK_SLOW_MS };
+                now.saturating_sub(started_ms.unwrap_or(i.created_ms)) > limit
+            }
+            _ => false,
+        })
+    }
+
     fn has_open_tool(&self) -> bool {
         self.open
             .iter()
@@ -340,6 +357,9 @@ impl SessionState {
         if self.turn_open {
             let in_flight = self.has_open_tool() || !self.tasks.is_empty();
             if !in_flight && now.saturating_sub(self.last_output_ms) > STALL_MS {
+                return RunState::Stalled;
+            }
+            if self.overdue_tool(now) {
                 return RunState::Stalled;
             }
             return RunState::Working;

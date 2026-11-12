@@ -1003,6 +1003,16 @@ fn visual_mode_opens_a_terminal_and_the_browser_and_the_terminal_follows_the_age
 }
 
 #[gpui_kit::test]
+fn a_stuck_agent_says_so_above_the_message_box_with_a_way_to_stop_it(cx: &mut TestAppContext) {
+    let a = SessionSummary { activity: Some("tessel browser".into()), ..session(1, "Fix login", RunState::Stalled, None) };
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    assert!(rig.exists(cx, "working"), "the line is there while it's stuck");
+    rig.asked();
+    rig.click(cx, "working-stop");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Interrupt(id) if *id == a.id)));
+}
+
+#[gpui_kit::test]
 fn a_thought_being_written_is_folded_too_and_opens_on_a_click(cx: &mut TestAppContext) {
     let busy = session(1, "Fix login", RunState::Working, None);
     let mut rig = Rig::with_sessions(cx, busy.clone(), vec![]);

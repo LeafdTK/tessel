@@ -282,10 +282,25 @@ fn a_long_tool_is_not_a_stall_but_silence_is() {
     assert_eq!(s.run_state(t + 10 * 60_000), RunState::Working);
     let (line, since) = s.activity().unwrap();
     assert_eq!((line.as_str(), since), ("running cargo build", t));
+    // an hour on one command, though, looks stuck.
+    assert_eq!(s.run_state(t + 61 * 60_000), RunState::Stalled);
     // once it returns and the agent goes quiet again, the clock restarts from the result.
     s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("t"), ok: true, output: String::new() }), t + 600_000);
     assert_eq!(s.run_state(t + 600_000 + STALL_MS - 1), RunState::Working);
     assert_eq!(s.run_state(t + 600_000 + STALL_MS + 1), RunState::Stalled);
+}
+
+#[test]
+fn a_tool_server_call_that_never_answers_is_stuck_after_minutes() {
+    let mut s = SessionState::new(meta());
+    s.apply(Input::UserSent { item_id: ItemId::from("u1"), text: "go".into(), attachments: vec![] }, T0);
+    let call = |id: &str, tool: &str| Input::Agent(AgentEvent::ToolCall { item_id: ItemId::from(id), parent: None, tool: tool.into(), input: serde_json::json!({"op": "snapshot"}) });
+    s.apply(call("b", "mcp__tessel__tessel_browser"), T0 + 1);
+    assert_eq!(s.run_state(T0 + 4 * 60_000), RunState::Working, "a slow page is still working");
+    assert_eq!(s.run_state(T0 + 6 * 60_000), RunState::Stalled, "five minutes on one browser step is stuck");
+    // its answer, however late, is work again.
+    s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("b"), ok: false, output: "timed out".into() }), T0 + 6 * 60_000);
+    assert_eq!(s.run_state(T0 + 6 * 60_000 + 1), RunState::Working);
 }
 
 #[test]

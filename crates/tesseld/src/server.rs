@@ -6,6 +6,7 @@
 //! larger updates instead of a growing backlog.
 
 use crate::hub::{CLIENT_QUEUE, ClientId, HubMsg};
+use tessel_proto::{ErrorCode, RpcError};
 use tessel_proto::frame::{self, Decoder, KIND_BINARY, KIND_JSON};
 use tessel_proto::{Envelope, Event};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -95,11 +96,28 @@ async fn read_loop(mut read: impl AsyncRead + Unpin, client: ClientId, hub: &mps
                     if f.kind != KIND_JSON {
                         continue;
                     }
-                    // an envelope we can't read (a newer client?) is skipped, not fatal.
-                    if let Ok(Envelope::Req { id, req }) = serde_json::from_slice::<Envelope>(&f.payload)
-                        && hub.send(HubMsg::Request { client, id, req }).is_err()
-                    {
-                        return;
+                    match serde_json::from_slice::<Envelope>(&f.payload) {
+                        Ok(Envelope::Req { id, req }) => {
+                            if hub.send(HubMsg::Request { client, id, req }).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(_) => {}
+                        // a request we can't read (from a newer client, most likely) is
+                        // answered with why, never left waiting: whoever sent it would wait forever.
+                        Err(e) => {
+                            let v: serde_json::Value = serde_json::from_slice(&f.payload).unwrap_or_default();
+                            if v["t"] == "req"
+                                && let Some(id) = v["id"].as_u64()
+                            {
+                                let why = format!(
+                                    "this daemon (protocol {}.{}) can't read that request ({e}); it's probably older than the client. `tesselctl daemon restart` updates it",
+                                    tessel_proto::PROTO_MAJOR,
+                                    tessel_proto::PROTO_MINOR
+                                );
+                                let _ = hub.send(HubMsg::Reply { client, id, result: Err(RpcError::new(ErrorCode::Invalid, why)) });
+                            }
+                        }
                     }
                 }
             }
