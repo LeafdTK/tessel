@@ -618,6 +618,26 @@ fn snapshot_of(summary: SessionSummary, items: Vec<Item>, pending: Vec<Permissio
 }
 
 #[gpui_kit::test]
+fn a_change_that_disappears_is_never_asked_for(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    rig.press(cx, "alt-cmd-i");
+    rig.asked();
+    let both = vec![change("build/cache.pyc", ChangeStatus::Untracked, 0, 0), change("src/login.rs", ChangeStatus::Modified, 1, 1)];
+    rig.feed(cx, vec![UiEvent::Git { session: idle.id, summary: git(both) }]);
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Diff { path, .. }] if path == "build/cache.pyc"));
+
+    // the agent touches the folder; meanwhile the picked file is deleted.
+    rig.shell.update(cx, |s, _| {
+        s.workspace_touched();
+        s.workspace_tick();
+    });
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Git(_)]), "the status first, not a diff of a file that may be gone");
+    rig.feed(cx, vec![UiEvent::Git { session: idle.id, summary: git(vec![change("src/login.rs", ChangeStatus::Modified, 1, 1)]) }]);
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Diff { path, .. }] if path == "src/login.rs"), "it moves to what's still there");
+}
+
+#[gpui_kit::test]
 fn the_panel_shows_what_changed_and_the_diff_of_the_file_you_pick(cx: &mut TestAppContext) {
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);

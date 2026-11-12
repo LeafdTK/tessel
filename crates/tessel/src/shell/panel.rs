@@ -254,10 +254,11 @@ impl Shell {
     fn refresh_tab(&mut self, session: SessionId, tab: Tab, asked_git: &mut bool) {
         match tab {
             Tab::Changes => {
+                // the diff follows the status (see `apply_git`): asked for now,
+                // the file it's for may have gone, and the answer would be an error.
                 if !std::mem::replace(asked_git, true) {
                     self.cmd(Cmd::Git(session));
-                }
-                if let Some(path) = self.ws.selected.clone() {
+                } else if let Some(path) = self.ws.selected.clone() {
                     self.cmd(Cmd::Diff { session, path });
                 }
             }
@@ -296,7 +297,12 @@ impl Shell {
             return;
         }
         let still_there = self.ws.selected.as_ref().is_some_and(|sel| summary.files.iter().any(|f| &f.path == sel));
-        if !still_there {
+        if still_there {
+            // the file may have changed since its diff was drawn.
+            if let Some(path) = self.ws.selected.clone().filter(|_| self.ws.tab == Tab::Changes) {
+                self.cmd(Cmd::Diff { session, path });
+            }
+        } else {
             // show something straight away: the first change is as good a start as any.
             self.ws.selected = summary.files.first().map(|f| f.path.clone());
             self.ws.diff = None;
