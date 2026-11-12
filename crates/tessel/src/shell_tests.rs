@@ -53,6 +53,7 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
         tasks: vec![], mcp: vec![], linked_dirs: vec![],
         cost_usd: 0.0,
         trace: vec![],
+        asking: None,
         last_seq: 5,
         created_ms: n as u64,
         updated_ms: 0,
@@ -209,6 +210,19 @@ fn clicking_a_session_opens_it(cx: &mut TestAppContext) {
     rig.feed(cx, vec![snapshot(session(2, "Split auth", RunState::Idle, None), vec![])]);
     rig.click(cx, sid(2).0);
     assert!(rig.asked().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_session_can_be_answered_without_opening_it(cx: &mut TestAppContext) {
+    // the notch answers whichever session is asking, not the open one.
+    let open = session(1, "Clean up", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, open, vec![]);
+    rig.asked();
+    rig.shell.update(cx, |s, cx| s.answer_in(sid(7), tessel_proto::RequestId::from("r"), false, cx));
+    match rig.asked().as_slice() {
+        [Cmd::Answer { session, request_id, decision: PermissionDecision::Deny { .. } }] => assert_eq!((*session, request_id.0.as_str()), (sid(7), "r")),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[gpui_kit::test]

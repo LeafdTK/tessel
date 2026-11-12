@@ -27,7 +27,8 @@ use gpui_kit::component::{Icon, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use std::time::Duration;
-use tessel_proto::{AttentionReason, RunState, SessionId, SessionSummary};
+use std::rc::Rc;
+use tessel_proto::{AttentionReason, RequestId, RunState, SessionId, SessionSummary};
 
 /// how much a session wants, least first. the notch shows the most.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -317,6 +318,12 @@ impl Notch {
         }
     }
 
+    fn answer(&mut self, id: SessionId, request: RequestId, allow: bool, cx: &mut Context<Self>) {
+        if let Some(shell) = self.shell.upgrade() {
+            shell.update(cx, |s, cx| s.answer_in(id, request, allow, cx));
+        }
+    }
+
     fn stop(&mut self, id: SessionId, cx: &mut Context<Self>) {
         if let Some(shell) = self.shell.upgrade() {
             shell.update(cx, |s, cx| s.interrupt(id, cx));
@@ -468,11 +475,17 @@ impl Render for Notch {
         let shown = rows(sessions);
         let list = v_flex().w(px(open_w)).px(px(PAD)).pt(px(PAD)).opacity(fade).children(shown.iter().enumerate().map(|(ix, s)| {
             let id = s.id;
-            let (go, stop) = (me.clone(), me.clone());
+            let (go, stop, answer) = (me.clone(), me.clone(), me.clone());
             let group = SharedString::from(format!("notch-row-{ix}"));
-            row(s, shell, &p, now, group.clone(), move |cx| {
-                let _ = stop.update(cx, |this, cx| this.stop(id, cx));
-            })
+            let acts = Acts {
+                stop: Rc::new(move |cx: &mut App| {
+                    let _ = stop.update(cx, |this, cx| this.stop(id, cx));
+                }),
+                answer: Rc::new(move |request: RequestId, allow: bool, cx: &mut App| {
+                    let _ = answer.update(cx, |this, cx| this.answer(id, request, allow, cx));
+                }),
+            };
+            row(s, shell, &p, now, group.clone(), acts)
             .id(("notch-row", ix))
             .group(group)
             .hover(|d| d.bg(p.label.opacity(0.07)))
@@ -601,8 +614,16 @@ fn corner(b: &mut PathBuilder, pt: &impl Fn(f32, f32) -> Point<Pixels>, (cx, cy)
     b.cubic_bezier_to(at(0., 1.528_665), at(0., 0.868_407), at(0., 1.088_493));
 }
 
+/// what a row's buttons do.
+struct Acts {
+    stop: Rc<dyn Fn(&mut App)>,
+    answer: Rc<dyn Fn(RequestId, bool, &mut App)>,
+}
+
 /// one agent: its tile, what it is and where, what it's doing, and the numbers.
-fn row(s: &SessionSummary, shell: &Shell, p: &Palette, now: u64, group: SharedString, on_stop: impl Fn(&mut App) + 'static) -> Div {
+/// one that's asking leave gets Allow and Deny right there; one that's working,
+/// a stop button when you hover it.
+fn row(s: &SessionSummary, shell: &Shell, p: &Palette, now: u64, group: SharedString, acts: Acts) -> Div {
     let w = want(s);
     let detail = match (w, &s.activity) {
         (Want::Working, Some(a)) if !a.is_empty() => a.clone(),
@@ -632,7 +653,29 @@ fn row(s: &SessionSummary, shell: &Shell, p: &Palette, now: u64, group: SharedSt
     } else {
         div().text_size(px(11.)).text_color(p.tertiary).child(ago(s.updated_ms.max(s.created_ms), now)).into_any_element()
     };
-    let busy = s.run_state.is_busy();
+    let busy = s.run_state.is_busy() && s.asking.is_none();
+    let answer = |label: &'static str, allow: bool| {
+        let (request, answer) = (s.asking.clone(), acts.answer.clone());
+        h_flex()
+            .id(if allow { "notch-allow" } else { "notch-deny" })
+            .h(px(24.))
+            .px(px(10.))
+            .rounded(px(7.))
+            .items_center()
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
+            .when(allow, |d| d.bg(p.label).text_color(black()).hover(|d| d.bg(p.label.opacity(0.85))))
+            .when(!allow, |d| d.bg(p.label.opacity(0.1)).text_color(p.label).hover(|d| d.bg(p.label.opacity(0.16))))
+            .child(label)
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                if let Some(r) = request.clone() {
+                    answer(r, allow, cx);
+                }
+            })
+    };
+    let asking = s.asking.is_some();
+    let stop = acts.stop.clone();
     h_flex()
         .h(px(ROW_H))
         .px(px(10.))
@@ -657,7 +700,8 @@ fn row(s: &SessionSummary, shell: &Shell, p: &Palette, now: u64, group: SharedSt
                 )
                 .child(div().text_size(px(12.)).text_color(if w == Want::Waiting { crate::theme::info(p) } else { p.secondary }).truncate().child(detail)),
         )
-        .child(v_flex().flex_shrink_0().items_end().gap(px(5.)).child(top_right).child(h_flex().gap(px(4.)).children(chips)))
+        .when(!asking, |d| d.child(v_flex().flex_shrink_0().items_end().gap(px(5.)).child(top_right).child(h_flex().gap(px(4.)).children(chips))))
+        .when(asking, |d| d.child(h_flex().flex_shrink_0().gap(px(6.)).child(answer("Deny", false)).child(answer("Allow", true))))
         .when(busy, |d| {
             d.child(
                 h_flex()
@@ -673,7 +717,7 @@ fn row(s: &SessionSummary, shell: &Shell, p: &Palette, now: u64, group: SharedSt
                     .child(Icon::empty().path("icons/square.svg").size(px(12.)).text_color(p.secondary))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        on_stop(cx);
+                        stop(cx);
                     }),
             )
         })

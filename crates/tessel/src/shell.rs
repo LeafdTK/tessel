@@ -1069,6 +1069,14 @@ impl Shell {
         self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
     }
 
+    /// allow or refuse a session's waiting "may I?", open or not.
+    pub(crate) fn answer_in(&mut self, session: SessionId, request_id: RequestId, allow: bool, cx: &mut Context<Self>) {
+        let decision = if allow { PermissionDecision::Allow { updated_input: None } } else { PermissionDecision::Deny { message: String::new() } };
+        self.answers.remove(&request_id);
+        self.cmd(Cmd::Answer { session, request_id, decision });
+        cx.notify();
+    }
+
     fn answer(&mut self, request_id: RequestId, decision: PermissionDecision) {
         if let Some(session) = self.model.open.as_ref().map(|o| o.id) {
             self.answers.remove(&request_id);

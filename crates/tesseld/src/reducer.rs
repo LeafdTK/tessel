@@ -364,8 +364,7 @@ impl SessionState {
         }
         self.tasks
             .iter()
-            .filter(|t| t.background)
-            .next_back()
+            .rfind(|t| t.background)
             .map(|t| (truncate(&format!("background: {}", t.description)), t.since_ms))
     }
 
@@ -424,6 +423,7 @@ impl SessionState {
                 .collect(),
             cost_usd: self.cost_usd(),
             trace: self.trace(now),
+            asking: self.pending.iter().find(|p| !p.is_question && p.plan.is_none()).map(|p| p.request_id.clone()),
             last_seq: self.seq,
             created_ms: self.meta.created_ms,
             updated_ms: self.updated_ms,

@@ -253,13 +253,16 @@ fn a_question_is_needs_input_and_a_permission_outranks_it() {
     let p = PermissionRequest { request_id: RequestId::from("p"), tool_item: None, tool: "Bash".into(), input: Value::Null, description: None, is_question: false, plan: None, suggestions: vec![] };
     s.apply(Input::Agent(AgentEvent::PermissionRequested { request: q }), T0);
     assert_eq!(s.run_state(T0), RunState::NeedsInput);
+    assert_eq!(s.summary(T0).asking, None, "a question needs the whole card, so it can't be answered from a summary");
     assert_eq!(s.attention.as_ref().unwrap().reason, AttentionReason::NeedsInput);
     s.apply(Input::Agent(AgentEvent::PermissionRequested { request: p }), T0 + 500);
     assert_eq!(s.run_state(T0 + 500), RunState::NeedsPermission);
+    assert_eq!(s.summary(T0 + 500).asking, Some(RequestId::from("p")), "a plain \"may I?\" can be");
     let a = s.attention.clone().unwrap();
     assert_eq!((a.reason, a.since_ms), (AttentionReason::NeedsPermission, T0), "still the same wait: keeps its start time");
     s.apply(Input::Answered { request_id: RequestId::from("p"), decision: PermissionDecision::Deny { message: String::new() } }, T0 + 600);
     assert_eq!(s.run_state(T0 + 600), RunState::NeedsInput);
+    assert_eq!(s.summary(T0 + 600).asking, None);
     s.apply(Input::Answered { request_id: RequestId::from("q"), decision: PermissionDecision::Allow { updated_input: None } }, T0 + 700);
     assert_eq!(s.attention, None, "nothing is waiting on you any more");
 }

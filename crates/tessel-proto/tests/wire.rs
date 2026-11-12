@@ -41,6 +41,7 @@ fn summary() -> SessionSummary {
         tasks: vec![], mcp: vec![], linked_dirs: vec![],
         cost_usd: 0.0,
         trace: vec![],
+        asking: None,
         last_seq: 7,
         created_ms: 1,
         updated_ms: 2,

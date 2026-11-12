@@ -126,6 +126,11 @@ pub struct SessionSummary {
     /// the earliest sign that it is stuck.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<u16>,
+    /// the oldest plain "may I?" waiting on an answer, which can be answered
+    /// without opening the session. questions and plans aren't here: they
+    /// need the whole card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asking: Option<crate::RequestId>,
     pub last_seq: Seq,
     pub created_ms: Millis,
     pub updated_ms: Millis,
