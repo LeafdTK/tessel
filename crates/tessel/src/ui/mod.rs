@@ -150,7 +150,7 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
                         found = true;
                         for k in o.keys() {
                             match k.as_str() {
-                                "user" => pane.options.user_right = given.user_right,
+                                "user" => pane.options.user_left = given.user_left,
                                 "thoughts" => pane.options.thoughts = given.thoughts,
                                 "tools" => pane.options.tools = given.tools,
                                 "trace" => pane.options.trace = given.trace,
@@ -164,7 +164,7 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
                 found = true;
                 for k in o.keys() {
                     match k.as_str() {
-                        "user" => n.props.user_right = given.user_right,
+                        "user" => n.props.user_left = given.user_left,
                         "thoughts" => n.props.thoughts = given.thoughts,
                         "tools" => n.props.tools = given.tools,
                         "trace" => n.props.trace = given.trace,
@@ -1087,7 +1087,8 @@ pub struct Props {
     // transcript
     /// space either side of each row, inside its reading width.
     pub gutter: Option<f32>,
-    pub user_right: bool,
+    /// your messages on the left; by default they're on the right, as a chat's are.
+    pub user_left: bool,
     pub thoughts: Show,
     pub tools: Show,
     // input
@@ -1144,7 +1145,7 @@ impl Props {
             p.trace = Some(flag(v, &at)?);
         }
         if let Some((v, at)) = get("user") {
-            p.user_right = one_of(v, &at, &[("left", false), ("right", true)])?;
+            p.user_left = one_of(v, &at, &[("left", true), ("right", false)])?;
         }
         let shows = [("shown", Show::Shown), ("failed", Show::Failed), ("hidden", Show::Hidden)];
         if let Some((v, at)) = get("thoughts") {
@@ -1460,7 +1461,7 @@ mod tests {
     fn the_common_options_can_be_set_without_writing_a_layout() {
         let ui = parse(r#"{"transcript": {"user": "left", "tools": "hidden"}, "sessions": {"trace": false}}"#).unwrap();
         let c = ui.panes().into_iter().find(|p| p.module == Some(Module::Conversation)).unwrap();
-        assert!(!c.options.user_right && c.options.tools == Show::Hidden && c.options.thoughts == Show::Shown, "the conversation pane took them");
+        assert!(c.options.user_left && c.options.tools == Show::Hidden && c.options.thoughts == Show::Shown, "the conversation pane took them");
         assert_eq!(ui.find(Kind::Sessions).unwrap().props.trace, Some(false));
         let e = parse(r#"{"transcript": {"side": "right"}}"#).unwrap_err();
         assert!(e.contains("transcript") && e.contains("user"), "{e}");

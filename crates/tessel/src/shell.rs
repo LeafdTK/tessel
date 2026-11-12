@@ -1212,7 +1212,7 @@ impl Shell {
                     "nav-all",
                     "layout-grid",
                     "All sessions",
-                    div().set(Type::Subheadline).text_color(if needing > 0 { p.blocked } else { p.tertiary }).child(if needing > 0 { format!("{needing} need you") } else { self.model.sessions.len().to_string() }).into_any_element(),
+                    theme::count_pill(&p, if needing > 0 { format!("{needing} need you") } else { self.model.sessions.len().to_string() }, needing > 0).into_any_element(),
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))),
             );
@@ -1514,16 +1514,23 @@ impl Shell {
             ItemBody::Tool { tool, status, .. } if (tool.starts_with("mcp__tessel__") || tool.starts_with("mcp__photon__")) && *status != ToolStatus::Failed => None,
             ItemBody::User { text, .. } if let Some(report) = handback(text) => Some(
                 v_flex()
-                    .gap_1()
-                    .child(h_flex().gap_2().set(Type::Callout).child(mark(Mark::Check(p.tertiary))).child(div().text_color(p.secondary).child("Subagent reported back")))
-                    .child(div().pl_5().set(Type::Callout).text_color(p.secondary).line_clamp(4).child(report))
+                    .gap(px(6.))
+                    .child(
+                        h_flex()
+                            .gap(px(8.))
+                            .set(Type::Callout)
+                            .child(mark(Mark::Check(p.finished)))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.label).child("Subagent"))
+                            .child(div().text_color(p.secondary).child("reported back")),
+                    )
+                    .child(div().ml(px(6.)).pl(px(14.)).border_l_1().border_color(p.separator).set(Type::Callout).text_color(p.secondary).line_clamp(6).child(report))
                     .into_any_element(),
             ),
             ItemBody::User { text, attachments } => {
                 // it hugs what you wrote; a full-width bar would read as a heading.
-                let bubble = div().px_3().py_2().rounded(px(theme::R_CARD)).bg(p.fill).set(Type::Prose).text_color(p.label).child(text.clone());
+                let bubble = div().max_w(relative(0.8)).px(px(16.)).py(px(10.)).rounded(px(18.)).bg(p.fill).set(Type::Prose).text_color(p.label).child(text.clone());
                 let sent = (!attachments.is_empty()).then(|| div().px_1().set(Type::Subheadline).text_color(p.secondary).child(format!("With {}", attachments.join(", "))));
-                let col = if self.transcript_opts.user_right { v_flex().items_end() } else { v_flex().items_start() };
+                let col = if self.transcript_opts.user_left { v_flex().items_start() } else { v_flex().items_end() };
                 Some(col.gap_1().when(!text.trim().is_empty(), |d| d.child(bubble)).children(sent).into_any_element())
             }
             ItemBody::Text { text, .. } if text.is_empty() => None,
@@ -1559,16 +1566,18 @@ impl Shell {
                         .id(ElementId::from(SharedString::from(format!("thought-{}", item.id))))
                         .test_support()
                         .aria_label(if open { "Thought, showing all of it" } else { "Thought, folded" })
-                        .gap(px(2.))
-                        .when(!*streaming, |d| d.on_click(move |_, _, cx| me.update(cx, |this, cx| this.toggle_thought(id.clone(), ix, cx))))
-                        .child(div().set(Type::Subheadline).text_color(p.tertiary).child(if *streaming {
-                            "Thinking"
-                        } else if open {
-                            "Thought ▾"
-                        } else {
-                            "Thought ▸"
-                        }))
-                        .child(div().set(Type::Callout).text_color(p.secondary).when(!open, |d| d.line_clamp(2).text_ellipsis()).child(text.trim_end().to_owned()))
+                        .gap(px(6.))
+                        .when(!*streaming, |d| d.cursor_pointer().on_click(move |_, _, cx| me.update(cx, |this, cx| this.toggle_thought(id.clone(), ix, cx))))
+                        .child(
+                            h_flex()
+                                .gap(px(4.))
+                                .set(Type::Callout)
+                                .italic()
+                                .text_color(p.tertiary)
+                                .child(if *streaming { "Thinking…" } else { "Thought" })
+                                .when(!*streaming, |d| d.child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary))),
+                        )
+                        .child(div().pl(px(14.)).set(Type::Callout).italic().text_color(p.secondary).when(!open, |d| d.line_clamp(2).text_ellipsis()).child(text.trim_end().to_owned()))
                         .into_any_element(),
                 )
             }
@@ -1647,7 +1656,16 @@ impl Shell {
             let indent = px(18. * f32::from(depth.min(6)));
             div().pl(indent).py_1().child(div().pl_3().border_l_2().border_color(p.separator).child(body))
         } else {
-            div().py_1p5().child(body)
+            // a turn starts with what you said: room above it. the agent's
+            // words breathe; its tool calls sit close, as one run of work.
+            let (top, bottom) = match &item.body {
+                ItemBody::User { text, .. } if handback(text).is_none() && !text.starts_with("<surface-event") => (if ix == 0 { 8. } else { 28. }, 10.),
+                ItemBody::Text { .. } => (8., 8.),
+                ItemBody::Thinking { .. } => (6., 6.),
+                ItemBody::Tool { .. } => (3., 3.),
+                _ => (8., 8.),
+            };
+            div().pt(px(top)).pb(px(bottom)).child(body)
         };
         // the list spans the pane, so its scrollbar is at the pane's edge;
         // each row keeps to the reading column in the middle of it.
@@ -2170,35 +2188,80 @@ fn sentence(s: &str) -> String {
 
 /// files the open session wrote or edited, most recently touched first, with how many times.
 fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: Option<&str>, ran_ms: Option<Millis>, p: &Palette) -> impl IntoElement {
-    let state = match status {
-        ToolStatus::Pending | ToolStatus::Running => Mark::Dot(p.secondary),
-        ToolStatus::AwaitingPermission => Mark::Diamond(p.blocked),
-        ToolStatus::Ok => Mark::Check(p.tertiary),
-        ToolStatus::Failed => Mark::Cross(p.failed),
-        ToolStatus::Denied | ToolStatus::Aborted | ToolStatus::Unknown => Mark::Ring(p.tertiary),
+    let (icon, kind, detail, mono) = tool_parts(tool, input);
+    // the tool's own icon at rest; while it isn't done, what state it's in.
+    let lead = match status {
+        ToolStatus::Ok => div()
+            .size(px(15.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(15.)).text_color(p.secondary))
+            .into_any_element(),
+        ToolStatus::Pending | ToolStatus::Running => mark(Mark::Dot(p.accent)).into_any_element(),
+        ToolStatus::AwaitingPermission => mark(Mark::Diamond(p.blocked)).into_any_element(),
+        ToolStatus::Failed => mark(Mark::Cross(p.failed)).into_any_element(),
+        ToolStatus::Denied | ToolStatus::Aborted | ToolStatus::Unknown => mark(Mark::Ring(p.tertiary)).into_any_element(),
     };
-    let took = ran_ms.filter(|ms| *ms >= 1000).map(|ms| format!(" · {}", ago(0, ms)));
     let note = match status {
-        ToolStatus::AwaitingPermission => " · waiting for you",
-        ToolStatus::Denied => " · denied",
-        ToolStatus::Aborted => " · cut off",
-        _ => "",
+        ToolStatus::AwaitingPermission => Some("waiting for you"),
+        ToolStatus::Denied => Some("denied"),
+        ToolStatus::Aborted => Some("cut off"),
+        ToolStatus::Failed => Some("failed"),
+        _ => None,
     };
-    let line = format!("{}{}{}", sentence(&summarize_tool(tool, input)), took.unwrap_or_default(), note);
-    let mut col = v_flex().gap_1().child(
+    let took = ran_ms.filter(|ms| *ms >= 1000).map(|ms| ago(0, ms));
+    let mut col = v_flex().gap(px(6.)).child(
         h_flex()
-            .gap_2()
+            .gap(px(8.))
+            .min_h(px(24.))
             .set(Type::Callout)
-            .child(mark(state))
-            .child(div().text_color(p.secondary).truncate().child(line)),
+            .child(lead)
+            .child(div().flex_shrink_0().font_weight(FontWeight::SEMIBOLD).text_color(p.label).child(kind))
+            .child(div().flex_1().min_w_0().truncate().text_color(p.secondary).when(mono, |d| d.set(Type::Code)).child(detail))
+            .children(note.map(|n| div().flex_shrink_0().text_color(if status == ToolStatus::Failed { p.failed } else { p.blocked }).child(n)))
+            .children(took.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t))),
     );
     // output earns its space only when something went wrong.
     if status == ToolStatus::Failed
         && let Some(out) = output.filter(|o| !o.trim().is_empty())
     {
-        col = col.child(div().pl_5().set(Type::Code).text_color(p.secondary).line_clamp(8).child(out.to_owned()));
+        col = col.child(div().ml(px(7.)).pl(px(16.)).border_l_1().border_color(p.separator).set(Type::Code).text_color(p.secondary).line_clamp(8).child(out.to_owned()));
     }
     col
+}
+
+/// a tool call as an icon, a word for what kind of thing it did, and what it
+/// did it to; and whether that last part is code (a command, a pattern).
+fn tool_parts(tool: &str, input: &serde_json::Value) -> (&'static str, String, String, bool) {
+    let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
+    let base = |p: &str| p.rsplit('/').find(|x| !x.is_empty()).unwrap_or(p).to_owned();
+    let line = |t: &str| t.lines().next().unwrap_or("").trim().to_owned();
+    match tool {
+        "Read" => ("file-text", "Read".into(), s("file_path").map(base).unwrap_or_default(), false),
+        "Write" => ("file-plus", "Write".into(), s("file_path").map(base).unwrap_or_default(), false),
+        "Edit" | "MultiEdit" => ("pencil", "Edit".into(), s("file_path").map(base).unwrap_or_default(), false),
+        "NotebookEdit" => ("pencil", "Edit".into(), s("notebook_path").map(base).unwrap_or_default(), false),
+        "Bash" | "BashOutput" => match (s("description"), s("command")) {
+            (Some(d), _) => ("square-terminal", "Run".into(), line(d), false),
+            (None, Some(c)) => ("square-terminal", "Run".into(), line(c), true),
+            _ => ("square-terminal", "Run".into(), String::new(), false),
+        },
+        "Grep" | "Glob" => ("search", "Search".into(), s("pattern").map(line).unwrap_or_default(), true),
+        "WebFetch" => ("globe", "Fetch".into(), s("url").map(line).unwrap_or_default(), false),
+        "WebSearch" => ("globe", "Search the web".into(), s("query").map(line).unwrap_or_default(), false),
+        "Task" | "Agent" => ("users", "Task".into(), s("description").map(line).unwrap_or_default(), false),
+        "TodoWrite" => ("list-checks", "To-dos".into(), String::new(), false),
+        "ToolSearch" => ("wrench", "Tool".into(), "loading one".into(), false),
+        t if t.starts_with("mcp__") => {
+            let mut parts = t.trim_start_matches("mcp__").splitn(2, "__");
+            let server = parts.next().unwrap_or_default().to_owned();
+            let name = parts.next().unwrap_or_default().replace('_', " ");
+            ("plug", server, name, false)
+        }
+        t => ("wrench", t.to_owned(), summarize_tool(t, input), false),
+    }
 }
 
 /// a system notification, for when tessel isn't the app in front.

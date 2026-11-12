@@ -43,7 +43,7 @@ impl Shell {
             .my(px(1.5))
             .mx_2()
             .pl(px(4.))
-            .pr_1()
+            .pr(px(8.))
             .gap(px(6.))
             .items_center()
             .rounded(px(theme::R_TILE))
@@ -55,14 +55,22 @@ impl Shell {
             .child(div().w(px(12.)).flex_shrink_0().flex().justify_center().when(!queue, |d| d.child(Icon::empty().path(if folded { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" }).size(theme::z(12.)).text_color(p.tertiary))))
             .child(tile)
             .child(div().flex_1().min_w_0().truncate().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(if queue { p.label } else { p.label }).child(title.to_owned()))
-            .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).when(count > 0, |d| d.child(count.to_string())));
+            ;
+        // the count, and on hover the + and ⋯ in its place: one slot at the
+        // row's end, lined up with the counts and keys above it.
+        let pill = (count > 0).then(|| theme::count_pill(&p, count.to_string(), queue));
         if !queue && let Some(folder) = self.project_folder(title) {
             let (f1, me) = (folder.clone(), cx.entity().downgrade());
             let controls = h_flex()
                 .gap_0p5()
                 .flex_shrink_0()
+                .absolute()
+                .right_0()
+                .top_0()
+                .bottom_0()
+                .items_center()
                 .invisible()
-                .group_hover(group, |s| s.visible())
+                .group_hover(group.clone(), |s| s.visible())
                 .child(Button::new(SharedString::from(format!("project-{title}-new"))).ghost().small().icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session Here").on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.new_worktree = false;
@@ -106,7 +114,9 @@ impl Shell {
                         }),
                     ),
                 );
-            row = row.child(controls);
+            row = row.child(div().relative().flex_shrink_0().h_full().flex().items_center().children(pill.map(|c| c.group_hover(group, |s| s.invisible()))).child(controls));
+        } else {
+            row = row.children(pill);
         }
         row.into_any_element()
     }

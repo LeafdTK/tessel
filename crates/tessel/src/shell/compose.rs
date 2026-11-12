@@ -32,14 +32,14 @@ pub(crate) struct TranscriptOpts {
     /// how wide a row of the conversation is: the reading column.
     pub(crate) width: f32,
     pub(crate) gutter: f32,
-    pub(crate) user_right: bool,
+    pub(crate) user_left: bool,
     pub(crate) thoughts: Show,
     pub(crate) tools: Show,
 }
 
 impl Default for TranscriptOpts {
     fn default() -> Self {
-        Self { width: theme::READING_W, gutter: 16.0, user_right: false, thoughts: Show::Shown, tools: Show::Shown }
+        Self { width: theme::READING_W, gutter: 16.0, user_left: false, thoughts: Show::Shown, tools: Show::Shown }
     }
 }
 
@@ -109,7 +109,7 @@ impl Shell {
             .find(Kind::Transcript)
             .map(|t| t.props.clone())
             .or(conversation)
-            .map(|t| TranscriptOpts { width: t.width.unwrap_or(theme::READING_W), gutter: t.gutter.unwrap_or(16.0), user_right: t.user_right, thoughts: t.thoughts, tools: t.tools })
+            .map(|t| TranscriptOpts { width: t.width.unwrap_or(theme::READING_W), gutter: t.gutter.unwrap_or(16.0), user_left: t.user_left, thoughts: t.thoughts, tools: t.tools })
             .unwrap_or_default();
         let sessions_pane = ui.panes().into_iter().find(|p| p.module == Some(crate::ui::Module::Sessions)).and_then(|p| p.options.trace);
         self.sessions_trace = ui.find(Kind::Sessions).and_then(|n| n.props.trace).or(sessions_pane).unwrap_or(true);

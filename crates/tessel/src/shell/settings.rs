@@ -245,7 +245,7 @@ impl Shell {
             .child(self.setting_row(
                 "Your messages",
                 "",
-                self.segmented("messages", &[("left", "Left"), ("right", "Right")], if t.user_right { "right" } else { "left" }, cx, |this, v, w, cx| {
+                self.segmented("messages", &[("left", "Left"), ("right", "Right")], if t.user_left { "left" } else { "right" }, cx, |this, v, w, cx| {
                     this.edit_ui(|f| Self::set_in(f, "transcript", "user", Some(json!(v))), w, cx)
                 }),
             ))

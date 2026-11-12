@@ -546,6 +546,26 @@ pub fn float_list(_p: &Palette) -> gpui_kit::Div {
     gpui_kit::component::v_flex().p(z(FLOAT_PAD)).gap(px(1.)).font_weight(FontWeight::NORMAL).text_size(z(13.5))
 }
 
+/// a count beside a row's name: a small pill, so a number never just floats.
+/// `hot` is for counts that want you (sessions waiting).
+pub fn count_pill(p: &Palette, n: impl Into<SharedString>, hot: bool) -> gpui_kit::Div {
+    use gpui_kit::{ParentElement as _, div};
+    div()
+        .flex_shrink_0()
+        .min_w(z(20.))
+        .h(z(18.))
+        .px(z(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(if hot { p.blocked.opacity(0.16) } else { p.fill })
+        .text_size(z(11.))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(if hot { p.blocked } else { p.secondary })
+        .child(n.into())
+}
+
 /// a shortcut as keycaps: "⇧ ⌘ D" is three keys.
 pub fn keycaps(p: &Palette, keys: &str) -> gpui_kit::Div {
     use gpui_kit::{ParentElement as _, div};
