@@ -1216,6 +1216,40 @@ fn the_sidebars_session_list_counts_so_a_pane_cant_add_a_second(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn a_pane_takes_whatever_share_it_is_given(cx: &mut TestAppContext) {
+    let dir = layout_dir("pane-size");
+    let file = dir.join("ui.json");
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, idle, vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let mut exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": "conversation", "dir": "right"})).unwrap();
+    let new = new["pane"].as_str().unwrap().to_owned();
+    exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 0.75})).unwrap();
+    let read = || serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    let f = read();
+    let mut sizes = std::collections::HashMap::new();
+    fn walk(v: &serde_json::Value, out: &mut std::collections::HashMap<String, f64>) {
+        if let Some(id) = v.get("id").and_then(|i| i.as_str()).or_else(|| v.get("module").and_then(|m| m.as_str())) {
+            out.insert(id.to_owned(), v.get("size").and_then(|s| s.as_f64()).unwrap_or(1.0));
+        }
+        for c in v.get("children").and_then(|c| c.as_array()).into_iter().flatten() {
+            walk(c, out);
+        }
+        if let Some(l) = v.get("layout") {
+            walk(l, out);
+        }
+    }
+    walk(&f["root"], &mut sizes);
+    let (a, b) = (sizes["conversation"], sizes[&new]);
+    assert!((a / (a + b) - 0.75).abs() < 0.01, "three quarters of the room, the hidden inspector not counted: {sizes:?}");
+    // a preset, and an axis there's no split along.
+    assert!(exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": "half"})).is_ok());
+    assert!(exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 0.5, "dir": "height"})).is_err(), "nothing above or below it");
+    assert!(exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 1.4})).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.

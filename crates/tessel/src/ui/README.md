@@ -398,6 +398,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |
 | `pane.focus` | Focus a pane |  | pane |
 | `pane.toggle` | Show or hide a pane |  | pane |
+| `pane.size` | Pane: small |  | size: small|half|large, or a fraction like 0.75; dir?: width|height (default width); pane? |
 | `pane.move` | Move a pane |  | pane, to, zone: left|right|top|bottom|swap |
 | `workspace.tab` | Workspace: Changes |  | tab: changes|files|checks|artifacts|info |
 | `theme.set` | Theme: Tessel |  | base: tessel|orchard|tern |

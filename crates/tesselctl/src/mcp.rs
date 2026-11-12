@@ -16,6 +16,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const WINDOW: &str = "Run any command in the tessel window: everything a person can click. \
 Examples: {\"cmd\":\"pane.split\",\"args\":{\"dir\":\"right\"}}, {\"cmd\":\"pane.show\",\"args\":{\"module\":\"changes\"}}, \
 {\"cmd\":\"theme.set\",\"args\":{\"base\":\"tern\"}}, {\"cmd\":\"session.open\",\"args\":{\"session\":\"<id prefix>\"}}. \
+Size a pane however you like: {\"cmd\":\"pane.size\",\"args\":{\"pane\":\"terminal\",\"size\":0.3,\"dir\":\"height\"}} \
+(a fraction of the room, or small, half, large); hide or show one with pane.toggle. \
 Panes are named by id, @focused, or the module they show. tessel_window_state shows what is on screen; tessel_commands lists every command.";
 
 /// window commands an agent may not run. tessel's tools run without asking,

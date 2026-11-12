@@ -262,6 +262,32 @@ impl Shell {
                 cx.notify();
                 done
             }
+            "pane.size" => {
+                let pane = self.pane_arg(args)?;
+                let frac = match args.get("size") {
+                    Some(Value::String(s)) => match s.as_str() {
+                        "small" => 0.25,
+                        "half" => 0.5,
+                        "large" => 0.75,
+                        other => other.trim_end_matches('%').parse::<f64>().map(|n| if n > 1.0 { n / 100.0 } else { n }).map_err(|_| format!("\"{other}\" isn't a size. use small, half, large, or a fraction like 0.75"))?,
+                    },
+                    Some(v) => v.as_f64().map(|n| if n > 1.0 { n / 100.0 } else { n }).ok_or("size: small, half, large, or a fraction like 0.75")?,
+                    None => return Err("say how big: size (small, half, large, or a fraction like 0.75)".into()),
+                };
+                if !(0.05..=0.95).contains(&frac) {
+                    return Err(format!("{frac} is out of range: from 0.05 to 0.95 of the room"));
+                }
+                let axis = match arg(args, "dir").unwrap_or("width") {
+                    "width" | "wide" | "row" => "row",
+                    "height" | "tall" | "column" => "column",
+                    other => return Err(format!("\"{other}\" isn't a direction. use width or height")),
+                };
+                let mut result = Ok(());
+                let trail = pane.trail.clone();
+                self.edit_panes(|layout| result = panes::size_at(layout, &trail, axis, frac), window, cx);
+                result?;
+                Ok(json!({"pane": pane.id, "size": frac}))
+            }
             "pane.toggle" => {
                 let pane = self.find_pane(need(args, "pane", cmd)?)?;
                 self.toggle_pane(&pane.id, cx);

@@ -275,7 +275,7 @@ impl Shell {
 
     /// change the layout of the first `panes` node in `ui.json`, writing the
     /// layout in use into the file first if it doesn't have one of its own.
-    fn edit_panes(&mut self, change: impl FnOnce(&mut Value), window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn edit_panes(&mut self, change: impl FnOnce(&mut Value), window: &mut Window, cx: &mut Context<Self>) {
         let current = crate::ui::preset("default").and_then(|t| serde_json::from_str::<Value>(t).ok()).and_then(|v| v.get("root").cloned());
         self.edit_ui(
             |f| {
@@ -1149,6 +1149,35 @@ fn at_trail<'a>(v: &'a mut Value, trail: &[usize]) -> Option<&'a mut Value> {
         None => Some(v),
         Some((i, rest)) => at_trail(v.get_mut("children")?.get_mut(*i)?, rest),
     }
+}
+
+/// give the pane at `trail` a fraction of the room along `axis` ("row" for
+/// width, "column" for height): the nearest split that runs that way is found
+/// above it, and the child holding the pane gets `frac` of it, the others
+/// keeping their proportions among themselves.
+pub(crate) fn size_at(layout: &mut Value, trail: &[usize], axis: &str, frac: f64) -> Result<(), String> {
+    // walk up from the pane until a split runs the way asked.
+    for depth in (0..trail.len()).rev() {
+        let (parent_trail, index) = (&trail[..depth], trail[depth]);
+        let Some(parent) = at_trail(layout, parent_trail) else { continue };
+        if parent.get("split").and_then(Value::as_str) != Some(axis) {
+            continue;
+        }
+        let Some(children) = parent.get_mut("children").and_then(Value::as_array_mut) else { continue };
+        let size = |c: &Value| c.get("size").and_then(Value::as_f64).unwrap_or(1.0);
+        // a hidden pane takes no room, so it has no say in the shares.
+        let shown = |c: &Value| c.get("open").and_then(Value::as_bool) != Some(false);
+        let others: f64 = children.iter().enumerate().filter(|(i, c)| *i != index && shown(c)).map(|(_, c)| size(c)).sum();
+        if others <= 0.0 {
+            return Err("it has nothing beside it to share with".into());
+        }
+        let want = frac * others / (1.0 - frac);
+        if let Some(Value::Object(o)) = children.get_mut(index) {
+            o.insert("size".into(), json!((want * 1000.0).round() / 1000.0));
+        }
+        return Ok(());
+    }
+    Err(format!("nothing sits beside it {}: split it first, or size it the other way", if axis == "row" { "side by side" } else { "above or below" }))
 }
 
 /// take a pane out. a split left with one child becomes that child.
