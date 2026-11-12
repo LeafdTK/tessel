@@ -54,7 +54,7 @@ impl Shell {
 
             "session.new" => match arg(args, "prompt") {
                 Some(prompt) => {
-                    let cwd = arg(args, "cwd").map(str::to_owned).unwrap_or_else(|| self.new_cwd.read(cx).value().to_string());
+                    let cwd = arg(args, "cwd").map(str::to_owned).or_else(|| self.new_folder()).ok_or("no project to start in: give cwd")?;
                     let worktree = args.get("worktree").and_then(Value::as_bool).unwrap_or(false);
                     self.cmd(Cmd::Create { cwd, worktree, prompt: prompt.to_owned() });
                     done

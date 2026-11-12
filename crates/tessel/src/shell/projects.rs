@@ -138,9 +138,33 @@ impl Shell {
         out
     }
 
+    /// the projects, as the sidebar has them: a folder each (a worktree's
+    /// repository, not the worktree), the latest worked in first.
+    pub(crate) fn project_list(&self) -> Vec<String> {
+        let mut sessions: Vec<&SessionSummary> = self.model.sessions.iter().collect();
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.updated_ms.max(s.created_ms)));
+        let mut out: Vec<String> = Vec::new();
+        for s in sessions {
+            let folder = s.worktree.as_ref().map_or(&s.cwd, |w| &w.repo);
+            if !out.contains(folder) {
+                out.push(folder.clone());
+            }
+        }
+        out
+    }
+
+    /// where a new session would start: the project picked, or the latest.
+    pub(crate) fn new_folder(&self) -> Option<String> {
+        self.new_project.clone().or_else(|| self.project_list().into_iter().next())
+    }
+
     /// the new-session card, pointed at a folder, with the cursor in what to do.
     pub(crate) fn start_in(&mut self, folder: String, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_cwd.update(cx, |s, cx| s.set_value(folder, window, cx));
+        let folder = match folder.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            None => folder,
+        };
+        self.new_project = Some(folder);
         self.show_new = true;
         self.new_prompt.update(cx, |s, cx| s.focus(window, cx));
         cx.notify();
@@ -244,6 +268,99 @@ impl Shell {
 
     // ---- drawing --------------------------------------------------------------------
 
+    /// the ways to a project that isn't in the list yet. the + menu and the
+    /// project picker offer the same three, so there's one way in.
+    fn new_project_items(&self, list: Div, ids: &str, me: &WeakEntity<Shell>, popover: &Entity<gpui_kit::component::popover::PopoverState>) -> Div {
+        let p = self.palette.get();
+        let act = |f: fn(&mut Shell, &mut Window, &mut Context<Shell>)| {
+            let (me, popover) = (me.clone(), popover.clone());
+            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                popover.update(cx, |st, cx| st.dismiss(window, cx));
+                let _ = me.update(cx, |this, cx| f(this, window, cx));
+            }
+        };
+        list.child(theme::float_item(&p, SharedString::from(format!("{ids}-open")), Some("folder"), "Open project…", None, false).test_support().on_click(act(|this, w, cx| this.pick_folder(w, cx))))
+            .child(theme::float_item(&p, SharedString::from(format!("{ids}-github")), Some("github"), "Open GitHub project…", None, false).test_support().on_click(act(|this, _, cx| this.open_sheet(Sheet::Clone, cx))))
+            .child(theme::float_item(&p, SharedString::from(format!("{ids}-create")), Some("folder-plus"), "Quick start…", None, false).test_support().on_click(act(|this, _, cx| this.open_sheet(Sheet::Create, cx))))
+    }
+
+    /// which project a new session starts in: the sidebar's projects, then
+    /// the ways to another.
+    pub(crate) fn project_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let folder = self.new_folder();
+        let name = folder.as_deref().map(folder_name);
+        let me = cx.entity().downgrade();
+        Popover::new("new-project-popover")
+            .p_0()
+            .anchor(Anchor::TopLeft)
+            .trigger(
+                super::composer::tool_button("new-project")
+                    .bg(p.fill)
+                    .max_w(theme::z(280.))
+                    .tooltip(folder.as_deref().map_or_else(|| "Choose a project".to_owned(), tilde))
+                    .child(
+                        h_flex()
+                            .min_w_0()
+                            .gap(theme::z(8.))
+                            .children(name.as_deref().map(|n| super::sidebar::project_tile(n, &p)))
+                            .when(name.is_none(), |d| d.child(Icon::empty().path("icons/folder.svg").size(theme::z(15.)).text_color(p.secondary)))
+                            .child(div().min_w_0().truncate().set(Type::Body).text_color(if name.is_some() { p.label } else { p.secondary }).child(name.clone().unwrap_or_else(|| "Choose a project".into())))
+                            .child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(12.)).text_color(p.tertiary)),
+                    ),
+            )
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let current = this.new_folder();
+                let mut list = theme::float_list(&p).w(px(320.));
+                let projects = this.project_list();
+                if !projects.is_empty() {
+                    list = list.child(theme::float_label(&p, "Projects"));
+                    let mut rows = v_flex().id("new-project-list").max_h(px(300.)).overflow_y_scroll();
+                    for (i, folder) in projects.into_iter().enumerate() {
+                        let on = current.as_deref() == Some(folder.as_str());
+                        let name = folder_name(&folder);
+                        let (me, popover, f) = (me.clone(), popover.clone(), folder.clone());
+                        rows = rows.child(
+                            h_flex()
+                                .id(SharedString::from(format!("new-project-{i}")))
+                                .test_support()
+                                .aria_label(SharedString::from(format!("{name}{}", if on { ", chosen" } else { "" })))
+                                .min_h(theme::z(44.))
+                                .px(theme::z(10.))
+                                .gap(theme::z(10.))
+                                .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                                .cursor_pointer()
+                                .when(on, |d| d.bg(p.selection))
+                                .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                                .on_click(move |_, window, cx| {
+                                    popover.update(cx, |st, cx| st.dismiss(window, cx));
+                                    let _ = me.update(cx, |this, cx| {
+                                        this.new_project = Some(f.clone());
+                                        cx.notify();
+                                    });
+                                })
+                                .child(super::sidebar::project_tile(&name, &p))
+                                .child(
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(div().set(Type::Body).text_color(p.label).child(name.clone()))
+                                        .child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(tilde(&folder))),
+                                )
+                                .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
+                        );
+                    }
+                    list = list.child(rows).child(theme::float_sep(&p));
+                }
+                this.new_project_items(list, "new-project", &me, &popover).into_any_element()
+            })
+            .into_any_element()
+    }
+
     /// the + menu: open a folder, clone, start a project, or go back to a recent folder.
     pub(crate) fn add_menu(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
@@ -264,11 +381,7 @@ impl Shell {
                         let _ = me.update(cx, |this, cx| f(this, window, cx));
                     }
                 };
-                let mut list = theme::float_list(&p)
-                    .w(px(288.))
-                    .child(theme::float_item_with(&p, "add-open", Some("folder"), "Open project", None, None, false).on_click(act(Box::new(|this, w, cx| this.pick_folder(w, cx)))))
-                    .child(theme::float_item(&p, "add-github", Some("github"), "Open GitHub project", None, false).on_click(act(Box::new(|this, _, cx| this.open_sheet(Sheet::Clone, cx)))))
-                    .child(theme::float_item(&p, "add-create", Some("folder-plus"), "Quick start", None, false).on_click(act(Box::new(|this, _, cx| this.open_sheet(Sheet::Create, cx)))));
+                let mut list = this.new_project_items(theme::float_list(&p).w(px(288.)), "add", &me, &popover);
                 if !recents.is_empty() {
                     list = list.child(theme::float_sep(&p)).child(theme::float_label(&p, "Recents"));
                     for (i, folder) in recents.into_iter().enumerate() {
@@ -462,4 +575,9 @@ mod tests {
         assert!(ask.contains("create-next-app"), "next.js is the agent's first job: {ask}");
         std::fs::remove_dir_all(&next).unwrap();
     }
+}
+
+/// a project's name: its folder's.
+pub(crate) fn folder_name(folder: &str) -> String {
+    folder.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("/").to_owned()
 }

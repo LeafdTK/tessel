@@ -15,7 +15,8 @@ impl Shell {
         if !self.model.collapsed.remove(project) {
             self.model.collapsed.insert(project.to_owned());
         }
-        self.reflow_sidebar();
+        // a fold is yours: it happens now, even with the pointer over the list.
+        self.reflow_sidebar_as(false);
         cx.notify();
     }
 

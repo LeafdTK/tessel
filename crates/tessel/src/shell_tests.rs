@@ -377,15 +377,27 @@ fn a_new_session_is_created_from_the_form(cx: &mut TestAppContext) {
     let mut rig = Rig::new(cx);
     rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![])]);
     rig.asked();
-    rig.click(cx, "worktree-toggle");
     rig.click(cx, "new-prompt");
     rig.typed(cx, "fix the flaky test");
     rig.click(cx, "create");
+    assert!(rig.asked().is_empty(), "with no project there's nowhere to start: nothing is guessed, and what was typed stays");
+
+    // the projects are the sidebar's, the latest first; one is picked.
+    let mut api = session(1, "Fix login", RunState::Idle, None);
+    api.updated_ms = 2;
+    let mut web = session(2, "Polish", RunState::Idle, None);
+    web.cwd = "/work/web".into();
+    web.updated_ms = 1;
+    rig.feed(cx, vec![UiEvent::Sessions(vec![api, web])]);
+    rig.press(cx, "cmd-n");
+    rig.click(cx, "new-project");
+    assert!(rig.exists(cx, "new-project-0") && rig.exists(cx, "new-project-1") && !rig.exists(cx, "new-project-2"));
+    assert!(rig.exists(cx, "new-project-open") && rig.exists(cx, "new-project-github") && rig.exists(cx, "new-project-create"), "and the ways to another, as the + menu has them");
+    rig.click(cx, "new-project-1");
+    rig.click(cx, "worktree-toggle");
+    rig.click(cx, "create");
     match rig.asked().as_slice() {
-        [Cmd::Create { cwd, worktree: true, prompt }] => {
-            assert!(!cwd.is_empty());
-            assert_eq!(prompt, "fix the flaky test");
-        }
+        [Cmd::Create { cwd, worktree: true, prompt }] => assert_eq!((cwd.as_str(), prompt.as_str()), ("/work/web", "fix the flaky test")),
         other => panic!("{other:?}"),
     }
     // command-n brings the form back from a session.
@@ -420,6 +432,23 @@ fn rows_hold_their_places_under_the_pointer_and_settle_when_it_leaves(cx: &mut T
     cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-new", cx)).unwrap();
     rig.settle(cx);
     assert_eq!(order(&rig, cx), [1, 3, 2], "the session that needs you is on top");
+}
+
+#[gpui_kit::test]
+fn folding_a_project_happens_at_once_with_the_pointer_on_the_list(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    let quiet = |n, goal| session(n, goal, RunState::Idle, None);
+    rig.feed(cx, vec![UiEvent::Sessions(vec![quiet(1, "One"), quiet(2, "Two")])]);
+    let rows = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.shown_for_test().rows().count());
+    assert_eq!(rows(&rig, cx), 2);
+    // the pointer is on the header it clicks: the rows still go, and come back, straight away.
+    cx.update_window(rig.window, |_, window, cx| window.hover("project-api", cx)).unwrap();
+    rig.settle(cx);
+    rig.click(cx, "project-api");
+    assert_eq!(rows(&rig, cx), 0, "folded at once");
+    assert!(rig.exists(cx, "project-api"), "and its header stays to unfold it");
+    rig.click(cx, "project-api");
+    assert_eq!(rows(&rig, cx), 2, "unfolded at once");
 }
 
 // ---- the overview -------------------------------------------------------------
@@ -1078,14 +1107,15 @@ fn settings_open_from_the_keyboard_and_write_what_you_pick_to_the_layout_file(cx
 #[gpui_kit::test]
 fn the_new_session_form_picks_in_place_or_a_worktree(cx: &mut TestAppContext) {
     let mut rig = Rig::new(cx);
-    rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![])]);
+    rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![session(1, "Fix login", RunState::Idle, None)])]);
     rig.asked();
+    rig.press(cx, "cmd-n");
     rig.click(cx, "worktree-toggle");
     rig.click(cx, "in-place");
     rig.click(cx, "new-prompt");
     rig.typed(cx, "tidy the readme");
     rig.click(cx, "create");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { worktree: false, prompt, .. }] if prompt == "tidy the readme"));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { worktree: false, prompt, cwd }] if prompt == "tidy the readme" && cwd == "/work/api"), "the latest project, unasked");
 }
 
 #[gpui_kit::test]

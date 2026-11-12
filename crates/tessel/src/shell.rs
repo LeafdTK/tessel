@@ -106,7 +106,9 @@ pub struct Shell {
     bg_now: std::cell::Cell<Option<Hsla>>,
     scroller: Entity<MessageScrollerState>,
     composer: Entity<gpui_kit::component::input::TextareaState>,
-    new_cwd: Entity<InputState>,
+    /// the project a new session starts in, when one was picked; otherwise
+    /// the latest (see `new_folder`).
+    pub(crate) new_project: Option<String>,
     new_prompt: Entity<InputState>,
     new_worktree: bool,
     show_new: bool,
@@ -318,9 +320,6 @@ impl Shell {
         let scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         // three lines to start, growing with what's written; return sends, shift-return is a new line.
         let composer = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(3, 12).submit_on_enter(true).placeholder("Ask, or tell the agent what to do…"));
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
-        let start_dir = std::env::var("TESSEL_DEFAULT_CWD").unwrap_or(home);
-        let new_cwd = cx.new(|cx| InputState::new(window, cx).placeholder("Folder to work in").default_value(start_dir));
         let new_prompt = cx.new(|cx| InputState::new(window, cx).placeholder("What should it do?"));
         let font_input = cx.new(|cx| InputState::new(window, cx).placeholder("System"));
         let mono_input = cx.new(|cx| InputState::new(window, cx).placeholder(theme::MONO));
@@ -465,7 +464,7 @@ impl Shell {
             bg_now: std::cell::Cell::new(None),
             scroller,
             composer,
-            new_cwd,
+            new_project: std::env::var("TESSEL_DEFAULT_CWD").ok().filter(|d| !d.is_empty()),
             new_prompt,
             new_worktree: false,
             show_new: true,
@@ -770,8 +769,14 @@ impl Shell {
     /// places are made to start from where they were. while the pointer rests
     /// on the list, nothing changes places at all.
     fn reflow_sidebar(&mut self) {
+        self.reflow_sidebar_as(self.sidebar_hovered);
+    }
+
+    /// `hold` keeps rows where they are under the pointer: for what the
+    /// daemon changes, never for what you just did yourself.
+    pub(crate) fn reflow_sidebar_as(&mut self, hold: bool) {
         let real = SidebarLayout::build(&self.model);
-        let next = if self.sidebar_hovered { self.shown.held(&real) } else { real };
+        let next = if hold { self.shown.held(&real) } else { real };
         if next == self.shown {
             return;
         }
@@ -1012,16 +1017,11 @@ impl Shell {
     }
 
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let cwd = self.new_cwd.read(cx).value().trim().to_string();
         let prompt = self.new_prompt.read(cx).value().to_string();
-        if cwd.is_empty() {
-            self.error = Some("Choose a folder for the session to work in.".into());
+        let Some(cwd) = self.new_folder() else {
+            self.error = Some("Choose a project for the session to work in.".into());
             cx.notify();
             return;
-        }
-        let cwd = match cwd.strip_prefix("~/") {
-            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
-            None => cwd,
         };
         self.cmd(Cmd::Create { cwd, worktree: self.new_worktree, prompt });
         self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
@@ -1448,6 +1448,7 @@ impl Shell {
     pub(crate) fn new_session_form(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
         let worktree = self.new_worktree;
+        let picker = self.project_picker(cx);
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
             theme::segment(&p, id, label, on)
                 .test_support()
@@ -1457,18 +1458,7 @@ impl Shell {
                     cx.notify();
                 }))
         };
-        // the folder, as a chip you can type into.
-        let folder = h_flex()
-            .flex_1()
-            .min_w(px(140.))
-            .max_w(px(320.))
-            .h(theme::z(theme::CONTROL_H))
-            .pl_2()
-            .gap_1()
-            .rounded(theme::z(theme::R_CONTROL))
-            .bg(p.fill)
-            .child(div().flex_shrink_0().text_color(p.secondary).child(gpui_kit::component::Icon::empty().path("icons/folder.svg").small()))
-            .child(div().flex_1().min_w_0().set(Type::Code).child(Input::new(&self.new_cwd).id("new-cwd").appearance(false).small()));
+        let folder = self.new_folder();
         let card = v_flex()
             .w_full()
             .p_3()
@@ -1483,7 +1473,7 @@ impl Shell {
                 h_flex()
                     .flex_wrap()
                     .gap_2()
-                    .child(folder)
+                    .child(picker)
                     .child(theme::tray(&p).child(segment("in-place", "In place", !worktree, false)).child(segment("worktree-toggle", "New worktree", worktree, true)))
                     .child(div().flex_1().min_w(px(0.)))
                     .child(
@@ -1499,10 +1489,10 @@ impl Shell {
                 .max_w(px(640.))
                 .gap_3()
                 .child(card)
-                .child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(if worktree {
-                    "Gets its own branch and folder. Your checkout is untouched."
-                } else {
-                    "Works directly in this folder."
+                .child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(match (&folder, worktree) {
+                    (None, _) => "Pick a project, or open a new one, for it to work in.".to_owned(),
+                    (Some(_), true) => "Gets its own branch and folder. Your checkout is untouched.".to_owned(),
+                    (Some(f), false) => format!("Works directly in {}.", projects::tilde(f)),
                 })),
         )
     }
