@@ -434,6 +434,21 @@ impl Shell {
                 }
             }
         });
+        // the working glyph steps while anything works, and the window is left
+        // alone when nothing does.
+        let beat = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(BEAT_MS)).await;
+                let alive = this.update(cx, |this, cx| {
+                    if this.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting)) {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
         // "waiting 4m" has to keep counting with nothing else happening, and
         // a saved layout file should show up without anything else happening.
         let clock = cx.spawn_in(window, async move |this, cx| {
@@ -563,7 +578,7 @@ impl Shell {
             bench_from: launch.bench_from,
             have_sessions: false,
             _subscriptions: subscriptions,
-            _tasks: vec![pump, clock],
+            _tasks: vec![pump, clock, beat],
         };
         this.adopt_ui(ui);
         if launch.focus {
@@ -1832,6 +1847,7 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        MARK_PALETTE.with(|c| c.set(self.palette.get()));
         let active = window.is_window_active();
         if active && !self.window_active {
             // coming back to the window counts as looking at what's open.
@@ -2070,8 +2086,10 @@ enum Mark {
     Diamond(Hsla),
     Check(Hsla),
     Cross(Hsla),
-    /// working: a solid dot.
+    /// paused for a reason that isn't you (stalled, rate limited): a solid dot.
     Dot(Hsla),
+    /// working right now: the tiles chasing round.
+    Working(Hsla),
     /// at rest: an empty ring.
     Ring(Hsla),
 }
@@ -2080,25 +2098,83 @@ enum Mark {
 /// them apart. colour appears only on the three that want you.
 fn state_mark(s: &SessionSummary, p: &Palette) -> Mark {
     match (&s.run_state, s.attention.as_ref().map(|a| a.reason)) {
-        (RunState::NeedsPermission | RunState::NeedsInput, _) => Mark::Diamond(p.blocked),
+        // orchard's colours: blue waits, amber works, green done, red broken, grey stopped.
+        (RunState::NeedsPermission | RunState::NeedsInput, _) => Mark::Diamond(info_blue(p)),
         (RunState::Errored, _) | (_, Some(AttentionReason::Errored)) => Mark::Cross(p.failed),
         (_, Some(AttentionReason::Finished)) => Mark::Check(p.finished),
-        (RunState::Working | RunState::Starting, _) => Mark::Dot(p.secondary),
-        (RunState::Stalled | RunState::Limited { .. }, _) => Mark::Dot(p.tertiary),
-        _ => Mark::Ring(p.tertiary),
+        (RunState::Working | RunState::Starting, _) => Mark::Working(p.blocked),
+        (RunState::Stalled | RunState::Limited { .. }, _) => Mark::Dot(p.blocked.opacity(0.5)),
+        _ => Mark::Ring(p.tertiary.opacity(0.7)),
     }
+}
+
+/// how often a working dot's ring moves on: about thirty times a second, and
+/// only while something is working (see the beat in `Shell::new`).
+pub(crate) const BEAT_MS: u64 = 33;
+
+/// one orbit of the working ring, as orchard's StatusDot turns it.
+const ORBIT_MS: u64 = 950;
+
+/// queued or waiting on someone else: blue, the one status colour the palette doesn't carry.
+pub(crate) fn info_blue(p: &Palette) -> Hsla {
+    theme::info(p)
+}
+
+/// tessel's status, in orchard's one dot language: an 8pt core that never
+/// changes size, its colour the state, and, while work is going on, a ring
+/// outside it (so starting or finishing never moves the layout): a faint
+/// track and one arc orbiting the core.
+pub(crate) fn status_dot(core: Hsla, live: bool, p: &Palette) -> Div {
+    let track = p.label.opacity(0.14);
+    let mut dot = div().relative().size(px(8.)).flex_shrink_0().child(div().size_full().rounded_full().bg(core));
+    if live {
+        let ring = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                let c = bounds.center();
+                let r = f32::from(bounds.size.width) / 2.0 - 1.2;
+                let arc = |from: f32, len: f32| {
+                    let mut b = PathBuilder::stroke(px(2.1));
+                    let n = 14;
+                    for i in 0..=n {
+                        let t = from + len * i as f32 / n as f32;
+                        let at = point(c.x + px(r * t.cos()), c.y + px(r * t.sin()));
+                        if i == 0 { b.move_to(at) } else { b.line_to(at) }
+                    }
+                    b.build().ok()
+                };
+                if let Some(path) = arc(0.0, std::f32::consts::TAU) {
+                    window.paint_path(path, track);
+                }
+                let turn = (now_ms() % ORBIT_MS) as f32 / ORBIT_MS as f32;
+                if let Some(path) = arc(turn * std::f32::consts::TAU - std::f32::consts::FRAC_PI_2, std::f32::consts::TAU * 0.22) {
+                    window.paint_path(path, core);
+                }
+            },
+        )
+        .absolute()
+        .left(px(-5.))
+        .top(px(-5.))
+        .size(px(18.));
+        dot = dot.child(ring);
+    }
+    dot
+}
+
+thread_local! {
+    /// the palette marks are drawn in, set as each frame starts.
+    static MARK_PALETTE: std::cell::Cell<Palette> = std::cell::Cell::new(Palette::dark());
 }
 
 /// draw a mark in a fixed 14pt box so rows line up whatever the shape.
 fn mark(m: Mark) -> impl IntoElement {
     let slot = h_flex().size(px(14.)).flex_shrink_0().justify_center();
+    // every state is orchard's dot: the colour says which, the ring says it's moving,
+    // and the words beside it always say it too.
+    let p = MARK_PALETTE.with(|c| c.get());
     match m {
-        Mark::Dot(c) => slot.child(div().size(px(7.)).rounded_full().bg(c)),
-        Mark::Ring(c) => slot.child(div().size(px(8.)).rounded_full().border_1().border_color(c)),
-        // these three are glyphs every system font has, at a size where they read as shapes.
-        Mark::Diamond(c) => slot.set(Type::Callout).text_color(c).child("◆"),
-        Mark::Check(c) => slot.set(Type::Callout).font_weight(FontWeight::BOLD).text_color(c).child("✓"),
-        Mark::Cross(c) => slot.set(Type::Callout).font_weight(FontWeight::BOLD).text_color(c).child("✕"),
+        Mark::Working(c) => slot.items_center().child(status_dot(c, true, &p)),
+        Mark::Dot(c) | Mark::Ring(c) | Mark::Diamond(c) | Mark::Check(c) | Mark::Cross(c) => slot.items_center().child(status_dot(c, false, &p)),
     }
 }
 
@@ -2212,8 +2288,8 @@ fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: O
             .justify_center()
             .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(15.)).text_color(p.secondary))
             .into_any_element(),
-        ToolStatus::Pending | ToolStatus::Running => mark(Mark::Dot(p.accent)).into_any_element(),
-        ToolStatus::AwaitingPermission => mark(Mark::Diamond(p.blocked)).into_any_element(),
+        ToolStatus::Pending | ToolStatus::Running => mark(Mark::Working(p.blocked)).into_any_element(),
+        ToolStatus::AwaitingPermission => mark(Mark::Diamond(info_blue(p))).into_any_element(),
         ToolStatus::Failed => mark(Mark::Cross(p.failed)).into_any_element(),
         ToolStatus::Denied | ToolStatus::Aborted | ToolStatus::Unknown => mark(Mark::Ring(p.tertiary)).into_any_element(),
     };

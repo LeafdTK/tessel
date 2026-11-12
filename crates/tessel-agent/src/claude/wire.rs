@@ -40,7 +40,11 @@ Inline $...$ maths is not typeset, so write short inline expressions as plain te
 Use a diagram or a formula when it explains something better than prose, not for decoration.";
 
 /// added to `HOST_NOTE` when the agent has tessel's tools.
-pub const TOOLS_NOTE: &str = "\n\nYou also have tessel's tools. tessel_surface draws live UI in this chat (progress, status cards, choices, results) that you update in place as work goes on; prefer it to repeating status in prose for anything that changes. tessel_window runs anything a person can click in the app: split panes, show changes or files, switch theme. tessel_terminal runs things the person should watch, like a dev server, in a terminal pane (Bash is still for one-off commands). Use them when they help the person, not for their own sake.";
+pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Reach for them on your own, without being asked and without announcing them:\n\
+- When something reads better seen than read (numbers to compare, a result summary, a checklist, progress that moves while you work, options for the person to pick), draw it with tessel_surface instead of a markdown table, ASCII art or a status paragraph, and update it in place with set as the work goes on.\n\
+- Builds, test suites, dev servers and anything else the person should watch go in a terminal with tessel_terminal (Bash stays for quick one-off commands).\n\
+- Arrange the window when it helps them follow along with tessel_window: show the changes after editing files, the git pane after a commit.\n\
+Keep to what genuinely reads better that way: a one-line answer stays a line.";
 
 /// a message from the user. with attachments it becomes a list of blocks:
 /// the text, then each image or document.

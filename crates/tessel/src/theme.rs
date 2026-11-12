@@ -551,6 +551,11 @@ pub fn float_list(_p: &Palette) -> gpui_kit::Div {
     gpui_kit::component::v_flex().p(z(FLOAT_PAD)).gap(px(1.)).font_weight(FontWeight::NORMAL).text_size(z(13.5))
 }
 
+/// blue: waiting on someone (you, or a queue). orchard's status colour for it.
+pub fn info(p: &Palette) -> Hsla {
+    if p.dark { gpui_kit::rgb(0x6ea8ff).into() } else { gpui_kit::rgb(0x2f6fdb).into() }
+}
+
 /// a count beside a row's name: a small pill, so a number never just floats.
 /// `hot` is for counts that want you (sessions waiting).
 pub fn count_pill(p: &Palette, n: impl Into<SharedString>, hot: bool) -> gpui_kit::Div {
@@ -565,10 +570,10 @@ pub fn count_pill(p: &Palette, n: impl Into<SharedString>, hot: bool) -> gpui_ki
         .justify_center()
         .rounded_full()
         // a wash of the ink, not a fill colour: it sits on any surface, felt included.
-        .bg(if hot { p.blocked.opacity(0.16) } else { p.label.opacity(0.08) })
+        .bg(if hot { info(p).opacity(0.16) } else { p.label.opacity(0.08) })
         .text_size(z(11.))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(if hot { p.blocked } else { p.secondary })
+        .text_color(if hot { info(p) } else { p.secondary })
         .child(n.into())
 }
 

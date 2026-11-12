@@ -30,7 +30,7 @@ impl Shell {
         let name = title.to_owned();
         let count = if queue { self.model.attention_queue().len() } else { self.model.sessions.iter().filter(|s| project_name(s) == title && s.attention.is_none()).count() };
         let tile = if queue {
-            div().size(theme::z(18.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(5.)).bg(p.blocked.opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(11.)).text_color(p.blocked))
+            div().size(theme::z(18.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(5.)).bg(theme::info(&p).opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(11.)).text_color(theme::info(&p)))
         } else {
             project_tile(title, &p)
         };

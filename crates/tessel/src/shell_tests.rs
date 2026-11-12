@@ -1193,6 +1193,19 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_working_agent_says_so_above_the_message_box_and_an_idle_one_doesnt(cx: &mut TestAppContext) {
+    let mut busy = session(1, "Fix login", RunState::Working, None);
+    busy.activity = Some("running the tests".into());
+    busy.activity_since_ms = Some(1);
+    let mut rig = Rig::with_sessions(cx, busy.clone(), vec![]);
+    assert!(rig.exists(cx, "working"), "the dot and what it's doing, where you're looking");
+    let mut idle = busy;
+    idle.run_state = RunState::Idle;
+    rig.feed(cx, vec![UiEvent::Session(idle)]);
+    assert!(!rig.exists(cx, "working"));
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.

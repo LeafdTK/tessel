@@ -179,7 +179,9 @@ impl ClaudeBackend {
     pub fn first_lines(opts: &SpawnOpts) -> Vec<String> {
         let Some(tools) = &opts.tools else { return Vec::new() };
         let env: serde_json::Map<String, serde_json::Value> = tools.env.iter().map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone()))).collect();
-        let servers = serde_json::json!({"tessel": {"type": "stdio", "command": tools.command, "args": ["mcp"], "env": env}});
+        // always loaded: not deferred behind the agent's tool search, where a
+        // tool it isn't told about is a tool it never thinks to use.
+        let servers = serde_json::json!({"tessel": {"type": "stdio", "command": tools.command, "args": ["mcp"], "env": env, "alwaysLoad": true}});
         vec![wire::mcp_set_servers("tessel-tools", &servers).to_string()]
     }
 }
@@ -442,6 +444,7 @@ mod tests {
         assert_eq!(tessel["command"], "/opt/tessel/tesselctl");
         assert_eq!(tessel["args"][0], "mcp");
         assert_eq!(tessel["env"]["TESSEL_SESSION"], "s-1");
+        assert_eq!(tessel["alwaysLoad"], true, "in front of the agent, not behind its tool search");
         assert!(args.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("tessel_surface") && w[1].contains("```mermaid")), "one note, both parts");
         assert_eq!(args.iter().filter(|a| *a == "--append-system-prompt").count(), 1);
         assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__tessel"]), "they run without a permission prompt");

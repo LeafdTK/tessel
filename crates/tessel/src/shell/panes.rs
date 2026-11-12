@@ -740,7 +740,27 @@ impl Shell {
             .child(hint("⇧ ⏎", "new line"))
             .child(hint("/", "commands"))
             .child(hint("@", "files"));
-        let composer = v_flex().child(composer).child(hints);
+        // while the agent works, say so right where you're looking: orchard's
+        // orbiting dot, what it's doing, and for how long.
+        let working = self.model.open_summary().filter(|s| !self.show_new && matches!(s.run_state, RunState::Working | RunState::Starting)).map(|s| {
+            let what = match (&s.run_state, &s.activity) {
+                (RunState::Starting, _) => "Starting".to_owned(),
+                (_, Some(a)) => sentence(a),
+                _ => "Working".to_owned(),
+            };
+            let since = s.activity_since_ms.map(|t| ago(t, now_ms()));
+            h_flex()
+                .id("working")
+                .test_support()
+                .px(theme::z(14.))
+                .pb(theme::z(8.))
+                .gap(theme::z(10.))
+                .set(Type::Callout)
+                .child(status_dot(p.blocked, true, &p))
+                .child(div().min_w_0().truncate().text_color(p.label).child(what))
+                .children(since.map(|t| div().flex_shrink_0().set(Type::Code).text_color(p.tertiary).child(t)))
+        });
+        let composer = v_flex().children(working).child(composer).child(hints);
         v_flex()
             .size_full()
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
@@ -810,21 +830,20 @@ impl Shell {
                 let this = shell.read(cx);
                 let p = this.palette.get();
                 let taken: Vec<Module> = this.ui.panes().iter().filter_map(|p| p.module).collect();
-                let mut list = theme::float_list(&p).w(px(248.)).child(theme::float_label(&p, "New pane beside this one"));
+                let list = theme::float_list(&p).w(px(256.)).child(theme::float_label(&p, "New pane beside this one"));
+                let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
                 for (_, m, title, icon, _) in MODULES {
                     // the ones there's only one of are already somewhere.
                     if matches!(m, Module::Conversation | Module::Sessions | Module::Workspace) && taken.contains(&m) {
                         continue;
                     }
                     let (me, popover, t) = (me.clone(), popover.clone(), trail.clone());
-                    list = list.child(
-                        theme::float_item(&p, SharedString::from(format!("pane-{pid}-new-{}", m.name())), Some(icon), title, None, false).test_support().on_click(move |_, window, cx| {
-                            popover.update(cx, |st, cx| st.dismiss(window, cx));
-                            let _ = me.update(cx, |this, cx| this.open_beside(t.clone(), m, window, cx));
-                        }),
-                    );
+                    grid = grid.child(module_tile(&p, SharedString::from(format!("pane-{pid}-new-{}", m.name())), icon, title, false).on_click(move |_, window, cx| {
+                        popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        let _ = me.update(cx, |this, cx| this.open_beside(t.clone(), m, window, cx));
+                    }).test_support());
                 }
-                list.into_any_element()
+                list.child(grid).into_any_element()
             })
     }
 
@@ -862,7 +881,7 @@ impl Shell {
                 let (t1, t2, t3, z) = (trail.clone(), trail.clone(), trail.clone(), pid.clone());
                 let sep = || theme::float_sep(&p);
                 let mut list = theme::float_list(&p)
-                    .w(px(248.))
+                    .w(px(256.))
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
                     .child(
@@ -872,14 +891,16 @@ impl Shell {
                     )
                     .child(sep())
                     .child(theme::float_label(&p, "Show here"));
+                let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
                 for (_, m, title, icon, _) in MODULES {
                     let single = matches!(m, Module::Conversation | Module::Sessions | Module::Workspace);
                     if single && taken.contains(&m) && current != Some(m) {
                         continue;
                     }
                     let t = trail.clone();
-                    list = list.child(theme::float_item(&p, SharedString::from(format!("pane-{pid}-show-{}", m.name())), Some(icon), title, None, current == Some(m)).on_click(act(Box::new(move |this, w, cx| this.set_pane_module(t.clone(), m, w, cx)))).test_support());
+                    grid = grid.child(module_tile(&p, SharedString::from(format!("pane-{pid}-show-{}", m.name())), icon, title, current == Some(m)).on_click(act(Box::new(move |this, w, cx| this.set_pane_module(t.clone(), m, w, cx)))).test_support());
                 }
+                list = list.child(grid);
                 list.child(sep())
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-close")), Some("x"), "Close pane", None, Some("⌘ W"), false).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support())
                     .into_any_element()
@@ -1293,4 +1314,23 @@ mod tests {
         remove_at(&mut one, &[]);
         assert_eq!(one, json!({}), "the last pane closes to an empty one");
     }
+}
+
+/// a module as a small tile: its icon over its name. four to a row, so a menu
+/// offering every module stays short enough for a quarter of the window.
+fn module_tile(p: &theme::Palette, id: SharedString, icon: &str, title: &str, current: bool) -> Stateful<Div> {
+    let p = *p;
+    v_flex()
+        .id(id)
+        .w(px(61.))
+        .h(px(52.))
+        .items_center()
+        .justify_center()
+        .gap(px(4.))
+        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+        .cursor_pointer()
+        .when(current, |d| d.bg(p.selection))
+        .when(!current, |d| d.hover(move |d| d.bg(p.hover)))
+        .child(Icon::empty().path(format!("icons/{icon}.svg")).size(px(16.)).text_color(if current { p.accent } else { p.secondary }))
+        .child(div().max_w_full().truncate().text_size(px(11.)).text_color(if current { p.label } else { p.secondary }).child(title.to_owned()))
 }

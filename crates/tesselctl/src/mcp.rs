@@ -29,8 +29,9 @@ const FOR_PEOPLE: &[(&str, &str)] = &[
 fn tools() -> Value {
     let kinds: Vec<String> = KINDS.iter().map(|(k, about)| if about.is_empty() { (*k).to_owned() } else { format!("{k} ({about})") }).collect();
     let surface = format!(
-        "Draw live UI in your chat (or in a Surfaces pane) and update it in place: progress, status cards, \
-choices for the person, results. ops: put (draw or redraw a whole surface: surface, node, region inline|pane; \
+        "Show things visually in the chat: use this instead of markdown tables, ASCII art or status paragraphs whenever \
+a result reads better as UI (metrics, comparisons, checklists, progress that updates, choices the person can click). \
+Draw live UI in your chat (or in a Surfaces pane) and update it in place. ops: put (draw or redraw a whole surface: surface, node, region inline|pane; \
 pane surfaces show in a Surfaces pane, opened with tessel_window pane.show {{\"module\":\"surfaces\"}}, and in the chat while none is open), \
 set (change one element's props in place: surface, element (an id; leave out for the top element), props), remove (surface). An element is \
 {{\"k\": kind, \"id\": optional, \"p\": props, \"c\": children}}. When the person clicks a button, ticks a checkbox \
