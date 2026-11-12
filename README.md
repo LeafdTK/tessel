@@ -17,10 +17,36 @@ sidebar lists workspaces; the sessions in one workspace are tabs. Sessions that 
 you (a question, a permission, a finished turn) collect at the top, oldest first, and
 each shows a minute-long activity graph so a stuck agent is easy to spot.
 
+**Workspaces that work from the first minute.** A new worktree gets the main
+checkout's ignored files (`.env*` by default), runs the repository's setup script in a
+terminal you can watch, and has ten ports of its own (`$TESSEL_PORT`), so two
+workspaces can both run a dev server. A run button starts the dev server or any other
+script. Scripts live in `.tessel/settings.toml` (shared with the team) and
+`.tessel/settings.local.toml` (this Mac only); write them in Settings, or have an agent
+write them for you.
+
 **The conversation.** Streaming replies, tool calls, thinking, plans to approve and
 questions to answer. Every turn ends with how long it took, what it cost, the tokens
 it used (with cache hits) and the files it touched. Fork a conversation into a new tab
-or a new worktree from any turn.
+or a new worktree from any turn, or put the files back the way they were before it:
+each message takes a checkpoint, kept in git without touching your branch or staging.
+Usage limits for the account show beside the message box.
+
+**Ship it.** Open a pull request, squash or rebase it in, or bring the branch up to date
+with main. Rather not use pull requests? Squash the work straight into main (and push).
+Nothing makes a merge commit, and a conflict comes back untouched with a button that
+hands it to the agent.
+
+**A browser you share with the agent.** The daemon runs a Chromium-based browser and
+shows the chat's page live in a pane. The agent opens your app, clicks through it and
+takes screenshots with its tools while you watch; you can use the page too. Press Pick
+and click part of the page to put it in your next message: a picture of it, its
+selector and its HTML. No Chromium installed? Tessel can download Chrome for Testing.
+
+**Desktops.** Several layouts, each with its own panes and chats, and optionally only
+some projects in the sidebar. Switch with `Cmd 1` to `Cmd 9`, `Opt Cmd Left/Right`, or a
+two-finger swipe on the sidebar; drag a chat onto one in the overview. Two conversation
+panes can show two chats side by side, or the same chat twice.
 
 **The workspace.** What changed, scoped to everything uncommitted, this session or
 just the last turn, with a filter and a diff of each file. A file browser and editor, the pull
@@ -40,7 +66,8 @@ leaving what you're doing. Off by default on screens without a notch.
 
 <p align="center"><img src="assets/screenshots/notch.png" width="620" alt="The notch, open"></p>
 
-**Command palette.** `Cmd K` searches commands, sessions, files and themes.
+**Command palette.** `Cmd K` searches commands, sessions, files and themes. A short
+tour of all this runs the first time Tessel starts, and again from Help.
 
 ![Command palette](assets/screenshots/palette.png)
 
