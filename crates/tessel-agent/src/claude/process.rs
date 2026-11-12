@@ -314,6 +314,7 @@ impl Backend for ClaudeBackend {
         if let Some(env) = &self.env {
             cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         }
+        cmd.envs(opts.env.iter().map(|(k, v)| (k, v)));
         let mut child = cmd
             .spawn()
             .with_context(|| format!("could not start {} in {}", self.program.display(), opts.cwd.display()))?;
@@ -411,7 +412,7 @@ mod tests {
 
     #[test]
     fn effort_and_fast_mode_are_asked_for_at_start() {
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, add_dirs: vec![], raw_log: None, tools: None };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
         let at = args.iter().position(|a| a == "--settings").expect("fast mode is a setting");
@@ -436,7 +437,7 @@ mod tests {
     #[test]
     fn an_agent_given_tessels_tools_gets_them_scoped_to_its_session_and_is_told_why() {
         let tools = crate::backend::AgentTools { command: "/opt/tessel/tesselctl".into(), env: vec![("TESSEL_SESSION".into(), "s-1".into())] };
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: Some(tools) };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: Some(tools), env: vec![] };
         let args = ClaudeBackend::args(&opts);
         // not on the command line: that makes the agent wait for every server before starting.
         assert!(!args.iter().any(|a| a == "--mcp-config"));
@@ -456,7 +457,7 @@ mod tests {
 
     #[test]
     fn first_spawn_names_the_session_and_later_ones_resume_it() {
-        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: None };
+        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--session-id", "abc"]));
         assert!(!args.iter().any(|a| a == "--resume"));

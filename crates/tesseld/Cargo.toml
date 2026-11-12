@@ -24,6 +24,10 @@ uuid.workspace = true
 libc = "0.2"
 base64 = "0.22"
 rusqlite = { version = "0.37", features = ["bundled"] }
+# a workspace's settings file, and which gitignored files it gets a copy of.
+# both already in the build.
+toml = "0.8"
+globset = "0.4"
 
 [dev-dependencies]
 base64 = "0.22"

@@ -167,6 +167,12 @@ pub enum Request {
         #[serde(default = "default_tail")]
         tail: u32,
     },
+    /// what a session's repository says its workspaces need: setup, run
+    /// buttons, files to copy. read from `.tessel/settings.toml`, or a
+    /// `.conductor/settings.toml` written for Conductor.
+    Scripts {
+        session: SessionId,
+    },
     /// page older items in.
     ItemsBefore {
         session: SessionId,
@@ -443,6 +449,39 @@ fn default_tail() -> u32 {
     200
 }
 
+/// a button that runs something in a workspace: a dev server, the tests.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScriptAction {
+    /// its name in the file (`dev`), which is also what the button says.
+    pub id: String,
+    pub command: String,
+    /// a lucide icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    /// the one the run button starts.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+/// what a repository says each of its workspaces needs.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceScripts {
+    /// run once, when a workspace is made (installing dependencies, say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
+    /// run before a workspace is removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ScriptAction>,
+    /// gitignored files a new workspace gets a copy of (`.env*`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy: Vec<String>,
+    /// the file this came from, relative to the workspace. none: nothing set up yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeSpec {
     /// branch or ref to start from. default: the repo's default remote branch.
@@ -477,6 +516,11 @@ pub enum Response {
         /// present when `detail` was requested.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<SessionSnapshot>,
+    },
+    Scripts {
+        scripts: WorkspaceScripts,
+        /// the first of the ten ports the workspace has (`$TESSEL_PORT`).
+        port: u16,
     },
     Followed {
         /// the sessions newly followed, as they are now.

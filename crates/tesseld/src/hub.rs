@@ -66,7 +66,7 @@ pub enum HubMsg {
     /// the answer to a request that needed work off the main loop (git, files, the network).
     Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
     /// a worktree finished being made (or failed) for a pending create.
-    WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError> },
+    WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
     /// keys for a terminal: a binary frame from any client.
     TermInput { payload: Vec<u8> },
     /// from a terminal's thread.
@@ -157,6 +157,8 @@ pub struct Hub {
     next_term: TermId,
     /// what tessel did to each session's repository, newest last: what undo takes back.
     git_undo: GitUndoStacks,
+    /// each workspace's ten ports.
+    ports: crate::setup::Ports,
 }
 
 type GitUndoStacks = Arc<std::sync::Mutex<HashMap<SessionId, Vec<GitUndo>>>>;
@@ -207,6 +209,7 @@ impl Hub {
         backend: Arc<dyn Backend>,
         tx: mpsc::UnboundedSender<HubMsg>,
     ) -> anyhow::Result<Self> {
+        let ports_path = cfg.paths.home.join("ports.json");
         let mut hub = Self {
             cfg,
             store,
@@ -222,6 +225,7 @@ impl Hub {
             terms: Default::default(),
             next_term: 1,
             git_undo: Default::default(),
+            ports: crate::setup::Ports::load(ports_path),
         };
         hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
@@ -307,13 +311,20 @@ impl Hub {
             }
             HubMsg::Agent { session, generation, output } => self.agent_output(session, generation, output),
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
-            HubMsg::WorktreeReady { client, id, create, result } => {
+            HubMsg::WorktreeReady { client, id, create, result, setup } => {
                 let result = result.and_then(|made| {
                     // a fork's worktree is of the parent's repository, whichever folder it was made from.
                     let repo = create.fork.as_ref().and_then(|f| f.repo.clone()).unwrap_or(made.repo);
                     let wt = WorktreeInfo { repo, branch: made.branch };
                     self.create_session(*create, made.path, Some(wt))
                 });
+                // the new workspace's setup runs where you can watch it: a terminal of its own.
+                if let (Ok(Response::Session { summary }), Some(cmd)) = (&result, setup) {
+                    let (session, cwd) = (summary.id, summary.cwd.clone());
+                    if let Err(e) = self.open_term(Some(session), cwd, vec![cmd], 120, 32) {
+                        eprintln!("tesseld: couldn't start the setup script: {}", e.message);
+                    }
+                }
                 self.respond(client, id, result);
             }
             HubMsg::TermInput { payload } => {
@@ -536,6 +547,10 @@ impl Hub {
                     let dir = self.cfg.paths.session_dir(&session);
                     let wt = live.state.meta.worktree.clone().filter(|_| remove_worktree);
                     let path = live.state.meta.cwd.clone();
+                    // a workspace removed gives its ports back.
+                    if wt.is_some() {
+                        self.ports.release(&path);
+                    }
                     tokio::spawn(async move {
                         let _ = tokio::fs::remove_dir_all(dir).await;
                         if let Some(wt) = wt
@@ -780,24 +795,17 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     return Some(Err(not_found(s)));
                 }
                 let cwd = cwd.or(session_cwd).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-                if !std::path::Path::new(&cwd).is_dir() {
-                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory"))));
-                }
-                let id = self.next_term;
-                self.next_term += 1;
-                let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None };
-                let mut env = vec![("TESSEL_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
-                if let Some(s) = session {
-                    env.push(("TESSEL_SESSION".into(), s.to_string()));
-                }
-                match crate::term::spawn(info.clone(), env, self.tx.clone()) {
-                    Ok(handle) => {
-                        self.terms.insert(id, handle);
-                        self.tell_everyone(Event::TermUpdated { info: info.clone() });
-                        Ok(Response::Term { info })
-                    }
-                    Err(e) => Err(RpcError::new(ErrorCode::Internal, format!("couldn't start a terminal: {e}"))),
-                }
+                self.open_term(session, cwd, command, cols, rows).map(|info| Response::Term { info })
+            }
+            Request::Scripts { session } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let (cwd, root) = (live.state.meta.cwd.clone(), live.state.meta.worktree.as_ref().map(|w| w.repo.clone()));
+                let port = self.ports.of(&cwd);
+                let root = root.unwrap_or_else(|| cwd.clone());
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    let scripts = tokio::task::spawn_blocking(move || crate::setup::load(&dir, std::path::Path::new(&root))).await.unwrap_or_default();
+                    Ok(Response::Scripts { scripts, port })
+                });
             }
             Request::TermList => Ok(Response::Terms { terms: self.terms.values().map(|t| t.info.clone()).collect() }),
             Request::TermAttach { term } => match self.terms.get(&term) {
@@ -1006,6 +1014,39 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
 
     /// run `work` in the session's working directory, off the main loop, and
     /// send its answer when it is done. `None` is "the answer comes later".
+    /// what every process in a session's workspace is told about it: its
+    /// ports, its name and folder, and the repository it's of.
+    fn workspace_env(&mut self, session: SessionId) -> Vec<(String, String)> {
+        let Some(live) = self.sessions.get(&session) else { return Vec::new() };
+        let cwd = live.state.meta.cwd.clone();
+        let root = live.state.meta.worktree.as_ref().map_or_else(|| cwd.clone(), |w| w.repo.clone());
+        let port = self.ports.of(&cwd);
+        crate::setup::env(&cwd, &root, port)
+    }
+
+    /// a terminal: a shell, or `command` in one. a session's terminal knows its workspace.
+    fn open_term(&mut self, session: Option<SessionId>, cwd: String, command: Vec<String>, cols: u16, rows: u16) -> Result<tessel_proto::term::TermInfo, RpcError> {
+        if !std::path::Path::new(&cwd).is_dir() {
+            return Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory")));
+        }
+        let id = self.next_term;
+        self.next_term += 1;
+        let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None };
+        let mut env = vec![("TESSEL_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
+        if let Some(s) = session {
+            env.push(("TESSEL_SESSION".into(), s.to_string()));
+            env.extend(self.workspace_env(s));
+        }
+        match crate::term::spawn(info.clone(), env, self.tx.clone()) {
+            Ok(handle) => {
+                self.terms.insert(id, handle);
+                self.tell_everyone(Event::TermUpdated { info: info.clone() });
+                Ok(info)
+            }
+            Err(e) => Err(RpcError::new(ErrorCode::Internal, format!("couldn't start a terminal: {e}"))),
+        }
+    }
+
     fn in_workdir<F, Fut>(&self, client: ClientId, id: u64, session: SessionId, work: F) -> Option<Result<Response, RpcError>>
     where
         F: FnOnce(std::path::PathBuf) -> Fut + Send + 'static,
@@ -1027,7 +1068,18 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let hint = create.goal.clone().or_else(|| create.prompt.clone()).unwrap_or_default();
         tokio::spawn(async move {
             let result = worktree::create(&create.cwd, &spec, &root, &hint).await;
-            let _ = tx.send(HubMsg::WorktreeReady { client, id, create: Box::new(create), result });
+            // what it needs before anyone works in it: the checkout's ignored files, then its setup.
+            let mut setup = None;
+            if let Ok(made) = &result {
+                let (ws, repo) = (std::path::PathBuf::from(&made.path), std::path::PathBuf::from(&made.repo));
+                let scripts = {
+                    let (ws, repo) = (ws.clone(), repo.clone());
+                    tokio::task::spawn_blocking(move || crate::setup::load(&ws, &repo)).await.unwrap_or_default()
+                };
+                crate::setup::copy_files(&repo, &ws, &scripts.copy).await;
+                setup = scripts.setup;
+            }
+            let _ = tx.send(HubMsg::WorktreeReady { client, id, create: Box::new(create), result, setup });
         });
     }
 
@@ -1116,10 +1168,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
     /// make sure an agent process exists for this session, starting (or
     /// resuming) one if not. reaping and crash recovery both lead here.
     fn ensure_process(&mut self, session: SessionId) -> Result<(), RpcError> {
-        let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
-        if live.agent.is_some() {
+        if self.sessions.get(&session).is_some_and(|l| l.agent.is_some()) {
             return Ok(());
         }
+        // the agent knows its workspace's ports and names, as its terminals do.
+        let workspace_env = self.workspace_env(session);
+        let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
         let cwd = live.state.meta.cwd.clone();
         if !Path::new(&cwd).is_dir() {
             return Err(RpcError::new(ErrorCode::Conflict, format!("{cwd} no longer exists")));
@@ -1137,6 +1191,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             effort: live.state.effort.clone(),
             fast: live.state.fast,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
+            env: workspace_env,
             raw_log: Some(self.cfg.paths.raw_log(&session)),
             tools: self.cfg.tools_bin.as_ref().filter(|_| self.settings.agent_tools).map(|bin| tessel_agent::backend::AgentTools {
                 command: bin.clone(),

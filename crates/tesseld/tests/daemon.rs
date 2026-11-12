@@ -1286,3 +1286,49 @@ async fn one_window_follows_several_chats_and_hears_from_each() {
     let seen = events_until(&mut ev, "an item from b", |e| matches!(e, Event::ItemUpserted { session, .. } if *session == b.id)).await;
     assert!(!seen.iter().any(|e| matches!(e, Event::ItemUpserted { session, .. } if *session == a.id)), "unfollowed: no items from a");
 }
+
+#[tokio::test]
+async fn a_new_workspace_gets_its_files_its_setup_its_ports_and_its_buttons() {
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("app");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"]] {
+        git(&repo, args);
+    }
+    std::fs::write(repo.join(".gitignore"), ".env\n").unwrap();
+    std::fs::write(repo.join(".env"), "SECRET=1\n").unwrap();
+    std::fs::write(
+        repo.join(".tessel/settings.toml"),
+        "[scripts]\nsetup = \"echo set up > ready.txt\"\n[scripts.run.dev]\ncommand = \"npm run dev -- --port $TESSEL_PORT\"\n",
+    )
+    .unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "init"]);
+    let (c, _) = d.client().await;
+    let create = Request::SessionCreate {
+        cmd_id: Uuid::new_v4(), cwd: repo.to_string_lossy().into_owned(), worktree: Some(WorktreeSpec { base: None, name: Some("ws".into()) }),
+        goal: Some("w".into()), prompt: Some("hi".into()), model: None, parent: None,
+    };
+    let Response::Session { summary: s } = c.request(create).await.unwrap() else { panic!() };
+    let ws = PathBuf::from(&s.cwd);
+    assert_eq!(std::fs::read_to_string(ws.join(".env")).unwrap(), "SECRET=1\n", "the checkout's ignored .env, copied in");
+
+    // its setup ran, in a terminal of the session's.
+    let Response::Terms { terms } = c.request(Request::TermList).await.unwrap() else { panic!() };
+    assert!(terms.iter().any(|t| t.session == Some(s.id) && t.command == ["echo set up > ready.txt"]), "{terms:?}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !ws.join("ready.txt").exists() {
+        assert!(tokio::time::Instant::now() < deadline, "setup never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // its buttons and its ports.
+    let Response::Scripts { scripts, port } = c.request(Request::Scripts { session: s.id }).await.unwrap() else { panic!() };
+    assert_eq!(scripts.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["dev"]);
+    assert_eq!(scripts.from.as_deref(), Some(".tessel/settings.toml"));
+    assert!(port >= 41000 && port % 10 == 0);
+    // the agent is told them too.
+    until(&c, s.id, "finished", |s| wants(s) == Some(AttentionReason::Finished)).await;
+    let env = d.backend.spawned.lock().unwrap()[0].env.clone();
+    assert!(env.contains(&("TESSEL_PORT".into(), port.to_string())) && env.contains(&("CONDUCTOR_WORKSPACE_PATH".into(), s.cwd.clone())), "{env:?}");
+}

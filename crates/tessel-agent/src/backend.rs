@@ -29,6 +29,8 @@ pub struct SpawnOpts {
     pub raw_log: Option<PathBuf>,
     /// tessel's own tools for this agent (the window, surfaces), if it gets them.
     pub tools: Option<AgentTools>,
+    /// what it's told about its workspace: `TESSEL_PORT` and the like.
+    pub env: Vec<(String, String)>,
 }
 
 /// how to start tessel's tool server for one agent.
