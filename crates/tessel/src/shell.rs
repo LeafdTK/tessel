@@ -111,7 +111,7 @@ pub struct Shell {
     /// the latest (see `new_folder`).
     pub(crate) new_project: Option<String>,
     new_prompt: Entity<InputState>,
-    new_worktree: bool,
+    pub(crate) new_worktree: bool,
     /// whether a folder is in a git repository, as the daemon said; `None`
     /// while it's being asked. a folder that isn't one can't have a worktree.
     pub(crate) folder_git: std::cell::RefCell<HashMap<String, Option<bool>>>,
@@ -1808,7 +1808,8 @@ impl Shell {
                     .icon(gpui_kit::component::Icon::empty().path("icons/copy.svg"))
                     .tooltip("Copy the reply")
                     .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(reply.clone()))),
-            );
+            )
+            .child(self.turn_menu(id, me));
         // the files it changed: two by name, then the rest as one.
         let chip = |id: SharedString, name: String, added: u32, removed: u32| {
             h_flex()
@@ -1854,6 +1855,33 @@ impl Shell {
     #[cfg(test)]
     pub(crate) fn turn_text_for_test(&self, ix: usize) -> String {
         self.turn_text(ix)
+    }
+
+    /// what can be done from the end of a turn: carry the conversation on elsewhere.
+    fn turn_menu(&self, id: &ItemId, me: &Entity<Self>) -> AnyElement {
+        let me = me.downgrade();
+        gpui_kit::component::popover::Popover::new(SharedString::from(format!("turn-{id}-menu")))
+            .p_0()
+            .anchor(Anchor::TopLeft)
+            .trigger(Button::new(SharedString::from(format!("turn-{id}-more"))).ghost().xsmall().icon(gpui_kit::component::Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let p = shell.read(cx).palette.get();
+                let fork = |workspace: bool| {
+                    let (me, popover) = (me.clone(), popover.clone());
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        let _ = me.update(cx, |this, cx| this.run_key("session.fork", serde_json::json!({"workspace": workspace}), window, cx));
+                    }
+                };
+                theme::float_list(&p)
+                    .w(px(240.))
+                    .child(theme::float_item(&p, "turn-fork-tab", Some("message-square-plus"), "Fork to new tab", Some("Same workspace, the conversation so far"), false).test_support().on_click(fork(false)))
+                    .child(theme::float_item(&p, "turn-fork-workspace", Some("git-fork"), "Fork to new workspace", Some("A new branch from here, the conversation so far"), false).test_support().on_click(fork(true)))
+                    .into_any_element()
+            })
+            .into_any_element()
     }
 
     /// the text of the turn ending at row `ix`: everything the agent said since

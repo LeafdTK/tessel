@@ -246,6 +246,15 @@ impl SessionState {
         }
     }
 
+    /// start from another session's transcript: a fork shows the history it carries on from.
+    pub fn seed_items(&mut self, items: Vec<Item>) {
+        for item in items {
+            self.seq = self.seq.max(item.seq);
+            self.index.insert(item.id.clone(), self.items.len());
+            self.items.push(item);
+        }
+    }
+
     pub fn items(&self) -> &[Item] {
         &self.items
     }

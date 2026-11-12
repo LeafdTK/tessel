@@ -13,6 +13,8 @@ pub struct SpawnOpts {
     pub agent_session_id: String,
     /// continue an existing conversation instead of starting one.
     pub resume: bool,
+    /// with `resume`: carry on from that conversation under a new id, leaving it as it was.
+    pub fork: bool,
     pub model: Option<String>,
     /// start in this permission mode instead of the user's default.
     pub permission_mode: Option<String>,

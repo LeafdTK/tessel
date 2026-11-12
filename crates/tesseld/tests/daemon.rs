@@ -1202,3 +1202,35 @@ async fn effort_and_fast_mode_are_kept_reach_the_agent_and_survive_a_restart() {
     assert_eq!((back.effort.as_deref(), back.fast), (Some("low"), true));
     d.stop().await;
 }
+
+#[tokio::test]
+async fn a_conversation_forks_into_a_new_tab_that_carries_on_from_it() {
+    let mut d = Daemon::start(&["plain", "plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    let fork = |id| Request::SessionFork { cmd_id: Uuid::new_v4(), session: id, workspace: false };
+    // nothing said yet: nothing to fork.
+    assert!(c.request(fork(s.id)).await.unwrap_err().to_string().contains("send it a message first"));
+
+    c.request(Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session: s.id, effort: Some("high".into()) }).await.unwrap();
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "hi".into(), attachments: vec![] }).await.unwrap();
+    until(&c, s.id, "the turn to end", |s| s.run_state == RunState::Idle && s.last_seq > 1).await;
+    let parent = snapshot(&c, s.id).await;
+    // the conversation id the parent's agent reported (with claude, the one tessel gave it;
+    // the recording keeps its own).
+    let parent_agent = "316819a3-be7f-4600-99dc-fb6704568a83".to_owned();
+
+    let Response::Session { summary: child } = c.request(fork(s.id)).await.unwrap() else { panic!() };
+    assert_ne!(child.id, s.id);
+    assert_eq!((child.cwd.as_str(), child.effort.as_deref()), (s.cwd.as_str(), Some("high")), "a tab: the same workspace, the same settings");
+    assert!(child.goal.ends_with("(fork)"));
+    let copied = snapshot(&c, child.id).await;
+    assert_eq!(copied.items.len(), parent.items.len(), "it shows the history it carries on from");
+
+    // its agent starts from the parent's conversation, under a new id.
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: child.id, text: "and then?".into(), attachments: vec![] }).await.unwrap();
+    until(&c, child.id, "the fork's turn to end", |s| s.run_state == RunState::Idle && s.last_seq > copied.summary.last_seq).await;
+    let opts = d.backend.spawned.lock().unwrap().last().cloned().unwrap();
+    assert!(opts.resume && opts.fork, "resumed and forked");
+    assert_eq!(opts.agent_session_id, parent_agent);
+}

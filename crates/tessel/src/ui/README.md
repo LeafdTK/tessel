@@ -382,6 +382,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `session.rename` | Rename a session |  | name, session? |
 | `session.delete` | Delete a session |  | session |
 | `session.model` | Change the model |  | model, session? |
+| `session.tab` | New tab in this workspace |  | a new session in the open session's folder |
+| `session.fork` | Fork to new tab |  | workspace?: true for a new worktree; session?. carries the conversation on, and opens it |
 | `model.favorite` | Use favourite model 1 | ⌃ ⌘ 1 | n: 1-5, the favourite's place; session? |
 | `model.effort` | Think harder | ⇧ ⌘ E | effort?: low|medium|high|xhigh|max|default; without one, the next level up; session? |
 | `model.fast` | Fast mode on or off | ⌥ ⌘ F | fast?: true|false; without it, flips; session? |

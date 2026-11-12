@@ -21,6 +21,8 @@ pub enum Cmd {
     /// show this session (or none).
     Open(Option<SessionId>),
     Create { cwd: String, worktree: bool, prompt: String },
+    /// carry a session's conversation on in a new tab, or a new workspace, and open it.
+    Fork { session: SessionId, workspace: bool },
     Send { session: SessionId, text: String, attachments: Vec<Attachment> },
     SetModel { session: SessionId, model: String },
     SetEffort { session: SessionId, effort: Option<String> },
@@ -288,6 +290,17 @@ async fn session(
                             Err(e) => Err(e),
                         }
                     }
+                    Cmd::Fork { session, workspace } => match client.request(Request::SessionFork { cmd_id: Uuid::new_v4(), session, workspace }).await {
+                        Ok(Response::Session { summary }) => {
+                            let id = summary.id;
+                            let _ = ui.send(UiEvent::Session(summary));
+                            let _ = ui.send(UiEvent::Created);
+                            *open = Some(id);
+                            subscribe(client, ui, open).await
+                        }
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    },
                     Cmd::Send { session, text, attachments } => client.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session, text, attachments }).await.map(drop),
                     Cmd::SetModel { session, model } => client.request(Request::SessionSetModel { cmd_id: Uuid::new_v4(), session, model }).await.map(drop),
                     Cmd::SetEffort { session, effort } => client.request(Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session, effort }).await.map(drop),

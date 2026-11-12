@@ -766,6 +766,7 @@ impl Shell {
         let composer = v_flex().children(working).child(composer).child(hints);
         v_flex()
             .size_full()
+            .children(self.workspace_tabs_el(cx))
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
             .child(div().flex_1().min_h_0().relative().child(self.transcript_el(cx).size_full()).child(self.message_rail(cx)))
             .child(h_flex().justify_center().children(self.prompts_el(cx).map(|d| column().child(d))))
@@ -1372,4 +1373,64 @@ fn module_tile(p: &theme::Palette, id: SharedString, icon: &str, title: &str, cu
         .when(!current, |d| d.hover(move |d| d.bg(p.hover)))
         .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(16.)).text_color(if current { p.accent } else { p.secondary }))
         .child(div().max_w_full().px(px(2.)).truncate().text_size(theme::z(11.)).text_color(if current { p.label } else { p.secondary }).child(title.to_owned()))
+}
+
+impl Shell {
+    /// the open session's workspace: every session working in the same folder,
+    /// oldest first. each is a tab.
+    pub(crate) fn workspace_tabs(&self) -> Vec<&SessionSummary> {
+        let Some(open) = self.model.open_summary() else { return Vec::new() };
+        let mut tabs: Vec<&SessionSummary> = self.model.sessions.iter().filter(|s| s.cwd == open.cwd).collect();
+        tabs.sort_by_key(|s| (s.created_ms, s.id));
+        tabs
+    }
+
+    /// a new tab in the open session's workspace: the same folder, no new worktree.
+    pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cwd) = self.model.open_summary().map(|s| s.cwd.clone()) else { return };
+        self.start_in(cwd, window, cx);
+        self.new_worktree = false;
+        cx.notify();
+    }
+
+    /// the workspace's tabs, over the conversation: what each is doing, the one
+    /// open, and a + for another.
+    fn workspace_tabs_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.show_new {
+            return None;
+        }
+        let open = self.model.open_summary()?.id;
+        let p = self.palette.get();
+        let mut strip = h_flex().id("workspace-tabs").test_support().px(theme::z(12.)).pt(theme::z(8.)).pb(theme::z(4.)).gap(theme::z(4.)).overflow_x_scroll();
+        for s in self.workspace_tabs() {
+            let (id, on) = (s.id, s.id == open);
+            strip = strip.child(
+                h_flex()
+                    .id(SharedString::from(format!("tab-{}", s.id)))
+                    .test_support()
+                    .aria_label(SharedString::from(format!("{}{}", s.goal, if on { ", open" } else { "" })))
+                    .flex_shrink_0()
+                    .h(theme::z(28.))
+                    .px(theme::z(10.))
+                    .gap(theme::z(7.))
+                    .rounded(theme::z(theme::R_CONTROL))
+                    .cursor_pointer()
+                    .when(on, |d| d.bg(p.selection))
+                    .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                    .on_click(cx.listener(move |this, _, _, cx| this.open(id, cx)))
+                    .child(mark(state_mark(s, &p)))
+                    .child(div().max_w(theme::z(180.)).truncate().set(Type::Callout).text_color(if on { p.label } else { p.secondary }).child(s.goal.clone())),
+            );
+        }
+        strip = strip.child(
+            Button::new("tab-new")
+                .ghost()
+                .small()
+                .rounded(theme::z(theme::R_CONTROL))
+                .icon(Icon::empty().path("icons/plus.svg"))
+                .tooltip("New tab in this workspace")
+                .on_click(cx.listener(|this, _, window, cx| this.new_tab(window, cx))),
+        );
+        Some(strip.into_any_element())
+    }
 }

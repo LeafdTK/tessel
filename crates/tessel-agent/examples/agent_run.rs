@@ -28,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
         cwd: std::env::current_dir()?,
         agent_session_id: uuid::Uuid::new_v4().to_string(),
         resume: false,
+        fork: false,
         model,
         permission_mode: None, effort: None, fast: false, add_dirs: vec![],
         raw_log: None,

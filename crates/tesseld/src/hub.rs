@@ -85,6 +85,20 @@ pub struct Create {
     prompt: Option<String>,
     model: Option<String>,
     parent: Option<SessionId>,
+    fork: Option<Fork>,
+}
+
+/// what a forked session carries on from.
+pub struct Fork {
+    /// the parent's conversation, as the agent knows it.
+    agent_id: String,
+    from_cwd: String,
+    items: Vec<tessel_proto::Item>,
+    effort: Option<String>,
+    fast: bool,
+    permission_mode: Option<String>,
+    /// the parent's repository, so a new worktree's project is the same one.
+    repo: Option<String>,
 }
 
 struct Client {
@@ -122,6 +136,8 @@ struct Live {
     /// something only a fresh start picks up has changed (a linked folder).
     /// the agent is stopped as soon as it is idle and comes back on demand.
     restart_when_idle: bool,
+    /// a fork's parent conversation, until the agent has started one of its own.
+    fork_from: Option<String>,
 }
 
 pub struct Hub {
@@ -224,7 +240,7 @@ impl Hub {
             if !fx.upserts.is_empty() || fx.pending_changed || fx.summary_changed {
                 hub.store.save(state.persisted(), fx.upserts);
             }
-            hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false });
+            hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from: None });
         }
         Ok(hub)
     }
@@ -292,7 +308,9 @@ impl Hub {
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::WorktreeReady { client, id, create, result } => {
                 let result = result.and_then(|made| {
-                    let wt = WorktreeInfo { repo: made.repo, branch: made.branch };
+                    // a fork's worktree is of the parent's repository, whichever folder it was made from.
+                    let repo = create.fork.as_ref().and_then(|f| f.repo.clone()).unwrap_or(made.repo);
+                    let wt = WorktreeInfo { repo, branch: made.branch };
                     self.create_session(*create, made.path, Some(wt))
                 });
                 self.respond(client, id, result);
@@ -396,7 +414,7 @@ impl Hub {
                 {
                     return Some(Err(RpcError::new(ErrorCode::NotFound, format!("parent session {p} does not exist"))));
                 }
-                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, model, parent };
+                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, model, parent, fork: None };
                 match worktree {
                     None => self.create_session(create, cwd, None),
                     Some(spec) => {
@@ -584,6 +602,35 @@ impl Hub {
                     };
                     diff.map(|diff| Response::Diff { diff })
                 });
+            }
+            Request::SessionFork { cmd_id, session, workspace } => {
+                if let Some(prev) = self.done.get(&cmd_id) {
+                    return Some(Ok(prev.clone()));
+                }
+                let Some(parent) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let st = &parent.state;
+                let Some(agent_id) = st.agent_session_id.clone() else {
+                    return Some(Err(RpcError::new(ErrorCode::Conflict, "there's no conversation to fork yet: send it a message first")));
+                };
+                let fork = Fork {
+                    agent_id,
+                    from_cwd: st.meta.cwd.clone(),
+                    items: st.items().to_vec(),
+                    effort: st.effort.clone(),
+                    fast: st.fast,
+                    permission_mode: st.permission_mode.clone(),
+                    repo: st.meta.worktree.as_ref().map(|w| w.repo.clone()),
+                };
+                let create = Create { cmd_id, cwd: st.meta.cwd.clone(), goal: Some(format!("{} (fork)", st.meta.goal)), prompt: None, model: st.model.clone(), parent: None, fork: Some(fork) };
+                if workspace {
+                    // a worktree branched from where this one is now: its commit, not the repo's default.
+                    let spec = WorktreeSpec { base: Some("HEAD".into()), name: None };
+                    self.make_worktree(client, id, create, spec);
+                    return None;
+                }
+                let cwd = create.cwd.clone();
+                let wt = self.sessions[&session].state.meta.worktree.clone();
+                self.create_session(create, cwd, wt)
             }
             Request::FolderInfo { path } => {
                 let tx = self.tx.clone();
@@ -976,10 +1023,24 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let meta = Meta { id, goal, cwd, worktree: wt, parent: c.parent, created_ms: now, linked_dirs: Vec::new() };
         let mut state = SessionState::new(meta);
         state.model = c.model;
-        self.store.save(state.persisted(), Vec::new());
+        let mut fork_from = None;
+        if let Some(f) = c.fork {
+            state.effort = f.effort;
+            state.fast = f.fast;
+            state.permission_mode = f.permission_mode;
+            state.seed_items(f.items);
+            // in another folder the agent looks for its conversations somewhere else: put a copy there.
+            if f.from_cwd != state.meta.cwd
+                && let Err(e) = copy_conversation(&f.agent_id, &state.meta.cwd)
+            {
+                eprintln!("tesseld: forking {}: {e}", f.agent_id);
+            }
+            fork_from = Some(f.agent_id);
+        }
+        self.store.save(state.persisted(), state.items().to_vec());
         self.sessions.insert(
             id,
-            Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false },
+            Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from },
         );
         self.publish_summary(id, now);
         if let Some(prompt) = c.prompt.filter(|p| !p.trim().is_empty()) {
@@ -1038,10 +1099,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             return Err(RpcError::new(ErrorCode::Conflict, format!("{cwd} no longer exists")));
         }
         let known = live.state.agent_session_id.clone();
+        // a fork's first start carries on from its parent's conversation under a new id.
+        let fork = known.is_none().then(|| live.fork_from.clone()).flatten();
         let opts = SpawnOpts {
             cwd: cwd.into(),
-            resume: known.is_some(),
-            agent_session_id: known.unwrap_or_else(|| session.to_string()),
+            resume: known.is_some() || fork.is_some(),
+            fork: fork.is_some(),
+            agent_session_id: known.or(fork).unwrap_or_else(|| session.to_string()),
             model: live.state.model.clone(),
             permission_mode: live.state.permission_mode.clone(),
             effort: live.state.effort.clone(),
@@ -1313,4 +1377,32 @@ fn save_settings(path: &std::path::Path, s: &tessel_proto::DaemonSettings) -> st
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec_pretty(s).unwrap_or_default())?;
     std::fs::rename(tmp, path)
+}
+
+/// the folder claude keeps a directory's conversations in: its path, resolved,
+/// with everything but letters and digits made a dash.
+fn conversations_dir(cwd: &str) -> std::path::PathBuf {
+    let base = std::env::var_os("CLAUDE_CONFIG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".claude"));
+    let real = std::fs::canonicalize(cwd).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| cwd.to_owned());
+    let name: String = real.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    base.join("projects").join(name)
+}
+
+/// put a copy of a conversation where an agent started in `to_cwd` will look for it.
+fn copy_conversation(agent_id: &str, to_cwd: &str) -> std::io::Result<()> {
+    let projects = conversations_dir(to_cwd).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let file = format!("{agent_id}.jsonl");
+    let from = std::fs::read_dir(&projects)?.flatten().map(|d| d.path().join(&file)).find(|p| p.is_file()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, format!("no conversation {agent_id}")))?;
+    let dir = conversations_dir(to_cwd);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::copy(from, dir.join(file)).map(drop)
+}
+
+#[cfg(test)]
+mod fork_tests {
+    #[test]
+    fn a_folder_s_conversations_are_kept_under_its_resolved_path_with_dashes() {
+        let d = super::conversations_dir("/no/such/place.v2");
+        assert!(d.ends_with("projects/-no-such-place-v2"), "{d:?}");
+    }
 }

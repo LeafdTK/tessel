@@ -1323,6 +1323,38 @@ fn a_turn_ends_with_its_time_its_reply_and_the_files_it_changed(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let b = session(2, "Write tests", RunState::Working, None);
+    let mut elsewhere = session(3, "Other repo", RunState::Idle, None);
+    elsewhere.cwd = "/work/web".into();
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.feed(cx, vec![UiEvent::Sessions(vec![a.clone(), b.clone(), elsewhere.clone()])]);
+    let tab = |s: &SessionSummary| SharedString::from(format!("tab-{}", s.id));
+    assert!(rig.exists(cx, tab(&a)) && rig.exists(cx, tab(&b)), "the same folder: tabs of one workspace");
+    assert!(!rig.exists(cx, tab(&elsewhere)), "another folder is another workspace");
+    rig.asked();
+    rig.click(cx, tab(&b));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == b.id));
+    rig.feed(cx, vec![snapshot(b.clone(), vec![])]);
+
+    // + is a new tab: the same folder, in place.
+    rig.click(cx, "tab-new");
+    let (folder, worktree) = rig.shell.read_with(cx, |s, _| (s.new_folder(), s.new_worktree));
+    assert_eq!((folder.as_deref(), worktree), (Some("/work/api"), false));
+
+    // a turn's menu forks the conversation.
+    let it = |id: &str, seq: u64, body: ItemBody| Item { id: ItemId::from(id), parent: None, seq, order: seq, created_ms: 0, body };
+    let turn = ItemBody::Turn { started_ms: 0, finished_ms: 1, duration_ms: None, cost_usd: None, model: None, fast: false, usage: None, files: vec![] };
+    rig.shell.update(cx, |s, cx| s.open(a.id, cx));
+    rig.feed(cx, vec![snapshot_of(a.clone(), vec![it("u1", 1, ItemBody::User { text: "hi".into(), attachments: vec![] }), it("turn/2", 2, turn)], vec![])]);
+    rig.asked();
+    rig.click(cx, "turn-turn/2-more");
+    rig.click(cx, "turn-fork-workspace");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Fork { session, workspace: true }] if *session == a.id));
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.

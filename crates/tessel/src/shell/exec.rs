@@ -151,6 +151,16 @@ impl Shell {
                 self.save_favorites(favs, cx);
                 done
             }
+            "session.tab" => {
+                self.new_tab(window, cx);
+                done
+            }
+            "session.fork" => {
+                let id = self.session_arg(args)?;
+                let workspace = args.get("workspace").and_then(Value::as_bool).unwrap_or(false);
+                self.cmd(Cmd::Fork { session: id, workspace });
+                done
+            }
             "session.mode" => {
                 let id = self.session_arg(args)?;
                 let mode = need(args, "mode", cmd)?;
