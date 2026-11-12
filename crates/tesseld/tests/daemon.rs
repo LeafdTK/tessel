@@ -1253,7 +1253,7 @@ async fn effort_and_fast_mode_are_kept_reach_the_agent_and_survive_a_restart() {
 
 #[tokio::test]
 async fn a_conversation_forks_into_a_new_tab_that_carries_on_from_it() {
-    let mut d = Daemon::start(&["plain", "plain"]).await;
+    let d = Daemon::start(&["plain", "plain"]).await;
     let (c, _) = d.client().await;
     let s = create(&c, &d.cwd(), None).await;
     let fork = |id| Request::SessionFork { cmd_id: Uuid::new_v4(), session: id, workspace: false };

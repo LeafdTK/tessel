@@ -17,7 +17,7 @@ use base64::Engine as _;
 use gpui_kit::component::Icon;
 use std::cell::RefCell;
 use std::rc::Rc;
-use tessel_proto::{BrowserAct, BrowserState, MouseKind, Picked, locate_script, read_script, url_of};
+use tessel_proto::{BrowserAct, BrowserState, MouseKind, Picked, read_script, url_of};
 
 /// a page shown natively.
 pub(crate) struct Native {
@@ -575,7 +575,7 @@ impl Shell {
                 if named {
                     this.stream_act(BrowserAct::Key { key: k.key.clone() });
                 } else if let Some(text) = k.key_char.clone().filter(|t| !t.is_empty()) {
-                    this.stream_act(BrowserAct::Type { text, selector: None });
+                    this.stream_act(BrowserAct::Type { text, r#ref: None, selector: None });
                 } else {
                     return;
                 }
@@ -727,13 +727,14 @@ async fn run(bg: &BackgroundExecutor, n: &Native, js: &str) -> Result<(), String
     }
 }
 
-/// where an element is (scrolled into view), and what it says.
-async fn locate(bg: &BackgroundExecutor, n: &Native, selector: &str) -> Result<(f64, f64, String), String> {
-    let at = eval(bg, n, &locate_script(selector)).await?;
+/// where an element (by ref or selector) is, scrolled into view, and what it says.
+async fn locate(bg: &BackgroundExecutor, n: &Native, r: Option<&str>, selector: Option<&str>) -> Result<Option<(f64, f64, String)>, String> {
+    let Some(js) = tessel_proto::locate_target(r, selector) else { return Ok(None) };
+    let at = eval(bg, n, &js).await?;
     if at.is_null() {
-        return Err(format!("there's no {selector} on the page"));
+        return Err(format!("there's no {} on the page", tessel_proto::target_name(r, selector)));
     }
-    Ok((at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0), at["label"].as_str().unwrap_or(selector).to_owned()))
+    Ok(Some((at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0), at["label"].as_str().unwrap_or_default().to_owned())))
 }
 
 /// one act, done in the page. what reading it found, and a picture, if asked for.
@@ -782,11 +783,11 @@ async fn page_act(
             tell("reloaded".into(), None, cx);
             settle(n, cx).await;
         }
-        BrowserAct::Click { selector, x, y } => {
-            let (x, y, label) = match (selector, x, y) {
-                (Some(sel), _, _) => locate(&bg, n, &sel).await?,
+        BrowserAct::Click { r#ref, selector, x, y } => {
+            let (x, y, label) = match (locate(&bg, n, r#ref.as_deref(), selector.as_deref()).await?, x, y) {
+                (Some(at), _, _) => at,
                 (None, Some(x), Some(y)) => (x, y, format!("at {x:.0}, {y:.0}")),
-                _ => return Err("click needs a selector, or x and y".into()),
+                _ => return Err("click needs a ref, a selector, or x and y".into()),
             };
             tell(format!("clicked {label}"), Some((x, y)), cx);
             ring(&bg, (x, y)).await;
@@ -794,10 +795,9 @@ async fn page_act(
             // a click may start loading a page.
             settle(n, cx).await;
         }
-        BrowserAct::Type { text: t, selector } => {
-            match selector {
-                Some(sel) => {
-                    let (x, y, label) = locate(&bg, n, &sel).await?;
+        BrowserAct::Type { text: t, r#ref, selector } => {
+            match locate(&bg, n, r#ref.as_deref(), selector.as_deref()).await? {
+                Some((x, y, label)) => {
                     tell(format!("typed into {label}"), Some((x, y)), cx);
                     ring(&bg, (x, y)).await;
                     run(&bg, n, &webview::click(x, y)).await?;
@@ -805,6 +805,15 @@ async fn page_act(
                 None => tell("typed".into(), None, cx),
             }
             run(&bg, n, &webview::type_text(&t)).await?;
+        }
+        BrowserAct::Select { value, r#ref, selector } => {
+            let js = tessel_proto::select_script(r#ref.as_deref(), selector.as_deref(), &value).ok_or("select needs a ref or a selector")?;
+            run(&bg, n, &js).await?;
+            tell(format!("chose {value}"), None, cx);
+        }
+        BrowserAct::Snapshot { root } => {
+            tell("read the page".into(), None, cx);
+            text = Some(eval(&bg, n, &tessel_proto::snapshot_script(root.as_deref())).await?.as_str().unwrap_or_default().to_owned());
         }
         BrowserAct::Key { key } => {
             run(&bg, n, &webview::key(&key)).await?;

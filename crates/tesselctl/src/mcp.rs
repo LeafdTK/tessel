@@ -92,11 +92,17 @@ list; close (term).",
             "description": "A real browser page the person watches live in tessel's Browser pane, and can point at parts of to show you. \
 Use it whenever you build or change UI: open the app (with no url it starts at this workspace's server, localhost:$TESSEL_PORT), read the page, \
 click and type through what you built, and take a screenshot to see it as the person does. They see everything you do as you do it. \
-ops: open (url?), back, forward, reload, read (the page's text, and what can be clicked or typed into, with selectors), screenshot, \
-click (selector, or x and y in CSS pixels), type (text, selector?: clicked first), key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
+Start with snapshot: the page as an outline of roles, names and states, every control with a ref (e12) to act on; \
+refs stay the same until the page changes address, so take a new snapshot after navigating. \
+ops: open (url?), back, forward, reload, snapshot (root?: a ref or selector to read only part), read (the page's text, with CSS selectors), screenshot, \
+click (ref, or selector, or x and y in CSS pixels), type (text, ref or selector?: clicked first), select (value, ref or selector: a dropdown's option), \
+key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
             "inputSchema": {"type": "object", "properties": {
-                "op": {"type": "string", "enum": ["open", "back", "forward", "reload", "read", "screenshot", "click", "type", "key", "scroll"]},
+                "op": {"type": "string", "enum": ["open", "back", "forward", "reload", "snapshot", "read", "screenshot", "click", "type", "select", "key", "scroll"]},
                 "url": {"type": "string"},
+                "ref": {"type": "string", "description": "an element, as a snapshot names it: e12"},
+                "root": {"type": "string", "description": "snapshot: only under this element (a ref or selector)"},
+                "value": {"type": "string", "description": "select: the option's value or text"},
                 "selector": {"type": "string", "description": "a CSS selector, as read gives them"},
                 "x": {"type": "number"},
                 "y": {"type": "number"},
@@ -227,12 +233,14 @@ impl Server {
             "forward" => BrowserAct::Forward,
             "reload" => BrowserAct::Reload,
             "read" => BrowserAct::Read,
+            "snapshot" => BrowserAct::Snapshot { root: s("root") },
+            "select" => BrowserAct::Select { value: s("value").ok_or_else(|| anyhow::anyhow!("select needs \"value\""))?, r#ref: s("ref"), selector: s("selector") },
             "screenshot" => BrowserAct::Screenshot,
-            "click" => BrowserAct::Click { selector: s("selector"), x: n("x"), y: n("y") },
-            "type" => BrowserAct::Type { text: s("text").ok_or_else(|| anyhow::anyhow!("type needs \"text\""))?, selector: s("selector") },
+            "click" => BrowserAct::Click { r#ref: s("ref"), selector: s("selector"), x: n("x"), y: n("y") },
+            "type" => BrowserAct::Type { text: s("text").ok_or_else(|| anyhow::anyhow!("type needs \"text\""))?, r#ref: s("ref"), selector: s("selector") },
             "key" => BrowserAct::Key { key: s("key").ok_or_else(|| anyhow::anyhow!("key needs \"key\": Enter, Tab, Escape…"))? },
             "scroll" => BrowserAct::Scroll { dx: n("dx").unwrap_or(0.0), dy: n("dy").unwrap_or(400.0), x: n("x"), y: n("y") },
-            other => anyhow::bail!("tessel_browser has no op {other:?}: open, back, forward, reload, read, screenshot, click, type, key or scroll"),
+            other => anyhow::bail!("tessel_browser has no op {other:?}: open, back, forward, reload, snapshot, read, screenshot, click, type, select, key or scroll"),
         };
         let reply = self.client().await?.request(Request::Browser { session, act, agent: true }).await?;
         let Response::Browser { state, text, image } = reply else { anyhow::bail!("unexpected reply: {reply:?}") };

@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tessel_proto::{BrowserAct, BrowserEngine, BrowserState, CSS_PATH, DESCRIBE, Event, MouseKind, Picked, SessionId, key_codes, locate_script, read_script, url_of};
+use tessel_proto::{BrowserAct, BrowserEngine, BrowserState, CSS_PATH, DESCRIBE, Event, MouseKind, Picked, SessionId, key_codes, locate_target, read_script, select_script, snapshot_script, target_name, url_of};
 use tokio::sync::oneshot;
 
 /// how the browser reaches the hub with what happened: frames, a page moving on, a pick.
@@ -406,34 +406,45 @@ impl Browser {
                 tell("reloaded".into(), None, None);
                 loaded(cdp, &page).await;
             }
-            BrowserAct::Click { selector, x, y } => {
-                let (x, y, label) = match (selector, x, y) {
-                    (Some(sel), _, _) => {
-                        let at = cdp.eval(&page, &locate_script(&sel)).await?;
+            BrowserAct::Click { r#ref, selector, x, y } => {
+                let (x, y, label) = match (locate_target(r#ref.as_deref(), selector.as_deref()), x, y) {
+                    (Some(js), _, _) => {
+                        let at = cdp.eval(&page, &js).await?;
                         if at.is_null() {
-                            return Err(format!("there's no {sel} on the page"));
+                            return Err(format!("there's no {} on the page", target_name(r#ref.as_deref(), selector.as_deref())));
                         }
-                        (at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0), at["label"].as_str().unwrap_or(&sel).to_owned())
+                        (at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0), at["label"].as_str().unwrap_or_default().to_owned())
                     }
                     (None, Some(x), Some(y)) => (x, y, format!("at {x:.0}, {y:.0}")),
-                    _ => return Err("click needs a selector, or x and y".into()),
+                    _ => return Err("click needs a ref, a selector, or x and y".into()),
                 };
                 tell(format!("clicked {label}"), Some(x), Some(y));
                 click(cdp, &page, x, y).await?;
             }
-            BrowserAct::Type { text: t, selector } => {
-                if let Some(sel) = selector {
-                    let at = cdp.eval(&page, &locate_script(&sel)).await?;
+            BrowserAct::Type { text: t, r#ref, selector } => {
+                if let Some(js) = locate_target(r#ref.as_deref(), selector.as_deref()) {
+                    let at = cdp.eval(&page, &js).await?;
                     if at.is_null() {
-                        return Err(format!("there's no {sel} on the page"));
+                        return Err(format!("there's no {} on the page", target_name(r#ref.as_deref(), selector.as_deref())));
                     }
                     let (x, y) = (at["x"].as_f64().unwrap_or(0.0), at["y"].as_f64().unwrap_or(0.0));
-                    tell(format!("typed into {}", at["label"].as_str().unwrap_or(&sel)), Some(x), Some(y));
+                    tell(format!("typed into {}", at["label"].as_str().unwrap_or_default()), Some(x), Some(y));
                     click(cdp, &page, x, y).await?;
                 } else {
                     tell("typed".into(), None, None);
                 }
                 cdp.call("Input.insertText", json!({"text": t}), Some(&page)).await?;
+            }
+            BrowserAct::Select { value, r#ref, selector } => {
+                let js = select_script(r#ref.as_deref(), selector.as_deref(), &value).ok_or("select needs a ref or a selector")?;
+                if let Some(e) = cdp.eval(&page, &js).await?.as_str() {
+                    return Err(e.to_owned());
+                }
+                tell(format!("chose {value}"), None, None);
+            }
+            BrowserAct::Snapshot { root } => {
+                tell("read the page".into(), None, None);
+                text = Some(cdp.eval(&page, &snapshot_script(root.as_deref())).await?.as_str().unwrap_or_default().to_owned());
             }
             BrowserAct::Key { key } => {
                 let (k, code, vk, txt) = key_codes(&key);
@@ -631,6 +642,7 @@ async fn pick(cdp: &Cdp, page: &str, node: Value) -> Result<Picked, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tessel_proto::locate_script;
 
     #[test]
     fn a_bare_address_is_a_web_address_and_localhost_is_plain() {
@@ -654,15 +666,26 @@ mod tests {
         let log = seen.clone();
         let b = Browser::new(home.clone(), Arc::new(move |e| log.lock().unwrap().push(e)));
         let s = SessionId::new();
-        let page = "data:text/html,<title>t</title><button id=go onclick=\"document.title='clicked'\">Go</button><input id=name>";
+        let page = "data:text/html,<title>t</title><nav aria-label=Site><a href=/docs>Docs</a></nav><main><h1>Sign in</h1><label>Name <input id=name></label><select id=plan><option value=a>Free</option><option value=b>Pro</option></select><input type=checkbox checked aria-label=Remember><p>Hello <b>there</b></p><button id=go onclick=\"document.title='clicked'\">Go</button></main>";
         b.act(s, BrowserAct::Open { url: Some(page.into()) }, true, "about:blank").await.unwrap();
         let (_, text, _) = b.act(s, BrowserAct::Read, true, "").await.unwrap();
         assert!(text.unwrap().contains("#go"), "the page's buttons, with selectors");
-        b.act(s, BrowserAct::Click { selector: Some("#go".into()), x: None, y: None }, true, "").await.unwrap();
-        b.act(s, BrowserAct::Type { text: "hi".into(), selector: Some("#name".into()) }, true, "").await.unwrap();
+        // what the agent reads first: the page's outline, with a ref for each control.
+        let (_, outline, _) = b.act(s, BrowserAct::Snapshot { root: None }, true, "").await.unwrap();
+        let outline = outline.unwrap();
+        assert!(outline.contains("button \"Go\" [ref=e"), "{outline}");
+        let go = outline.split("button \"Go\" [ref=").nth(1).unwrap().split(']').next().unwrap().to_owned();
+        b.act(s, BrowserAct::Click { r#ref: Some(go), selector: None, x: None, y: None }, true, "").await.unwrap();
+        b.act(s, BrowserAct::Type { text: "hi".into(), r#ref: None, selector: Some("#name".into()) }, true, "").await.unwrap();
+        // a dropdown's option, by its text; a wrong one says what there is.
+        let plan = outline.split("combobox [ref=").nth(1).unwrap().split(']').next().unwrap().to_owned();
+        b.act(s, BrowserAct::Select { value: "Pro".into(), r#ref: Some(plan.clone()), selector: None }, true, "").await.unwrap();
+        let e = b.act(s, BrowserAct::Select { value: "Gold".into(), r#ref: Some(plan), selector: None }, true, "").await.unwrap_err();
+        assert!(e.contains("Free, Pro"), "{e}");
+        eprintln!("{outline}");
         let chrome = b.chrome().await.unwrap();
         let page_id = chrome.cdp_of(s).unwrap();
-        assert_eq!(chrome.cdp.eval(&page_id, "document.title + ':' + document.querySelector('#name').value").await.unwrap(), "clicked:hi");
+        assert_eq!(chrome.cdp.eval(&page_id, "document.title + ':' + document.querySelector('#name').value + ':' + document.querySelector('#plan').value").await.unwrap(), "clicked:hi:b");
         let (_, _, image) = b.act(s, BrowserAct::Screenshot, true, "").await.unwrap();
         assert!(image.unwrap().len() > 100);
         // frames, once someone watches.
