@@ -385,6 +385,8 @@ pub struct ThemeSpec {
     pub compact: Option<bool>,
     /// the desktop shows through, blurred, behind the frame.
     pub glass: Option<bool>,
+    /// the dithered backdrop behind the panes: on unless it's "none".
+    pub backdrop: Option<bool>,
 }
 
 impl ThemeSpec {
@@ -395,7 +397,7 @@ impl ThemeSpec {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\", \"tern\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop"])?;
         let mut t = Self::default();
         if let Some(b) = obj.get("base") {
             t.base = Some(one_of(b, "theme.base", &bases)?);
@@ -427,6 +429,9 @@ impl ThemeSpec {
         if let Some(m) = obj.get("material") {
             t.glass = Some(one_of(m, "theme.material", &[("solid", false), ("glass", true)])?);
         }
+        if let Some(b) = obj.get("backdrop") {
+            t.backdrop = Some(one_of(b, "theme.backdrop", &[("dither", true), ("none", false)])?);
+        }
         for (key, out) in [("light", &mut t.light), ("dark", &mut t.dark_tokens)] {
             let Some(m) = obj.get(key) else { continue };
             let m = m.as_object().ok_or_else(|| format!("theme.{key}: expected an object of colour roles, like {{\"accent\": \"#df3047\"}}"))?;
@@ -450,6 +455,7 @@ impl ThemeSpec {
         self.mono = over.mono.or(self.mono.take());
         self.compact = over.compact.or(self.compact);
         self.glass = over.glass.or(self.glass);
+        self.backdrop = over.backdrop.or(self.backdrop);
         self.light.extend(over.light);
         self.dark_tokens.extend(over.dark_tokens);
     }
@@ -1455,6 +1461,14 @@ mod tests {
         assert_eq!(paint("transparent").a, 0.0);
         assert!(hex("#12345").is_none() && hex("123456").is_none() && hex("#ggg").is_none());
         assert!((hex("#00000080").unwrap().a - 128.0 / 255.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_backdrop_is_on_unless_it_is_none() {
+        assert_eq!(parse(r#"{"theme": "tessel"}"#).unwrap().theme.backdrop, None, "unsaid: the app's default, on");
+        assert_eq!(parse(r#"{"theme": {"backdrop": "none"}}"#).unwrap().theme.backdrop, Some(false));
+        assert_eq!(parse(r#"{"theme": {"backdrop": "dither"}}"#).unwrap().theme.backdrop, Some(true));
+        assert!(parse(r#"{"theme": {"backdrop": "plaid"}}"#).unwrap_err().contains("theme.backdrop"));
     }
 
     #[test]

@@ -204,13 +204,18 @@ impl Shell {
     }
 }
 
+/// a project's colour, picked from its name: the same every time.
+pub(crate) fn project_color(name: &str) -> Hsla {
+    const HUES: [u32; 7] = [0x4f7fe3, 0x6c63e0, 0x9b62d6, 0x2a9d9a, 0x5f7488, 0x2f8fc9, 0xb35a9a];
+    let sum = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
+    gpui_kit::rgb(HUES[(sum as usize) % HUES.len()]).into()
+}
+
 /// a project's tile: its first letter on a colour of its own, picked from its
 /// name so it is the same every time. identity colours, never the ones that
 /// mean something (orange, red, green).
 pub(crate) fn project_tile(name: &str, p: &Palette) -> Div {
-    const HUES: [u32; 7] = [0x4f7fe3, 0x6c63e0, 0x9b62d6, 0x2a9d9a, 0x5f7488, 0x2f8fc9, 0xb35a9a];
-    let sum = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
-    let hue: Hsla = gpui_kit::rgb(HUES[(sum as usize) % HUES.len()]).into();
+    let hue = project_color(name);
     let letter = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "·".into());
     let _ = p;
     div()

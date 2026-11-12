@@ -397,7 +397,12 @@ impl Shell {
         )
         .absolute()
         .inset_0();
-        let mut layer = div().id(ElementId::from(SharedString::from(n.element_id()))).relative().size_full().child(measure);
+        let mut layer = div()
+            .id(ElementId::from(SharedString::from(n.element_id())))
+            .relative()
+            .size_full()
+            .child(measure)
+            .when(self.backdrop_on(), |d| d.child(self.backdrop_el(cx)));
         let Some(area) = self.pane_area.get() else { return layer.into_any_element() };
         let origin = area.origin;
         let Some(tree) = tree else { return layer.into_any_element() };
@@ -536,10 +541,13 @@ impl Shell {
         };
         let fid = id.to_owned();
         let compact = self.ui.theme.compact.unwrap_or(false);
+        // a conversation with nothing in it yet is a window onto the backdrop:
+        // the prompt card floats on it.
+        let open_sky = self.backdrop_on() && module == Some(Module::Conversation) && (self.show_new || self.model.open_summary().is_none());
         v_flex()
             .group(group)
             .size_full()
-            .when(!compact, |d| d.rounded(px(theme::R_PANEL)).border_1().shadow_sm())
+            .when(!compact && !open_sky, |d| d.rounded(px(theme::R_PANEL)).border_1().shadow_sm())
             // the pane your keys act on wears a faint ring of the accent.
             .border_color(if focused { p.accent.opacity(0.35) } else { p.separator })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| {
@@ -547,7 +555,7 @@ impl Shell {
                     this.pane_focus = Some(fid.clone());
                 }
             }))
-            .bg(p.window)
+            .when(!open_sky, |d| d.bg(p.window))
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))

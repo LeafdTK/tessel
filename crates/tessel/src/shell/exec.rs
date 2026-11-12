@@ -181,6 +181,15 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);
                 done
             }
+            "theme.backdrop" => {
+                let b = arg(args, "backdrop").ok_or("backdrop: dither or none")?;
+                if !matches!(b, "dither" | "none") {
+                    return Err(format!("\"{b}\" isn't a backdrop. use dither or none"));
+                }
+                let v = (b != "dither").then(|| json!(b));
+                self.edit_ui(|f| Self::set_in(f, "theme", "backdrop", v), window, cx);
+                done
+            }
             "layout.use" => {
                 let name = arg(args, "name").ok_or("say which layout: studio, focus, tiles or rail")?.to_owned();
                 self.use_layout(&name, window, cx)?;

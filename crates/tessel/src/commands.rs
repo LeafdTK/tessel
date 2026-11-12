@@ -105,6 +105,8 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.density", "Density: Compact", "layout-panel-left", None, r#"{"density":"compact"}"#, ""),
     c("theme.material", "Material: Solid", "square", None, r#"{"material":"solid"}"#, "material: solid|glass"),
     c("theme.material", "Material: Glass", "app-window", None, r#"{"material":"glass"}"#, ""),
+    c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, "backdrop: dither|none"),
+    c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, ""),
     c("layout.use", "Layout: Studio", "panels-top-left", None, r#"{"name":"studio"}"#, "name: studio|focus|tiles|rail"),
     c("layout.use", "Layout: Focus", "focus", None, r#"{"name":"focus"}"#, ""),
     c("layout.use", "Layout: Tiles", "layout-dashboard", None, r#"{"name":"tiles"}"#, ""),

@@ -21,6 +21,9 @@ tokio.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
+# only for its Frame type, which gpui takes images as. no features of its own:
+# gpui already picks them, and adding any would rebuild the ui stack.
+image = { version = "0.25", default-features = false }
 # drawing mermaid diagrams and maths. on by default; it only exists as a
 # feature so the app can be built without the two renderer crates. switching
 # it changes a feature on hashbrown, which rebuilds the whole ui stack

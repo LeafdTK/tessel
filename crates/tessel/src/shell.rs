@@ -12,6 +12,7 @@ mod compose;
 mod composer;
 mod exec;
 mod mentions;
+mod backdrop;
 mod models;
 mod looks;
 mod files;
@@ -206,6 +207,8 @@ pub struct Shell {
 
     /// files that will go with the next message.
     pub(crate) attachments: Vec<Attachment>,
+    /// the dithered backdrop behind the panes, once drawn.
+    pub(crate) backdrop: backdrop::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
     pub(crate) thumbs: std::cell::RefCell<HashMap<(usize, usize), Arc<Image>>>,
     /// how many images have been pasted, to name the next one.
@@ -514,6 +517,7 @@ impl Shell {
             ws_session: None,
             ws_parked: HashMap::new(),
             attachments: Vec::new(),
+            backdrop: Default::default(),
             thumbs: Default::default(),
             pasted: 0,
             models: Vec::new(),
@@ -1475,13 +1479,12 @@ impl Shell {
             v_flex()
                 .w_full()
                 .max_w(px(640.))
-                .gap_3()
-                .child(card)
-                .child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(match (&folder, worktree) {
+                // what the choice means, inside the card: it stays readable over the backdrop.
+                .child(card.child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(match (&folder, worktree) {
                     (None, _) => "Pick a project, or open a new one, for it to work in.".to_owned(),
                     (Some(_), true) => "Gets its own branch and folder. Your checkout is untouched.".to_owned(),
                     (Some(f), false) => format!("Works directly in {}.", projects::tilde(f)),
-                })),
+                }))),
         )
     }
 

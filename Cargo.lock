@@ -7478,6 +7478,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "gpui-kit",
+ "image",
  "serde_json",
  "tessel-client",
  "tessel-proto",

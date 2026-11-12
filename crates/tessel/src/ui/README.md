@@ -409,6 +409,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.list` | Every theme |  |  |
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass |
+| `theme.backdrop` | Backdrop: Dither |  | backdrop: dither|none |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |
