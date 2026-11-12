@@ -150,7 +150,7 @@ pub fn has_notch() -> bool {
 const EAR: f32 = 38.;
 const ROW_H: f32 = 52.;
 const PAD: f32 = 8.;
-const OPEN_W: f32 = 500.;
+const OPEN_W: f32 = 560.;
 /// the bottom corners: the notch's own size shut, the island's open.
 const SHUT_R: f32 = 10.;
 const OPEN_R: f32 = 26.;
@@ -448,7 +448,7 @@ impl Render for Notch {
             .items_center()
             // the words and the way into tessel live out in the wings, and come in as it opens.
             .child(
-                h_flex().w(px(wing)).h_full().pl(px(18.)).items_center().opacity(fade).child(
+                h_flex().w(px(wing)).h_full().pl(px(14.)).items_center().opacity(fade).child(
                     div().text_size(px(12.)).text_color(p.secondary).truncate().child(summary(sessions)),
                 ),
             )
