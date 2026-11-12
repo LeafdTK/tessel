@@ -50,6 +50,18 @@ opt-level = 2
 [profile.dev.package.libghostty-vt-sys]
 debug = false
 
+# what CI tests with: compiled fast, not run fast. tests don't need
+# optimized code, and the ui stack optimized is most of a cold build.
+[profile.ci]
+inherits = "dev"
+debug = false
+
+[profile.ci.package."*"]
+opt-level = 0
+
+[profile.ci.package.tessel]
+opt-level = 0
+
 [profile.release]
 lto = "thin"
 codegen-units = 4

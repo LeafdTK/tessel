@@ -28,7 +28,10 @@ jobs:
       # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
       - run: rustup show active-toolchain
 
+      # kept even when a run fails, so the next one doesn't start cold.
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Test
-        run: cargo test -p tessel -p tesseld -p tesselctl -p tessel-proto -p tessel-client -p tessel-agent -p tessel-term
+        run: cargo test --profile ci -p tessel -p tesseld -p tesselctl -p tessel-proto -p tessel-client -p tessel-agent -p tessel-term

@@ -40,6 +40,8 @@ jobs:
       - run: rustup show active-toolchain
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --release -p tessel -p tesseld -p tesselctl
