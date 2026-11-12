@@ -1303,6 +1303,36 @@ fn a_pane_takes_whatever_share_it_is_given(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_pane_floats_in_a_corner_and_docks_back(cx: &mut TestAppContext) {
+    let dir = layout_dir("pane-pip");
+    let file = dir.join("ui.json");
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, idle, vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": "conversation", "dir": "right"})).unwrap();
+    let new = new["pane"].as_str().unwrap().to_owned();
+    exec(&mut rig, cx, "pane.show", serde_json::json!({"pane": new, "module": "terminal"})).unwrap();
+    rig.settle(cx);
+    let rect = |rig: &mut Rig, cx: &mut TestAppContext, id: &str| rig.shell.read_with(cx, |s, _| s.pane_rect(id)).unwrap();
+    let split = rect(&mut rig, cx, "conversation");
+
+    let r = exec(&mut rig, cx, "pane.pip", serde_json::json!({"pane": new, "corner": "tr"})).unwrap();
+    assert_eq!(r["corner"], "tr");
+    assert!(std::fs::read_to_string(&file).unwrap().contains(r#""pip": "tr""#), "kept in the layout file");
+    rig.settle(cx);
+    let (conv, float) = (rect(&mut rig, cx, "conversation"), rect(&mut rig, cx, &new));
+    assert!(conv[2] > split[2], "the conversation takes the room the terminal left: {conv:?} vs {split:?}");
+    assert!(float[2] < conv[2] && float[0] + float[2] > conv[0] + conv[2] - 40.0 && float[1] < conv[1] + 40.0, "small, in the top right: {float:?} over {conv:?}");
+    assert!(exec(&mut rig, cx, "pane.pip", serde_json::json!({"pane": new, "corner": "middle"})).is_err());
+
+    exec(&mut rig, cx, "pane.dock", serde_json::json!({"pane": new})).unwrap();
+    rig.settle(cx);
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("\"pip\""));
+    assert_eq!(rect(&mut rig, cx, "conversation")[2], split[2], "back where it was");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
 fn a_new_session_gets_a_worktree_unless_its_folder_isnt_a_repository(cx: &mut TestAppContext) {
     let mut rig = Rig::new(cx);
     rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![session(1, "Fix login", RunState::Idle, None)])]);

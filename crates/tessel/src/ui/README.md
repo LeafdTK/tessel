@@ -78,7 +78,9 @@ A layout is a **pane** or a **split**.
   is its panes and splits, `"size"` its share of the split it is in (default 1).
 - A pane: `"module"` (below; leave it out for an empty pane that offers modules),
   `"size"` its share, `"open": false` to start it folded away (it takes no room
-  until `toggle:<id>` opens it), `"id"` to name it for buttons and conditions (`open:<id>`).
+  until `toggle:<id>` opens it), `"id"` to name it for buttons and conditions (`open:<id>`),
+  `"pip": "tl"|"tr"|"bl"|"br"` to float it in that corner over the others as a picture
+  in picture (its split gives its room to the rest; drag its grip to another corner).
   Panes without an id are known by their module name. The conversation pane also
   takes the transcript's options: `user`, `thoughts`, `tools`, `width`, `gutter`;
   the sessions pane takes `trace`.
@@ -398,6 +400,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.split` | Split right | ⌘ D | dir: right|down, pane? |
 | `pane.zoom` | Maximize or restore pane | ⇧ ⌘ ↩ | pane? |
 | `pane.close` | Close pane | ⌘ W | pane? |
+| `pane.pip` | Float pane as picture in picture |  | pane?, corner?: tl, tr, bl or br (default br) |
+| `pane.dock` | Put pane back in the layout |  | pane? |
 | `pane.show` | Show Conversation here |  | module, pane? |
 | `files.open` | Open a file |  | path: relative to the session's folder |
 | `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |

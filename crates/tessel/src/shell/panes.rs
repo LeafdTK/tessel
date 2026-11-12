@@ -12,7 +12,7 @@
 //! open or folded away is the window's own state, like a drawer's.
 
 use super::*;
-use crate::ui::{Axis, Module, Node, Pane, PaneTree, MODULES};
+use crate::ui::{Axis, Corner, Module, Node, Pane, PaneTree, MODULES};
 use gpui_kit::component::Icon;
 use gpui_kit::component::popover::Popover;
 use serde_json::{Value, json};
@@ -154,6 +154,8 @@ impl Shell {
     /// each open pane's rectangle in `area`, and the gaps between neighbours.
     fn layout(&self, tree: &PaneTree, area: Rect, out: &mut Vec<(String, Rect)>, gaps: &mut Vec<Gap>) {
         match tree {
+            // a picture in picture has no place in its split: it floats (see `pip_rect`).
+            PaneTree::Pane(p) if p.pip.is_some() => {}
             PaneTree::Pane(p) => out.push((p.id.clone(), area)),
             PaneTree::Split { axis, children, trail, .. } => {
                 let shown: Vec<(usize, &PaneTree)> = children.iter().enumerate().filter(|(_, c)| self.any_open(c)).collect();
@@ -186,7 +188,7 @@ impl Shell {
 
     fn any_open(&self, t: &PaneTree) -> bool {
         match t {
-            PaneTree::Pane(p) => self.pane_open(p),
+            PaneTree::Pane(p) => self.pane_open(p) && p.pip.is_none(),
             PaneTree::Split { children, .. } => children.iter().any(|c| self.any_open(c)),
         }
     }
@@ -198,6 +200,20 @@ impl Shell {
         self.layout(tree, area, &mut targets, &mut gaps);
         let mut leaves = Vec::new();
         tree.leaves(&mut leaves);
+        // pictures in picture, in their corners; one being carried goes where it's carried.
+        for p in leaves.iter().filter(|p| self.pane_open(p)) {
+            if let Some(corner) = p.pip {
+                let r = match self.pane_move.as_ref().filter(|m| m.id == p.id && m.moved) {
+                    Some(m) => {
+                        let at = pip_rect(area, corner);
+                        Rect { x: m.at.0 - m.grab.0, y: m.at.1 - m.grab.1, ..at }
+                    }
+                    None => pip_rect(area, corner),
+                };
+                targets.push((p.id.clone(), r));
+            }
+        }
+        let floating: std::collections::HashSet<String> = leaves.iter().filter(|p| p.pip.is_some()).map(|p| p.id.clone()).collect();
         let modules: HashMap<String, (Option<Module>, bool)> = leaves.iter().map(|p| (p.id.clone(), (p.module, self.pane_open(p)))).collect();
         // a maximized pane takes the whole room; the others fade where they are.
         let zoom = self.pane_zoom.clone().filter(|z| targets.iter().any(|(id, r)| id == z && r.w > 1.0));
@@ -210,7 +226,8 @@ impl Shell {
                 Some(z) if z == id => &area,
                 _ => r,
             };
-            let hidden = zoom.as_ref().is_some_and(|z| z != id);
+            // a picture in picture stays in view, over a maximized pane too.
+            let hidden = zoom.as_ref().is_some_and(|z| z != id) && !floating.contains(id);
             let alpha_to = if open && !hidden && r.w > 1.0 && r.h > 1.0 { 1.0 } else { 0.0 };
             match self.pane_fx.get_mut(id) {
                 Some(fx) => {
@@ -409,10 +426,9 @@ impl Shell {
 
         let mut ids: Vec<&String> = self.pane_fx.keys().collect();
         ids.sort();
-        // a maximized pane is drawn last, over the others as they fade.
-        if let Some(z) = &self.pane_zoom {
-            ids.sort_by_key(|id| *id == z);
-        }
+        // a maximized pane is drawn over the others as they fade; pictures in picture over everything.
+        let floating = |id: &String| leaves.iter().any(|p| &p.id == id && p.pip.is_some());
+        ids.sort_by_key(|id| (floating(id), self.pane_zoom.as_ref() == Some(*id)));
         for id in ids {
             let fx = &self.pane_fx[id];
             let [x, y, w, h] = fx.rect.each_ref().map(Spring::value);
@@ -501,7 +517,9 @@ impl Shell {
             .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Drag onto another pane to move this one").build(window, cx))
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
                 cx.stop_propagation();
-                this.pane_move = Some(PaneMove { id: pid.clone(), at: (f32::from(ev.position.x), f32::from(ev.position.y)), moved: false });
+                let (x, y) = (f32::from(ev.position.x), f32::from(ev.position.y));
+                let grab = this.pane_fx.get(&pid).map_or((0.0, 0.0), |fx| (x - fx.rect[0].value(), y - fx.rect[1].value()));
+                this.pane_move = Some(PaneMove { id: pid.clone(), at: (x, y), grab, moved: false });
                 cx.notify();
             }))
             .child(Icon::empty().path("icons/grip-vertical.svg").small());
@@ -572,6 +590,8 @@ impl Shell {
                     },
                 ])
             })
+            // one floating over the others casts a deeper shadow.
+            .when(pane.is_some_and(|p| p.pip.is_some()) && !compact, |d| d.shadow_xl())
             // the pane your keys act on wears a faint ring of the accent.
             .border_color(if focused {
                 p.accent.opacity(0.35)
@@ -904,12 +924,21 @@ impl Shell {
                     }
                 };
                 let (t1, t2, t3, z) = (trail.clone(), trail.clone(), trail.clone(), pid.clone());
+                let floating = this.ui.panes().into_iter().find(|p| p.id == pid).cloned();
+                let docked = floating.as_ref().is_some_and(|p| p.pip.is_none());
                 let sep = || theme::float_sep(&p);
                 let mut list = theme::float_list(&p)
                     .w(px(232.))
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-right")), Some("columns-2"), "Split right", None, Some("⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t1.clone(), Axis::Row, w, cx); }))).test_support())
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-split-down")), Some("rows-2"), "Split down", None, Some("⇧ ⌘ D"), false).on_click(act(Box::new(move |this, w, cx| { this.split_pane(t2.clone(), Axis::Column, w, cx); }))).test_support())
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-zoom")), Some(if zoomed { "minimize-2" } else { "maximize-2" }), if zoomed { "Restore" } else { "Maximize" }, None, Some("⇧ ⌘ ↩"), false).on_click(act(Box::new(move |this, _, cx| this.zoom_pane(&z, cx)))).test_support())
+                    .when_some(floating, |l, pane| {
+                        l.child(
+                            theme::float_item(&p, SharedString::from(format!("pane-{pid}-pip")), Some(if docked { "minimize-2" } else { "dock" }), if docked { "Picture in picture" } else { "Back into the layout" }, None, false)
+                                .on_click(act(Box::new(move |this, w, cx| this.set_pip(&pane, if docked { Some(Corner::BottomRight) } else { None }, w, cx))))
+                                .test_support(),
+                        )
+                    })
                     .child(theme::float_item_with(&p, SharedString::from(format!("pane-{pid}-close")), Some("x"), "Close pane", None, Some("⌘ W"), false).on_click(act(Box::new(move |this, w, cx| this.close_pane(t3.clone(), w, cx)))).test_support())
                     .child(sep())
                     .child(theme::float_label(&p, "Show here"));
@@ -922,6 +951,25 @@ impl Shell {
                 }
                 list.into_any_element()
             })
+    }
+
+    /// float a pane as a picture in picture in a corner, or put it back in its split.
+    pub(crate) fn set_pip(&mut self, pane: &Pane, corner: Option<Corner>, window: &mut Window, cx: &mut Context<Self>) {
+        let (trail, id) = (pane.trail.clone(), pane.id.clone());
+        self.edit_panes(
+            move |layout| {
+                if let Some(Value::Object(o)) = at_trail(layout, &trail) {
+                    // named in the file, so the pane is the same one floating or not.
+                    o.entry("id").or_insert(json!(id));
+                    match corner {
+                        Some(c) => o.insert("pip".into(), json!(c.name())),
+                        None => o.remove("pip"),
+                    };
+                }
+            },
+            window,
+            cx,
+        );
     }
 
     /// maximize a pane over the others, or put it back.
@@ -1004,11 +1052,36 @@ impl Shell {
             mv.moved = true;
         }
         mv.at = (x, y);
+        // a picture in picture follows the pointer exactly, not on a spring.
+        if mv.moved
+            && let Some(fx) = self.pane_fx.get_mut(&mv.id)
+            && self.ui.panes().iter().any(|p| p.id == mv.id && p.pip.is_some())
+        {
+            fx.rect[0].snap(x - mv.grab.0);
+            fx.rect[1].snap(y - mv.grab.1);
+        }
         cx.notify();
     }
 
     pub(crate) fn pane_move_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(mv) = self.pane_move.as_ref() else { return };
+        // a picture in picture let go of settles in the corner nearest where it was dropped.
+        if mv.moved
+            && let Some(p) = self.ui.panes().into_iter().find(|p| p.id == mv.id && p.pip.is_some()).cloned()
+            && let Some(area) = self.pane_area.get()
+        {
+            let (mx, my) = (f32::from(area.origin.x) + f32::from(area.size.width) / 2.0, f32::from(area.origin.y) + f32::from(area.size.height) / 2.0);
+            let (right, bottom) = (mv.at.0 > mx, mv.at.1 > my);
+            let corner = match (right, bottom) {
+                (false, false) => Corner::TopLeft,
+                (true, false) => Corner::TopRight,
+                (false, true) => Corner::BottomLeft,
+                (true, true) => Corner::BottomRight,
+            };
+            self.pane_move = None;
+            self.set_pip(&p, Some(corner), window, cx);
+            return;
+        }
         let target = if mv.moved { self.drop_target(mv.at.0, mv.at.1) } else { None };
         let from = mv.id.clone();
         self.pane_move = None;
@@ -1092,6 +1165,8 @@ pub(crate) enum Zone {
 pub(crate) struct PaneMove {
     id: String,
     at: (f32, f32),
+    /// where in the pane it was picked up, for one that floats.
+    grab: (f32, f32),
     /// far enough from where it was picked up to be a drag, not a click.
     moved: bool,
 }
@@ -1135,6 +1210,16 @@ impl PaneTree {
             _ => None,
         }
     }
+}
+
+/// where a picture in picture sits: a third of the room, within reason, inset from its corner.
+fn pip_rect(area: Rect, corner: Corner) -> Rect {
+    const INSET: f32 = 14.0;
+    let w = (area.w * 0.34).clamp(260.0, 560.0).min((area.w - INSET * 2.0).max(0.0));
+    let h = (area.h * 0.36).clamp(180.0, 420.0).min((area.h - INSET * 2.0).max(0.0));
+    let x = if corner.right() { area.x + area.w - w - INSET } else { area.x + INSET };
+    let y = if corner.bottom() { area.y + area.h - h - INSET } else { area.y + INSET };
+    Rect { x, y, w, h }
 }
 
 fn set_size(t: &mut PaneTree, size: f32) {

@@ -1460,6 +1460,38 @@ pub struct Pane {
     pub path: String,
     /// the same, as child indices from the top of the layout.
     pub trail: Vec<usize>,
+    /// floating as a picture in picture, in this corner of the panes, instead
+    /// of taking a place in its split.
+    pub pip: Option<Corner>,
+}
+
+/// a corner of the panes, for a picture in picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    pub const ALL: [(&'static str, Corner); 4] = [("tl", Corner::TopLeft), ("tr", Corner::TopRight), ("bl", Corner::BottomLeft), ("br", Corner::BottomRight)];
+
+    pub fn name(self) -> &'static str {
+        Self::ALL.iter().find(|c| c.1 == self).map_or("br", |c| c.0)
+    }
+
+    pub fn named(s: &str) -> Option<Corner> {
+        Self::ALL.iter().find(|c| c.0 == s).map(|c| c.1)
+    }
+
+    pub fn right(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::BottomRight)
+    }
+
+    pub fn bottom(self) -> bool {
+        matches!(self, Corner::BottomLeft | Corner::BottomRight)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1504,7 +1536,7 @@ impl PaneTree {
             return Ok(PaneTree::Split { axis, size, children, path: at.to_owned(), trail });
         }
         let options_keys = ["user", "thoughts", "tools", "width", "gutter", "trace"];
-        let mut allowed = vec!["id", "module", "size", "open"];
+        let mut allowed = vec!["id", "module", "size", "open", "pip"];
         allowed.extend(options_keys);
         keys(obj, at, &allowed)?;
         let module = obj.get("module").map(|m| Module::parse(m, &format!("{at}.module"))).transpose()?;
@@ -1516,7 +1548,15 @@ impl PaneTree {
         }
         let options = Props::parse(Kind::Transcript, &opts, at)?;
         let id = obj.get("id").map(|v| text(v, &format!("{at}.id")).map(str::to_owned)).transpose()?;
+        let pip = match obj.get("pip") {
+            None | Some(Value::Null) => None,
+            Some(v) => {
+                let s = text(v, &format!("{at}.pip"))?;
+                Some(Corner::named(s).ok_or_else(|| format!("{at}.pip: \"{s}\" isn't a corner. corners: tl, tr, bl, br"))?)
+            }
+        };
         Ok(PaneTree::Pane(Pane {
+            pip,
             given_id: id.is_some(),
             id: id.unwrap_or_default(),
             module,

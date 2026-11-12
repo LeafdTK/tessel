@@ -3,7 +3,7 @@
 //! errors are a sentence that says what would have worked.
 
 use super::*;
-use crate::ui::{Axis, Module, MODULES};
+use crate::ui::{Axis, Corner, Module, MODULES};
 use serde_json::{Value, json};
 
 fn arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
@@ -423,6 +423,20 @@ impl Shell {
                 }
                 self.close_pane(pane.trail, window, cx);
                 Ok(json!({"closed": pane.id}))
+            }
+            "pane.pip" => {
+                let pane = self.pane_arg(args)?;
+                let corner = match arg(args, "corner") {
+                    Some(c) => Some(Corner::named(c).ok_or_else(|| format!("\"{c}\" isn't a corner. corners: tl, tr, bl, br"))?),
+                    None => Some(pane.pip.unwrap_or(Corner::BottomRight)),
+                };
+                self.set_pip(&pane, corner, window, cx);
+                Ok(json!({"pane": pane.id, "corner": corner.map(Corner::name)}))
+            }
+            "pane.dock" => {
+                let pane = self.pane_arg(args)?;
+                self.set_pip(&pane, None, window, cx);
+                Ok(json!({"pane": pane.id}))
             }
             "pane.zoom" => {
                 let pane = self.pane_arg(args)?;

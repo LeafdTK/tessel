@@ -73,6 +73,8 @@ pub static COMMANDS: &[Spec] = &[
     c("pane.split", "Split down", "rows-2", Some("⇧ ⌘ D"), r#"{"dir":"down"}"#, ""),
     c("pane.zoom", "Maximize or restore pane", "maximize-2", Some("⇧ ⌘ ↩"), "{}", "pane?"),
     c("pane.close", "Close pane", "x", Some("⌘ W"), "{}", "pane?"),
+    c("pane.pip", "Float pane as picture in picture", "minimize-2", None, "{}", "pane?, corner?: tl, tr, bl or br (default br)"),
+    c("pane.dock", "Put pane back in the layout", "dock", None, "{}", "pane?"),
     c("pane.show", "Show Conversation here", "message-square", None, r#"{"module":"conversation"}"#, "module, pane?"),
     c("pane.show", "Show Sessions here", "list", None, r#"{"module":"sessions"}"#, ""),
     c("pane.show", "Show Workspace here", "panels-top-left", None, r#"{"module":"workspace"}"#, ""),
