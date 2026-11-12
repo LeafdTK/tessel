@@ -88,6 +88,7 @@ pub static COMMANDS: &[Spec] = &[
     c("pane.show", "Show Git here", "git-graph", None, r#"{"module":"git"}"#, ""),
     q("files.open", "Open a file", "path: relative to the session's folder, line?, col?, session?"),
     c("files.close", "Close the open file", "x", None, "{}", ""),
+    q("ui.shot", "Take a picture of the window", "path?: where the PNG goes (a temporary file if not given)"),
     c("terminal.new", "New terminal", "square-terminal", Some("⌃ `"), "{}", "opens a shell below the focused pane; answers with its pane"),
     q("pane.focus", "Focus a pane", "pane"),
     q("pane.toggle", "Show or hide a pane", "pane"),

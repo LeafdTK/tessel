@@ -1883,7 +1883,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
 // ---- terminals --------------------------------------------------------------------
 
 fn term_info(id: u64, session: Option<SessionId>) -> tessel_proto::term::TermInfo {
-    tessel_proto::term::TermInfo { id, title: String::new(), cwd: "/tmp".into(), cols: 80, rows: 24, session, command: vec![], exited: None }
+    tessel_proto::term::TermInfo { id, title: String::new(), cwd: "/tmp".into(), cols: 80, rows: 24, session, command: vec![], exited: None, keep_open: true }
 }
 
 #[gpui_kit::test]
@@ -2305,7 +2305,7 @@ fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
     assert!(rig.shell.read_with(cx, |s, _| s.ui.panes().iter().any(|p| p.id == pane && p.module == Some(crate::ui::Module::Terminal))), "a terminal pane to watch it in");
 
     // running: the same button stops it.
-    let info = tessel_proto::term::TermInfo { id: 7, title: String::new(), cwd: a.cwd.clone(), cols: 100, rows: 30, session: Some(a.id), command: vec!["npm run dev".into()], exited: None };
+    let info = tessel_proto::term::TermInfo { id: 7, title: String::new(), cwd: a.cwd.clone(), cols: 100, rows: 30, session: Some(a.id), command: vec!["npm run dev".into()], exited: None, keep_open: true };
     rig.feed(cx, vec![UiEvent::TermOpened { pane, session: Some(a.id), info }]);
     rig.click(cx, "run-default");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::TermClose(7))));

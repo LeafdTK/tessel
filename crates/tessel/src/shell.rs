@@ -201,6 +201,8 @@ pub struct Shell {
     pub(crate) file_caret: Option<(SessionId, String, u32, u32)>,
     /// the window's own view, when pages are shown natively in it (see `webview`).
     pub(crate) native_view: Option<usize>,
+    /// this window's own view, whichever window a command arrives with.
+    pub(crate) main_view: Option<usize>,
     /// what's to be done to pages at the next frame, and pages being made.
     pub(crate) page_calls: Vec<browser::PageCall>,
     pub(crate) page_opening: HashSet<SessionId>,
@@ -649,6 +651,7 @@ impl Shell {
             browser_show_next: false,
             file_caret: None,
             native_view: browser::native_host(window),
+            main_view: browser::view_of(window),
             page_calls: Vec::new(),
             page_opening: HashSet::new(),
             browser_moved: None,

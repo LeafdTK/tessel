@@ -28,6 +28,17 @@ pub struct TermInfo {
     /// set once the program has exited: its status (signals as 128+n).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exited: Option<i32>,
+    /// stays once its program exits, showing how it ended (else it goes).
+    #[serde(default = "yes", skip_serializing_if = "is_yes")]
+    pub keep_open: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_yes(b: &bool) -> bool {
+    *b
 }
 
 /// a binary frame's payload for a terminal.

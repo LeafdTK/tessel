@@ -43,6 +43,17 @@ pub enum MouseAct {
 /// what a terminal is called to the programs in it.
 pub const TERM: &str = "xterm-256color";
 
+/// how text taken off a terminal is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Look {
+    #[default]
+    Plain,
+    /// colours and styles as escape sequences.
+    Ansi,
+    /// HTML with inline styles.
+    Html,
+}
+
 pub type Error = libghostty_vt::Error;
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -232,7 +243,18 @@ impl Term {
     /// the text on screen, or with `history` everything scrollback still holds.
     /// soft-wrapped lines are joined; trailing blanks are trimmed.
     pub fn text(&self, history: bool) -> String {
-        let opts = FormatterOptions::new().with_format(Format::Plain).with_unwrap(true).with_trim(true);
+        self.styled(history, Look::Plain)
+    }
+
+    /// the same, as plain text, as text with its colours and styles in escape
+    /// sequences (for another terminal), or as HTML with inline styles.
+    pub fn styled(&self, history: bool, look: Look) -> String {
+        let format = match look {
+            Look::Plain => Format::Plain,
+            Look::Ansi => Format::Vt,
+            Look::Html => Format::Html,
+        };
+        let opts = FormatterOptions::new().with_format(format).with_unwrap(true).with_trim(true).with_style(look != Look::Plain).with_palette(look == Look::Html).with_hyperlink(look != Look::Plain);
         if history {
             return String::from_utf8_lossy(&self.format(opts)).trim_end_matches('\n').to_owned();
         }
@@ -244,6 +266,11 @@ impl Term {
         let (Ok(a), Ok(b)) = (a, b) else { return String::new() };
         let screen = Selection::new(a, b, false);
         String::from_utf8_lossy(&self.format(opts.with_selection(&screen))).trim_end_matches('\n').to_owned()
+    }
+
+    /// how many rows and columns it has.
+    pub fn size(&self) -> (u16, u16) {
+        (self.cols(), self.rows())
     }
 
     /// everything needed to draw this terminal again somewhere else, as the

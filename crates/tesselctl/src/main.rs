@@ -56,6 +56,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl ui theme tessel|orchard
   tesselctl ui events [--filter KIND,...]   what windows do, as json lines
   tesselctl ui windows                      the open windows
+  tesselctl ui shot [PATH]                  a picture of the window, as a PNG
 
   live ui in a session's chat (what agents draw with their tessel_surface tool):
   tesselctl surface SESSION put NAME JSON [--pane]
@@ -79,7 +80,11 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             a login shell, or COMMAND run by one; prints its id
   tesselctl term send ID TEXT...            type TEXT (no return)
   tesselctl term run ID COMMAND...          type COMMAND and return
-  tesselctl term capture ID [--history]     the text on screen (with --history, all of it)
+  tesselctl term capture ID [--history] [--ansi|--html]
+                                            the text on screen (with --history, all of it), plain,
+                                            with its colours as escape sequences, or as HTML
+  tesselctl term process ID [--json]        what's running in it now: pid, command, folder
+  tesselctl term keep-open ID on|off        stay once its program exits (on, the default), or go
   tesselctl term wait ID [--text T] [--timeout SECS]
                                             until the screen shows T, or until it exits
   tesselctl term attach ID                  its output, raw, as it comes
@@ -526,6 +531,15 @@ async fn ui(client: &Client, events: &mut tessel_client::Events, args: &mut Args
         base
     };
     match verb.as_str() {
+        "shot" => {
+            let mut a = serde_json::json!({});
+            if let Some(p) = positional(0) {
+                let p = std::path::absolute(&p)?;
+                a["path"] = serde_json::Value::String(p.to_string_lossy().into_owned());
+            }
+            let v = ui_exec(client, &window, "ui.shot", a).await?;
+            println!("{}", v["path"].as_str().unwrap_or_default());
+        }
         "windows" => match client.request(Request::UiWindows).await? {
             Response::UiWindows { windows } if windows.is_empty() => println!("no windows open"),
             Response::UiWindows { windows } => windows.iter().for_each(|w| println!("{w}")),
@@ -764,8 +778,34 @@ async fn term(client: &Client, events: &mut Events, args: &mut Args, json: bool)
         "capture" => {
             let term = id(args.next("a terminal")?)?;
             let history = args.flag("--history");
-            let Response::TermText { text } = client.request(Request::TermCapture { term, history }).await? else { bail!("unexpected reply") };
+            let format = if args.flag("--html") {
+                Some("html".to_owned())
+            } else if args.flag("--ansi") {
+                Some("ansi".to_owned())
+            } else {
+                None
+            };
+            let Response::TermText { text } = client.request(Request::TermCapture { term, history, format }).await? else { bail!("unexpected reply") };
             println!("{text}");
+        }
+        "process" => {
+            let term = id(args.next("a terminal")?)?;
+            match client.request(Request::TermProcess { term }).await? {
+                Response::TermProcess { pid: Some(pid), command, cwd } if json => println!("{}", serde_json::json!({"pid": pid, "command": command, "cwd": cwd})),
+                Response::TermProcess { pid: Some(pid), command, cwd } => println!("{pid}  {command}{}", cwd.map(|c| format!("  (in {c})")).unwrap_or_default()),
+                Response::TermProcess { pid: None, .. } => println!("nothing: it has exited"),
+                other => bail!("unexpected reply: {other:?}"),
+            }
+        }
+        "keep-open" => {
+            let term = id(args.next("a terminal")?)?;
+            let on = match args.next("on or off")?.as_str() {
+                "on" => true,
+                "off" => false,
+                other => bail!("keep-open is on or off, not {other}"),
+            };
+            client.request(Request::TermKeepOpen { term, on }).await?;
+            println!("terminal {term} {}", if on { "stays once its program exits" } else { "goes once its program exits" });
         }
         "wait" => {
             let term = id(args.next("a terminal")?)?;

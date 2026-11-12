@@ -34,7 +34,9 @@ pub enum Cmd {
     Resize(u16, u16),
     /// everything on screen, for a client that is attaching.
     Dump { client: ClientId, id: u64 },
-    Capture { client: ClientId, id: u64, history: bool },
+    Capture { client: ClientId, id: u64, history: bool, look: tessel_term::Look },
+    /// what's running in it now.
+    Process { client: ClientId, id: u64 },
     Wait { client: ClientId, id: u64, text: Option<String>, deadline: Instant },
     /// ask the program to stop (SIGHUP to its process group).
     Hangup,
@@ -237,7 +239,8 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
                 Cmd::Dump { client, id } => {
                     let _ = hub.send(HubMsg::TermDump { term: info.id, client, id, bytes: term.dump() });
                 }
-                Cmd::Capture { client, id, history } => reply(&hub, client, id, Ok(Response::TermText { text: term.text(history) })),
+                Cmd::Capture { client, id, history, look } => reply(&hub, client, id, Ok(Response::TermText { text: term.styled(history, look) })),
+                Cmd::Process { client, id } => reply(&hub, client, id, Ok(if exited { Response::TermProcess { pid: None, command: String::new(), cwd: None } } else { foreground(fd) })),
                 Cmd::Wait { client, id, text, deadline } => waiters.push(Waiter { client, id, text, deadline }),
                 Cmd::Hangup => {
                     if !exited {
@@ -367,6 +370,38 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
     for w in waiters {
         reply(&hub, w.client, w.id, Err(RpcError::new(ErrorCode::NotFound, format!("terminal {} was closed", info.id))));
     }
+}
+
+/// the program in front on a pty: its process group's leader, what it runs, and where.
+fn foreground(fd: RawFd) -> Response {
+    let pid = unsafe { libc::tcgetpgrp(fd) };
+    if pid <= 0 {
+        return Response::TermProcess { pid: None, command: String::new(), cwd: None };
+    }
+    let command = std::process::Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+    Response::TermProcess { pid: Some(pid), command, cwd: cwd_of(pid) }
+}
+
+#[cfg(target_os = "macos")]
+fn cwd_of(pid: i32) -> Option<String> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as i32;
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&mut info as *mut libc::proc_vnodepathinfo).cast(), size) };
+    if n != size {
+        return None;
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    Some(path.to_string_lossy().into_owned()).filter(|p| !p.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cwd_of(pid: i32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok().map(|p| p.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

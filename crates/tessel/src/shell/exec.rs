@@ -418,6 +418,15 @@ impl Shell {
                 self.place_caret(window, cx);
                 Ok(json!({"opening": path, "session": session}))
             }
+            "ui.shot" => {
+                let path = arg(args, "path").map(str::to_owned).unwrap_or_else(|| std::env::temp_dir().join(format!("tessel-{}.png", now_ms())).to_string_lossy().into_owned());
+                let n = self.main_view.and_then(crate::webview::window_number).ok_or("this window can't be pictured here")?;
+                let out = std::process::Command::new("screencapture").args(["-x", "-o", "-l", &n.to_string(), &path]).output().map_err(|e| e.to_string())?;
+                if !out.status.success() || !std::path::Path::new(&path).exists() {
+                    return Err(format!("the picture wasn't taken (Tessel may need Screen Recording in System Settings › Privacy): {}", String::from_utf8_lossy(&out.stderr).trim()));
+                }
+                Ok(json!({"path": path}))
+            }
             "files.close" => {
                 let open = self.ws.file.as_ref().map(|f| (f.path.clone(), f.dirty));
                 match open {

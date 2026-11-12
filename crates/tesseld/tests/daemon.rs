@@ -873,19 +873,29 @@ async fn an_agents_browser_acts_go_to_the_window_that_shows_the_page() {
         };
         let state = serde_json::json!({"url": "http://localhost:41000/", "title": "Home"});
         win.request(Request::UiAnswer { call, ok: Some(serde_json::json!({"state": state, "text": "Home"})), err: None }).await.unwrap();
-        win
+        (win, win_ev)
     });
     let reply = agent.request(Request::Browser { session: s, act: tessel_proto::BrowserAct::Read, agent: true }).await.unwrap();
     let Response::Browser { state, text, image } = reply else { panic!("{reply:?}") };
     assert_eq!((state.title.as_str(), text.as_deref(), image), ("Home", Some("Home"), None));
-    let win = answering.await.unwrap();
+    let (win, mut win_ev) = answering.await.unwrap();
 
-    // once the window stops showing pages, the daemon's own engine is used again.
+    // once the window stops showing pages, it isn't asked: the daemon's own engine is used again.
     win.request(Request::BrowserHost { on: false }).await.unwrap();
-    let err = tokio::time::timeout(Duration::from_secs(5), agent.request(Request::Browser { session: s, act: tessel_proto::BrowserAct::Read, agent: true })).await.expect("not relayed, not hung");
-    if let Err(e) = err {
-        assert!(!e.to_string().contains("window"), "{e}");
-    }
+    let pending = tokio::spawn(async move { agent.request(Request::Browser { session: s, act: tessel_proto::BrowserAct::Read, agent: true }).await });
+    let asked = tokio::time::timeout(Duration::from_millis(800), async {
+        loop {
+            match win_ev.recv().await {
+                Some(Event::BrowserCall { .. }) => return true,
+                Some(_) => continue,
+                None => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(!asked, "the window was asked after it stopped showing pages");
+    pending.abort();
     d.stop().await;
 }
 
@@ -1021,6 +1031,12 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
     })
     .await;
 
+    // what's running in it: the program in front, and where.
+    match c.request(Request::TermProcess { term: info.id }).await.unwrap() {
+        Response::TermProcess { pid: Some(pid), cwd, .. } => assert!(pid > 0 && cwd.is_some(), "{pid} {cwd:?}"),
+        other => panic!("{other:?}"),
+    }
+
     // typed as a window types (a binary frame), and as a script does.
     c.send_term_input(info.id, b"one\r").unwrap();
     text(c.request(Request::TermWait { term: info.id, text: Some("got:one".into()), timeout_ms: 5000 }).await.unwrap());
@@ -1030,8 +1046,13 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
         other => panic!("{other:?}"),
     };
     assert_eq!(exited.exited, Some(3), "its exit status");
-    let screen = text(c.request(Request::TermCapture { term: info.id, history: true }).await.unwrap());
+    let screen = text(c.request(Request::TermCapture { term: info.id, history: true, format: None }).await.unwrap());
     assert!(screen.contains("got:one") && screen.contains("then:two"), "{screen}");
+    // the same, as HTML, and nothing running in it now.
+    let html = text(c.request(Request::TermCapture { term: info.id, history: true, format: Some("html".into()) }).await.unwrap());
+    assert!(html.contains("<div") && html.contains("got:one"), "{html}");
+    assert!(c.request(Request::TermCapture { term: info.id, history: true, format: Some("pdf".into()) }).await.is_err());
+    assert!(matches!(c.request(Request::TermProcess { term: info.id }).await.unwrap(), Response::TermProcess { pid: None, .. }));
 
     // an attached client was streamed the rest.
     events_until(&mut ev, "the output, live", |e| {
@@ -1052,9 +1073,10 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
         other => panic!("{other:?}"),
     };
     assert_eq!(listed.len(), 1);
-    c.request(Request::TermClose { term: info.id }).await.unwrap();
+    // told not to stay, an exited terminal goes at once.
+    c.request(Request::TermKeepOpen { term: info.id, on: false }).await.unwrap();
     events_until(&mut ev, "and then it's gone", |e| matches!(e, Event::TermRemoved { term } if *term == info.id)).await;
-    assert!(c.request(Request::TermCapture { term: info.id, history: false }).await.is_err());
+    assert!(c.request(Request::TermCapture { term: info.id, history: false, format: None }).await.is_err());
     d.stop().await;
 }
 

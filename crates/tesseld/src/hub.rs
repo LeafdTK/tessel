@@ -564,7 +564,7 @@ impl Hub {
             HubMsg::TermExited { term, code } => {
                 if let Some(t) = self.terms.get_mut(&term) {
                     t.info.exited = Some(code);
-                    if t.closing {
+                    if t.closing || !t.info.keep_open {
                         self.forget_term(term);
                     } else {
                         let info = t.info.clone();
@@ -1215,10 +1215,37 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 }
                 None => Err(no_term(term)),
             },
-            Request::TermCapture { term, history } => match self.terms.get(&term) {
+            Request::TermCapture { term, history, format } => match self.terms.get(&term) {
                 Some(t) => {
-                    t.send(crate::term::Cmd::Capture { client, id, history });
+                    let look = match format.as_deref() {
+                        None | Some("text") | Some("plain") => tessel_term::Look::Plain,
+                        Some("ansi") => tessel_term::Look::Ansi,
+                        Some("html") => tessel_term::Look::Html,
+                        Some(other) => return Some(Err(RpcError::new(ErrorCode::Invalid, format!("\"{other}\" isn't a format: text, ansi or html")))),
+                    };
+                    t.send(crate::term::Cmd::Capture { client, id, history, look });
                     return None;
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermProcess { term } => match self.terms.get(&term) {
+                Some(t) => {
+                    t.send(crate::term::Cmd::Process { client, id });
+                    return None;
+                }
+                None => Err(no_term(term)),
+            },
+            Request::TermKeepOpen { term, on } => match self.terms.get_mut(&term) {
+                Some(t) => {
+                    t.info.keep_open = on;
+                    let info = t.info.clone();
+                    // already ended, and not to be kept: it goes now.
+                    if !on && info.exited.is_some() {
+                        self.forget_term(term);
+                    } else {
+                        self.tell_everyone(Event::TermUpdated { info: info.clone() });
+                    }
+                    Ok(Response::Term { info })
                 }
                 None => Err(no_term(term)),
             },
@@ -1398,7 +1425,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         }
         let id = self.next_term;
         self.next_term += 1;
-        let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None };
+        let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None, keep_open: true };
         let mut env = vec![("TESSEL_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
         if let Some(s) = session {
             env.push(("TESSEL_SESSION".into(), s.to_string()));

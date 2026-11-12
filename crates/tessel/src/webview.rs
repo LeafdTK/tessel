@@ -13,7 +13,7 @@
 
 use tokio::sync::oneshot;
 
-pub use imp::{Awake, WebView, reclaim_focus};
+pub use imp::{Awake, WebView, reclaim_focus, window_number};
 
 /// what a script answered: its value, already parsed from JSON.
 pub type Answer = oneshot::Receiver<Result<serde_json::Value, String>>;
@@ -326,6 +326,23 @@ mod imp {
         }
     }
 
+    /// the window server's number for the window a view is in: what
+    /// `screencapture -l` takes.
+    pub fn window_number(view: usize) -> Option<isize> {
+        let view = view as *mut AnyObject;
+        if view.is_null() {
+            return None;
+        }
+        unsafe {
+            let win: *mut AnyObject = msg_send![view, window];
+            if win.is_null() {
+                return None;
+            }
+            let n: isize = msg_send![win, windowNumber];
+            (n > 0).then_some(n)
+        }
+    }
+
     /// the keyboard back to the window's own content, when a page has it and
     /// the person clicked elsewhere. `gpui_view`: the window's view.
     pub fn reclaim_focus(gpui_view: usize) {
@@ -411,6 +428,10 @@ mod imp {
     }
 
     pub fn reclaim_focus(_: usize) {}
+
+    pub fn window_number(_: usize) -> Option<isize> {
+        None
+    }
 
     pub struct Awake;
     impl Awake {

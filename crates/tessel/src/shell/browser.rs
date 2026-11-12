@@ -864,3 +864,21 @@ pub(crate) fn native_host(window: &Window) -> Option<usize> {
         None
     }
 }
+
+/// a window's own view, as AppKit has it: what its number, its first
+/// responder and pages in it are found from.
+pub(crate) fn view_of(window: &Window) -> Option<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+            RawWindowHandle::AppKit(h) => Some(h.ns_view.as_ptr() as usize),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        None
+    }
+}

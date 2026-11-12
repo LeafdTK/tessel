@@ -190,7 +190,7 @@ impl Server {
             }
             "read" => {
                 let (term, history) = (term()?, args.get("history").and_then(Value::as_bool).unwrap_or(false));
-                text_of(self.client().await?.request(Request::TermCapture { term, history }).await?)?
+                text_of(self.client().await?.request(Request::TermCapture { term, history, format: None }).await?)?
             }
             "wait" => {
                 let term = term()?;

@@ -437,6 +437,18 @@ pub enum Request {
         term: crate::term::TermId,
         #[serde(default)]
         history: bool,
+        /// `ansi` (colours as escape sequences) or `html`; plain text when not given.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<String>,
+    },
+    /// what's running in a terminal now: the program in front, its pid and folder.
+    TermProcess {
+        term: crate::term::TermId,
+    },
+    /// whether a terminal stays (showing how its program ended) once its program exits.
+    TermKeepOpen {
+        term: crate::term::TermId,
+        on: bool,
     },
     /// answer once the screen shows `text`, or (with no text) once it exits.
     TermWait {
@@ -608,6 +620,15 @@ pub enum Response {
     },
     BrowserEngine {
         engine: crate::BrowserEngine,
+    },
+    /// what a terminal is running now. none when nothing is (it exited).
+    TermProcess {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<i32>,
+        #[serde(default)]
+        command: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {

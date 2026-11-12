@@ -405,6 +405,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `pane.show` | Show Conversation here |  | module, pane? |
 | `files.open` | Open a file |  | path: relative to the session's folder, line?, col?, session? |
 | `files.close` | Close the open file |  |  |
+| `ui.shot` | Take a picture of the window |  | path?: where the PNG goes (a temporary file if not given) |
 | `terminal.new` | New terminal | ⌃ ` | opens a shell below the focused pane; answers with its pane |
 | `pane.focus` | Focus a pane |  | pane |
 | `pane.toggle` | Show or hide a pane |  | pane |

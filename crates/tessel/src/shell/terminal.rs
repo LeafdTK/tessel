@@ -886,7 +886,7 @@ impl Shell {
             b.started = Some(now);
             let layout = r#"{"root": {"type": "panes", "w": "full", "h": "full", "p": 8, "layout": {"split": "row", "children": [{"module": "conversation", "size": 1}, {"id": "bench", "module": "terminal", "size": 2}]}}}"#;
             let _ = self.use_ui_text(layout, window, cx);
-            let info = TermInfo { id: BENCH_ID, title: "bench".into(), cwd: "/".into(), cols: 120, rows: 40, session: None, command: vec![], exited: None };
+            let info = TermInfo { id: BENCH_ID, title: "bench".into(), cwd: "/".into(), cols: 120, rows: 40, session: None, command: vec![], exited: None, keep_open: true };
             self.add_term(info, cx);
             if let Some(v) = self.terms.get(&BENCH_ID) {
                 v.borrow_mut().attached = true;
