@@ -74,7 +74,7 @@ impl Shell {
                 .items_center()
                 .invisible()
                 .group_hover(group.clone(), |s| s.visible())
-                .child(Button::new(SharedString::from(format!("project-{title}-new"))).ghost().small().icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session Here").on_click(cx.listener(move |this, _, window, cx| {
+                .child(Button::new(SharedString::from(format!("project-{title}-new"))).ghost().small().rounded(px(5.5)).icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session Here").on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
                     this.new_worktree = false;
                     this.start_in(f1.clone(), window, cx);
@@ -85,7 +85,7 @@ impl Shell {
                     Popover::new(SharedString::from(format!("project-{title}-menu")))
                         .p_0()
                         .anchor(Anchor::TopRight)
-                        .trigger(Button::new(SharedString::from(format!("project-{title}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
+                        .trigger(Button::new(SharedString::from(format!("project-{title}-more"))).ghost().small().rounded(px(5.5)).icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
                         .content(move |_, _, cx| {
                             let popover = cx.entity();
                             let Some(shell) = me.upgrade() else { return div().into_any_element() };
@@ -146,7 +146,7 @@ impl Shell {
                         }
                     }
                 })
-                .trigger(Button::new(SharedString::from(format!("session-{sid}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
+                .trigger(Button::new(SharedString::from(format!("session-{sid}-more"))).ghost().small().rounded(px(4.)).icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
                 .content(move |_, _, cx| {
                     let popover = cx.entity();
                     let Some(shell) = me.upgrade() else { return div().into_any_element() };

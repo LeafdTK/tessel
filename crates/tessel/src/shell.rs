@@ -1280,6 +1280,7 @@ impl Shell {
             .id(ElementId::from(sid.0))
             .test_support()
             .aria_label(label)
+            .relative()
             .h(px(crate::model::ROW_H - 3.))
             .my(px(1.5))
             .mx_2()
@@ -1314,15 +1315,8 @@ impl Shell {
                             .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(s.goal.clone()))
                             // the time, and on hover the menu in its place: one slot at the
                             // end of the first line, wherever the line below ends.
-                            .child(
-                                h_flex()
-                                    .relative()
-                                    .flex_shrink_0()
-                                    .min_w(px(24.))
-                                    .justify_end()
-                                    .children(time.map(|t| div().set(Type::Subheadline).text_color(p.secondary).group_hover(hover_group.clone(), |d| d.invisible()).child(t)))
-                                    .child(h_flex().absolute().right(px(-4.)).top(px(-4.)).bottom(px(-4.)).items_center().child(menu)),
-                            ),
+                            // the time, which makes way for the menu on hover.
+                            .children(time.map(|t| div().flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).group_hover(hover_group.clone(), |d| d.invisible()).child(t))),
                     )
                     .child(
                         h_flex()
@@ -1331,6 +1325,8 @@ impl Shell {
                             .when(self.sessions_trace && !s.trace.is_empty(), |d| d.child(trace(&s.trace, p.tertiary, 56., 11.))),
                     ),
             )
+            // the menu: centred on the row, inside its corner, never past it.
+            .child(h_flex().absolute().right(px(6.)).top_0().bottom_0().items_center().child(menu))
     }
 
     fn overview_layer(&self, now: Millis, cx: &mut Context<Self>) -> impl IntoElement {
