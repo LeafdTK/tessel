@@ -1244,3 +1244,45 @@ async fn a_chat_started_empty_is_named_by_its_first_message() {
     c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "tidy the readme please".into(), attachments: vec![] }).await.unwrap();
     until(&c, s.id, "a name from what was said", |s| s.goal == "tidy the readme please").await;
 }
+
+#[tokio::test]
+async fn one_window_follows_several_chats_and_hears_from_each() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, mut ev) = d.client().await;
+    let a = create(&c, &d.cwd(), None).await;
+    let b = create(&c, &d.cwd(), None).await;
+    let ghost = SessionId::new();
+
+    let follow = |sessions: Vec<SessionId>| c.request(Request::Follow { sessions, tail: 50 });
+    match follow(vec![a.id, ghost]).await.unwrap() {
+        Response::Followed { snapshots, missing } => {
+            assert_eq!(snapshots.iter().map(|s| s.summary.id).collect::<Vec<_>>(), vec![a.id]);
+            assert_eq!(missing, vec![ghost], "a session that isn't there is named, not an error");
+        }
+        other => panic!("{other:?}"),
+    }
+    // adding a second only sends the second: the first is already on screen.
+    match follow(vec![a.id, b.id]).await.unwrap() {
+        Response::Followed { snapshots, .. } => assert_eq!(snapshots.iter().map(|s| s.summary.id).collect::<Vec<_>>(), vec![b.id]),
+        other => panic!("{other:?}"),
+    }
+
+    for s in [a.id, b.id] {
+        c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s, text: "hello".into(), attachments: vec![] }).await.unwrap();
+    }
+    let mut heard = std::collections::HashSet::new();
+    events_until(&mut ev, "items from both chats", |e| {
+        if let Event::ItemUpserted { session, .. } = e {
+            heard.insert(*session);
+        }
+        heard.len() == 2
+    })
+    .await;
+
+    // following only b: a goes quiet.
+    follow(vec![b.id]).await.unwrap();
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: a.id, text: "again".into(), attachments: vec![] }).await.unwrap();
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: b.id, text: "again".into(), attachments: vec![] }).await.unwrap();
+    let seen = events_until(&mut ev, "an item from b", |e| matches!(e, Event::ItemUpserted { session, .. } if *session == b.id)).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::ItemUpserted { session, .. } if *session == a.id)), "unfollowed: no items from a");
+}

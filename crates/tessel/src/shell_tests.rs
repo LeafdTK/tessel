@@ -2016,3 +2016,42 @@ fn all_sessions_always_has_a_way_back_and_says_when_there_are_none(cx: &mut Test
     rig.click(cx, "overview-close");
     assert!(!rig.shell.read_with(cx, |s, _| s.overview_for_test()), "and back is one click");
 }
+
+#[gpui_kit::test]
+fn two_conversation_panes_hold_two_chats_and_a_new_one_mirrors(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let b = session(2, "Split the auth module", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "conversation", "id": "right"}
+    ]}}}"#);
+    let view = |rig: &Rig, cx: &mut TestAppContext, pane: &str| rig.shell.read_with(cx, |s, _| s.views.get(pane).map(|v| v.session));
+    let open = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.model.open.as_ref().map(|o| o.id));
+    // a new conversation pane shows the chat you're in: the same chat, nothing new to follow.
+    assert_eq!(view(&rig, cx, "right"), Some(a.id));
+    assert!(rig.exists(cx, "reply-bar"));
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::Follow(_))), "a mirror is the chat already followed");
+
+    // a chat opened on the left leaves the right one where it was.
+    rig.shell.update(cx, |s, cx| s.open(b.id, cx));
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Follow(extra) if *extra == vec![a.id])), "the right pane's chat is followed: {asked:?}");
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == b.id)));
+    rig.feed(cx, vec![snapshot(b.clone(), vec![])]);
+    assert_eq!((open(&rig, cx), view(&rig, cx, "right")), (Some(b.id), Some(a.id)));
+
+    // what arrives for the right pane's chat goes there.
+    let reply = Item { id: ItemId::from("t2"), parent: None, seq: 2, order: 2, created_ms: 0, body: ItemBody::Text { text: "done".into(), streaming: false } };
+    rig.feed(cx, vec![UiEvent::Item { session: a.id, item: reply }]);
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.model.others.get(&a.id).map(|o| o.len())), Some(2));
+
+    // half a message for b, then a click in the right pane: typing moves there with its chat, no fetching.
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.composer.update(cx, |c, cx| c.set_value("half a thought", window, cx)))).unwrap();
+    rig.click(cx, "reply-bar");
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == a.id)), "{asked:?}");
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Follow(extra) if *extra == vec![b.id])), "and the left pane's chat is followed now: {asked:?}");
+    assert_eq!(open(&rig, cx), Some(a.id), "a is the focused chat, from what was on screen");
+    assert_eq!(view(&rig, cx, "conversation"), Some(b.id), "the left pane keeps b");
+    assert_eq!(rig.shell.read_with(cx, |s, cx| (s.drafts.get(&b.id).cloned(), s.composer.read(cx).value().to_string())), (Some("half a thought".into()), String::new()), "b's draft waits for b");
+}

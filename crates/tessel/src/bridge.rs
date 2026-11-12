@@ -18,8 +18,10 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum Cmd {
-    /// show this session (or none).
+    /// the chat in the focused pane (or none).
     Open(Option<SessionId>),
+    /// the chats the other panes show, which the window follows as well.
+    Follow(Vec<SessionId>),
     Create { cwd: String, worktree: bool, prompt: String },
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
     Fork { session: SessionId, workspace: bool },
@@ -121,8 +123,26 @@ pub fn start(home: PathBuf) -> (Bridge, mpsc::UnboundedReceiver<UiEvent>) {
     (Bridge { cmds: cmd_tx }, ui_rx)
 }
 
+/// the chats the window follows in detail: the focused one, and the rest on screen.
+#[derive(Default)]
+struct Following {
+    open: Option<SessionId>,
+    extra: Vec<SessionId>,
+    /// the daemon can follow several (protocol 0.13). an older one follows
+    /// only the open chat; the others then wait for a newer daemon.
+    many: bool,
+}
+
+impl Following {
+    fn all(&self) -> Vec<SessionId> {
+        let mut all: Vec<SessionId> = self.open.into_iter().collect();
+        all.extend(self.extra.iter().copied().filter(|s| Some(*s) != self.open));
+        all
+    }
+}
+
 async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::UnboundedSender<UiEvent>) {
-    let mut open: Option<SessionId> = None;
+    let mut open = Following::default();
     let mut backoff = Duration::from_millis(100);
     loop {
         match tessel_client::connect_or_start(&home, "tessel").await {
@@ -135,8 +155,9 @@ async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Un
                 tokio::time::sleep(wait).await;
                 backoff = (backoff * 2).min(Duration::from_secs(3));
             }
-            Ok((client, events, _welcome)) => {
+            Ok((client, events, welcome)) => {
                 let client = Arc::new(client);
+                open.many = welcome.proto_minor >= 13;
                 backoff = Duration::from_millis(100);
                 if ui.send(UiEvent::Connected).is_err() {
                     return;
@@ -159,7 +180,38 @@ enum Ended {
     Lost,
 }
 
-async fn subscribe(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, open: &mut Option<SessionId>) -> Result<(), ClientError> {
+/// the whole picture: every session, then each followed chat.
+async fn subscribe(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, f: &mut Following) -> Result<(), ClientError> {
+    if !f.many {
+        return subscribe_one(client, ui, &mut f.open).await;
+    }
+    if let Response::Subscribed { sessions: Some(sessions), .. } = client.request(Request::Subscribe { summary: true, detail: None, tail: 0 }).await? {
+        let _ = ui.send(UiEvent::Sessions(sessions));
+    }
+    follow(client, ui, f).await
+}
+
+/// follow exactly what the window shows. snapshots come back only for chats
+/// not followed already, so adding a pane doesn't resend the others.
+async fn follow(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, f: &mut Following) -> Result<(), ClientError> {
+    if !f.many {
+        return subscribe_one(client, ui, &mut f.open).await;
+    }
+    if let Response::Followed { snapshots, missing } = client.request(Request::Follow { sessions: f.all(), tail: 400 }).await? {
+        // the session we had open was deleted while we were away.
+        if f.open.is_some_and(|o| missing.contains(&o)) {
+            f.open = None;
+        }
+        f.extra.retain(|s| !missing.contains(s));
+        for snap in snapshots {
+            let _ = ui.send(UiEvent::Snapshot(Box::new(snap)));
+        }
+    }
+    Ok(())
+}
+
+/// an older daemon: one chat in detail, with the session list.
+async fn subscribe_one(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, open: &mut Option<SessionId>) -> Result<(), ClientError> {
     let reply = client.request(Request::Subscribe { summary: true, detail: *open, tail: 400 }).await;
     let reply = match reply {
         // the session we had open was deleted while we were away.
@@ -213,7 +265,7 @@ async fn session(
     mut events: Events,
     cmds: &mut mpsc::UnboundedReceiver<Cmd>,
     ui: &mpsc::UnboundedSender<UiEvent>,
-    open: &mut Option<SessionId>,
+    open: &mut Following,
 ) -> Ended {
     if subscribe(client, ui, open).await.is_err() {
         return Ended::Lost;
@@ -265,8 +317,12 @@ async fn session(
                 let Some(cmd) = cmd else { return Ended::UiGone };
                 let result = match cmd {
                     Cmd::Open(id) => {
-                        *open = id;
-                        subscribe(client, ui, open).await
+                        open.open = id;
+                        follow(client, ui, open).await
+                    }
+                    Cmd::Follow(extra) => {
+                        open.extra = extra;
+                        follow(client, ui, open).await
                     }
                     Cmd::Create { cwd, worktree, prompt } => {
                         let req = Request::SessionCreate {
@@ -283,8 +339,8 @@ async fn session(
                                 let id = summary.id;
                                 let _ = ui.send(UiEvent::Session(summary));
                                 let _ = ui.send(UiEvent::Created);
-                                *open = Some(id);
-                                subscribe(client, ui, open).await
+                                open.open = Some(id);
+                                follow(client, ui, open).await
                             }
                             Ok(_) => Ok(()),
                             Err(e) => Err(e),
@@ -295,8 +351,8 @@ async fn session(
                             let id = summary.id;
                             let _ = ui.send(UiEvent::Session(summary));
                             let _ = ui.send(UiEvent::Created);
-                            *open = Some(id);
-                            subscribe(client, ui, open).await
+                            open.open = Some(id);
+                            follow(client, ui, open).await
                         }
                         Ok(_) => Ok(()),
                         Err(e) => Err(e),
@@ -428,9 +484,10 @@ async fn session(
                     Cmd::Interrupt(session) => client.request(Request::SessionInterrupt { cmd_id: Uuid::new_v4(), session }).await.map(drop),
                     Cmd::MarkSeen { session, seq } => client.request(Request::MarkSeen { session, seq }).await.map(drop),
                     Cmd::Delete { session, remove_worktree } => {
-                        if *open == Some(session) {
-                            *open = None;
+                        if open.open == Some(session) {
+                            open.open = None;
                         }
+                        open.extra.retain(|s| *s != session);
                         client.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session, remove_worktree }).await.map(drop)
                     }
                 };

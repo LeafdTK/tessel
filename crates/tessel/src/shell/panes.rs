@@ -586,9 +586,13 @@ impl Shell {
             } else {
                 p.separator
             })
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| {
+            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| {
                 if this.pane_focus.as_deref() != Some(fid.as_str()) {
                     this.pane_focus = Some(fid.clone());
+                }
+                // typing follows you to the chat you click in, before the click lands.
+                if this.views.contains_key(fid.as_str()) {
+                    this.focus_chat_pane(&fid, cx);
                 }
             }))
             .when(!open_sky, |d| d.bg(p.window))
@@ -605,7 +609,10 @@ impl Shell {
         match module {
             Some(Module::Conversation) => {
                 let ink = if self.window_active { p.label } else { p.secondary };
-                let title = self.model.open_summary().filter(|_| !self.show_new).map_or_else(|| "New Session".to_owned(), |s| s.goal.clone());
+                let title = match self.views.get(pane_id) {
+                    Some(v) => self.model.sessions.iter().find(|s| s.id == v.session).map_or_else(|| "Chat".to_owned(), |s| s.goal.clone()),
+                    None => self.model.open_summary().filter(|_| !self.show_new).map_or_else(|| "New Session".to_owned(), |s| s.goal.clone()),
+                };
                 let mut out = vec![
                     Button::new("toolbar-sidebar")
                         .ghost()
@@ -677,6 +684,9 @@ impl Shell {
 
     /// the conversation module: the transcript, what is waiting on you, and the message box.
     fn conversation_el(&self, pane: Option<&Pane>, cx: &mut Context<Self>) -> AnyElement {
+        if let Some((id, view)) = pane.and_then(|p| self.views.get(p.id.as_str()).map(|v| (p.id.as_str(), v))) {
+            return self.chat_view_el(id, view, cx);
+        }
         let p = self.palette.get();
         if self.show_new || self.model.open_summary().is_none() {
             return v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)).into_any_element();
@@ -778,7 +788,8 @@ impl Shell {
     /// whether a module there can only be one of is already in the window,
     /// in another pane or outside the panes (the sidebar's session list).
     pub(crate) fn shown_elsewhere(&self, m: Module, pane: Option<&str>) -> bool {
-        let in_pane = self.ui.panes().iter().any(|p| p.module == Some(m) && Some(p.id.as_str()) != pane);
+        // conversations come in any number: a new one shows the chat you're in.
+        let in_pane = m != Module::Conversation && self.ui.panes().iter().any(|p| p.module == Some(m) && Some(p.id.as_str()) != pane);
         let outside = match m {
             Module::Sessions => self.ui.find(crate::ui::Kind::Sessions).is_some(),
             Module::Workspace => self.ui.find(crate::ui::Kind::Panel).is_some(),
@@ -1353,7 +1364,15 @@ impl Shell {
     /// the open session's workspace: every session working in the same folder,
     /// oldest first. each is a tab.
     pub(crate) fn workspace_tabs(&self) -> Vec<&SessionSummary> {
-        let Some(open) = self.model.open_summary() else { return Vec::new() };
+        match self.model.open_summary() {
+            Some(open) => self.tabs_beside(open.id),
+            None => Vec::new(),
+        }
+    }
+
+    /// the chats in the same workspace as `session`, oldest first.
+    pub(crate) fn tabs_beside(&self, session: SessionId) -> Vec<&SessionSummary> {
+        let Some(open) = self.model.sessions.iter().find(|s| s.id == session) else { return Vec::new() };
         let mut tabs: Vec<&SessionSummary> = self.model.sessions.iter().filter(|s| s.cwd == open.cwd).collect();
         tabs.sort_by_key(|s| (s.created_ms, s.id));
         tabs
@@ -1386,9 +1405,14 @@ impl Shell {
             return None;
         }
         let open = self.model.open_summary()?.id;
+        self.workspace_tabs_for(open, cx)
+    }
+
+    /// the tab strip of `open`'s workspace, `open` marked as the one shown.
+    pub(crate) fn workspace_tabs_for(&self, open: SessionId, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = self.palette.get();
         let mut strip = h_flex().id("workspace-tabs").test_support().px(theme::z(12.)).pt(theme::z(8.)).pb(theme::z(4.)).gap(theme::z(4.)).overflow_x_scroll();
-        for s in self.workspace_tabs() {
+        for s in self.tabs_beside(open) {
             let (id, on) = (s.id, s.id == open);
             let armed = self.confirm_delete == Some(id);
             let group = SharedString::from(format!("tab-group-{id}"));

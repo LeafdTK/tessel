@@ -13,6 +13,7 @@ mod composer;
 mod exec;
 mod mentions;
 mod backdrop;
+mod chats;
 mod space;
 mod models;
 mod looks;
@@ -106,7 +107,7 @@ pub struct Shell {
     /// the fill of the node being drawn, resolved before its inks were swapped.
     bg_now: std::cell::Cell<Option<Hsla>>,
     scroller: Entity<MessageScrollerState>,
-    composer: Entity<gpui_kit::component::input::TextareaState>,
+    pub(crate) composer: Entity<gpui_kit::component::input::TextareaState>,
     /// the project a new session starts in, when one was picked; otherwise
     /// the latest (see `new_folder`).
     pub(crate) new_project: Option<String>,
@@ -155,6 +156,21 @@ pub struct Shell {
     pane_drag: Option<panes::PaneDrag>,
     /// the pane last clicked in: the one keys act on.
     pub(crate) pane_focus: Option<String>,
+    /// the conversation pane typing goes to. its chat is `model.open`.
+    pub(crate) chat_pane: Option<String>,
+    /// every other conversation pane: the chat it holds, and its own scroll.
+    pub(crate) views: HashMap<String, chats::ChatView>,
+    /// half-written messages, one per chat, so every pane showing a chat
+    /// shares its draft and moving between chats keeps each one.
+    pub(crate) drafts: HashMap<SessionId, String>,
+    /// a draft to put in the message box at the next frame (it needs the window).
+    pub(crate) draft_to_set: Option<String>,
+    /// put the cursor in the message box at the next frame.
+    pub(crate) focus_composer_next: bool,
+    /// the chats other panes show, as last told to the daemon.
+    pub(crate) followed: Vec<SessionId>,
+    /// the chat the focused pane is waiting on a snapshot of.
+    pub(crate) awaiting: Option<SessionId>,
     /// the pane maximized over the others, if one is.
     pub(crate) pane_zoom: Option<String>,
     /// a pane being carried by its grip.
@@ -521,6 +537,13 @@ impl Shell {
             pane_gaps: Vec::new(),
             pane_drag: None,
             pane_focus: None,
+            chat_pane: None,
+            views: HashMap::new(),
+            drafts: HashMap::new(),
+            draft_to_set: None,
+            focus_composer_next: false,
+            followed: Vec::new(),
+            awaiting: None,
             pane_zoom: None,
             pane_move: None,
             root_focus: cx.focus_handle(),
@@ -712,6 +735,9 @@ impl Shell {
                     })
                     .flatten();
                 self.model.remove_session(id);
+                // panes that showed it go back to showing the focused chat.
+                self.views.retain(|_, v| v.session != id);
+                self.drafts.remove(&id);
                 self.reflow_sidebar();
                 if self.confirm_delete == Some(id) {
                     self.confirm_delete = None;
@@ -726,7 +752,23 @@ impl Shell {
             }
             UiEvent::Snapshot(snap) => {
                 let open = Open::from_snapshot(*snap);
-                let n = open.len();
+                let (id, n) = (open.id, open.len());
+                // a chat another pane is waiting for, not the one you're typing into.
+                let focused = self.awaiting == Some(id) || self.model.open.as_ref().is_some_and(|o| o.id == id);
+                if !focused && self.in_a_view(id) {
+                    self.model.others.insert(id, open);
+                    self.reset_views_of(id, n, cx);
+                    return;
+                }
+                // a chat made or forked here opens in the focused pane; what it
+                // replaces stays loaded if another pane shows it.
+                if let Some(old) = self.model.open.take().filter(|o| o.id != id)
+                    && self.in_a_view(old.id)
+                {
+                    self.model.others.insert(old.id, old);
+                }
+                self.awaiting = None;
+                self.reset_views_of(id, n, cx);
                 self.model.open = Some(open);
                 self.answers.clear();
                 self.scroller.update(cx, |s, cx| {
@@ -752,27 +794,29 @@ impl Shell {
                 }
             }
             UiEvent::Item { session, item } => {
-                let Some(open) = self.model.open.as_mut().filter(|o| o.id == session) else { return };
+                let Some(open) = self.model.open_of_mut(session) else { return };
                 // a tool that has just finished may have changed the folder.
                 let touched = matches!(&item.body, ItemBody::Tool { status, .. } if !status.is_open());
                 let change = open.upsert(item);
                 let n = open.len();
-                self.relayout(change, n, cx);
+                self.relayout_in(session, change, n, cx);
                 if touched {
                     self.workspace_touched();
                 }
             }
             UiEvent::Delta { session, item_id, offset, text } => {
-                let Some(open) = self.model.open.as_mut().filter(|o| o.id == session) else { return };
+                let Some(open) = self.model.open_of_mut(session) else { return };
                 let change = open.delta(&item_id, offset, &text);
                 let n = open.len();
-                self.relayout(change, n, cx);
+                self.relayout_in(session, change, n, cx);
             }
             UiEvent::Pending { session, pending } => {
                 if let Some(open) = self.model.open.as_mut().filter(|o| o.id == session) {
                     self.answers.retain(|id, _| pending.iter().any(|p| &p.request_id == id));
                     open.pending = pending;
                     self.sync_prompt(true);
+                } else if let Some(open) = self.model.others.get_mut(&session) {
+                    open.pending = pending;
                 }
             }
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
@@ -869,17 +913,12 @@ impl Shell {
 
     // ---- things the user does --------------------------------------------------
 
+    /// show a chat in the focused pane. other panes keep theirs.
     pub fn open(&mut self, id: SessionId, cx: &mut Context<Self>) {
         self.show_new = false;
         self.error = None;
         self.confirm_delete = None;
-        if self.model.open.as_ref().is_none_or(|o| o.id != id) {
-            self.model.open = None;
-            self.prompt_open.snap(0.0);
-            self.prompt_ghost.clear();
-            self.scroller.update(cx, |s, cx| s.reset(0, cx));
-            self.cmd(Cmd::Open(Some(id)));
-        }
+        self.switch_open(id, false, cx);
         cx.notify();
     }
 
@@ -1602,9 +1641,10 @@ impl Shell {
         )
     }
 
-    fn row(&self, ix: usize, me: &Entity<Self>, cx: &App) -> AnyElement {
+    /// row `ix` of a chat on screen, focused or not.
+    fn row_in(&self, session: SessionId, ix: usize, me: &Entity<Self>, cx: &App) -> AnyElement {
         let _ = cx;
-        let Some((item, depth)) = self.model.open.as_ref().and_then(|o| o.row(ix)) else {
+        let Some((item, depth)) = self.model.open_of(session).and_then(|o| o.row(ix)) else {
             return div().into_any_element();
         };
         let p = self.palette.get();
@@ -1736,7 +1776,7 @@ impl Shell {
                 Some(tool_row(tool, input, *status, output.as_deref(), ran, &p).into_any_element())
             }
             ItemBody::Turn { started_ms, finished_ms, duration_ms, cost_usd, model, fast, usage, files } => {
-                Some(self.turn_footer(ix, &item.id, *started_ms, *finished_ms, *duration_ms, *cost_usd, model.as_deref(), *fast, *usage, files, me))
+                Some(self.turn_footer(session, ix, &item.id, *started_ms, *finished_ms, *duration_ms, *cost_usd, model.as_deref(), *fast, *usage, files, me))
             }
             ItemBody::Notice { level, text } => {
                 let color = if *level == NoticeLevel::Error { p.failed } else { p.secondary };
@@ -1800,6 +1840,7 @@ impl Shell {
     #[allow(clippy::too_many_arguments)]
     fn turn_footer(
         &self,
+        session: SessionId,
         ix: usize,
         id: &ItemId,
         started_ms: Millis,
@@ -1835,7 +1876,7 @@ impl Shell {
             rows,
         };
         // the reply, all of it: every piece of text since the message that began the turn.
-        let reply = self.turn_text(ix);
+        let reply = self.turn_text(session, ix);
         let mut row = h_flex()
             .gap(px(10.))
             .set(Type::Subheadline)
@@ -1901,7 +1942,7 @@ impl Shell {
 
     #[cfg(test)]
     pub(crate) fn turn_text_for_test(&self, ix: usize) -> String {
-        self.turn_text(ix)
+        self.model.open.as_ref().map_or_else(String::new, |o| self.turn_text(o.id, ix))
     }
 
     /// what can be done from the end of a turn: carry the conversation on elsewhere.
@@ -1933,8 +1974,8 @@ impl Shell {
 
     /// the text of the turn ending at row `ix`: everything the agent said since
     /// the message that started it.
-    fn turn_text(&self, ix: usize) -> String {
-        let Some(open) = self.model.open.as_ref() else { return String::new() };
+    fn turn_text(&self, session: SessionId, ix: usize) -> String {
+        let Some(open) = self.model.open_of(session) else { return String::new() };
         let mut parts = Vec::new();
         for j in (0..ix).rev() {
             let Some((item, depth)) = open.row(j) else { break };
@@ -2115,6 +2156,14 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
+        // which pane shows which chat, now that the layout may have changed.
+        self.sync_views(cx);
+        if let Some(draft) = self.draft_to_set.take() {
+            self.composer.update(cx, |c, cx| c.set_value(draft, window, cx));
+        }
+        if std::mem::take(&mut self.focus_composer_next) {
+            self.composer.update(cx, |c, cx| c.focus(window, cx));
+        }
         // TESSEL_FRAME_LOG=1: when each frame is built, and how long since the last.
         if std::env::var_os("TESSEL_FRAME_LOG").is_some() {
             thread_local!(static LAST: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) });
@@ -2561,7 +2610,7 @@ pub(crate) fn handback_for_test(text: &str) -> Option<String> {
 }
 
 /// first letter capitalised. activity lines from the daemon are lowercase fragments.
-fn sentence(s: &str) -> String {
+pub(crate) fn sentence(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),

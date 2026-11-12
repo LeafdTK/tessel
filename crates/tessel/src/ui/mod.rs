@@ -227,10 +227,12 @@ fn check(ui: &Ui) -> Result<(), String> {
         }
     }
     // the conversation module holds a transcript, a message box and the new-session form.
+    // conversation panes come in any number (each holds a chat), but a loose
+    // transcript, input or new-session node is the one chat there is.
     let conversations = panes.iter().filter(|p| p.module == Some(Module::Conversation)).count();
     for kind in [Kind::Transcript, Kind::Input, Kind::Sessions, Kind::Panel, Kind::NewSession] {
         let mut n = nodes.iter().filter(|n| n.kind == kind).count();
-        if matches!(kind, Kind::Transcript | Kind::Input | Kind::NewSession) {
+        if matches!(kind, Kind::Transcript | Kind::Input | Kind::NewSession) && n > 0 {
             n += conversations;
         }
         if kind == Kind::Sessions {
@@ -1561,7 +1563,9 @@ mod tests {
         assert_eq!(ids, ["conversation", "changes", "pane-1", "notes"]);
         assert_eq!(ui.panes()[2].trail, [1, 1]);
         assert!(!ui.panes()[3].open);
-        let e = parse(r#"{"root": {"type": "panes", "layout": {"split": "row", "children": [{"module": "conversation"}, {"module": "conversation"}]}}}"#).unwrap_err();
+        // two chats side by side are fine; a loose transcript beside a conversation pane is not.
+        assert!(parse(r#"{"root": {"type": "panes", "layout": {"split": "row", "children": [{"module": "conversation"}, {"module": "conversation"}]}}}"#).is_ok());
+        let e = parse(r#"{"root": {"type": "row", "children": [{"type": "transcript"}, {"type": "panes", "layout": {"module": "conversation"}}]}}"#).unwrap_err();
         assert!(e.contains("conversation") && e.contains("there can be one"), "{e}");
         let e = parse(r#"{"root": {"type": "panes", "layout": {"module": "chnages"}}}"#).unwrap_err();
         assert!(e.contains("did you mean \"changes\""), "{e}");

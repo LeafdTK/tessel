@@ -157,6 +157,16 @@ pub enum Request {
         #[serde(default = "default_tail")]
         tail: u32,
     },
+    /// follow these sessions in detail (items, deltas, pending prompts), and
+    /// no others: replaces what this connection follows. answers with a
+    /// snapshot of each one it wasn't following already. a window showing
+    /// several chats at once follows them all.
+    Follow {
+        sessions: Vec<SessionId>,
+        /// how many of the newest items each new snapshot carries.
+        #[serde(default = "default_tail")]
+        tail: u32,
+    },
     /// page older items in.
     ItemsBefore {
         session: SessionId,
@@ -467,6 +477,13 @@ pub enum Response {
         /// present when `detail` was requested.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<SessionSnapshot>,
+    },
+    Followed {
+        /// the sessions newly followed, as they are now.
+        snapshots: Vec<SessionSnapshot>,
+        /// asked for, but there's no such session (deleted, say).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        missing: Vec<SessionId>,
     },
     Items {
         items: Vec<Item>,

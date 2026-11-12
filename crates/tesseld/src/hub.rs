@@ -105,7 +105,8 @@ struct Client {
     tx: mpsc::Sender<Out>,
     ready: bool,
     summary: bool,
-    detail: Option<SessionId>,
+    /// the sessions it follows in detail.
+    detail: Vec<SessionId>,
     /// we dropped events for this client and still owe it a `Lagged`.
     lagged: bool,
     dead: bool,
@@ -277,7 +278,7 @@ impl Hub {
     fn handle(&mut self, msg: HubMsg) -> bool {
         match msg {
             HubMsg::Connected { client, tx } => {
-                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: None, lagged: false, dead: false, window: None, ui_kinds: None });
+                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: Vec::new(), lagged: false, dead: false, window: None, ui_kinds: None });
             }
             HubMsg::Disconnected { client } => {
                 let gone = self.clients.remove(&client);
@@ -545,9 +546,7 @@ impl Hub {
                     });
                     self.broadcast_summary_event(Event::SessionRemoved { session }, Some(session));
                     for c in self.clients.values_mut() {
-                        if c.detail == Some(session) {
-                            c.detail = None;
-                        }
+                        c.detail.retain(|s| *s != session);
                     }
                     Ok(Response::Ack)
                 }
@@ -576,10 +575,33 @@ impl Hub {
                 };
                 if let Some(c) = self.clients.get_mut(&client) {
                     c.summary = summary;
-                    c.detail = detail;
+                    c.detail = detail.into_iter().collect();
                     c.lagged = false;
                 }
                 Ok(Response::Subscribed { sessions: summary.then(|| self.summaries()), detail: snapshot })
+            }
+            Request::Follow { sessions, tail } => {
+                let now = now_ms();
+                let before = self.clients.get(&client).map(|c| c.detail.clone()).unwrap_or_default();
+                let (mut follow, mut snapshots, mut missing) = (Vec::new(), Vec::new(), Vec::new());
+                for s in sessions {
+                    if follow.contains(&s) {
+                        continue;
+                    }
+                    match self.sessions.get(&s) {
+                        None => missing.push(s),
+                        Some(live) => {
+                            if !before.contains(&s) {
+                                snapshots.push(live.state.snapshot(tail as usize, now));
+                            }
+                            follow.push(s);
+                        }
+                    }
+                }
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.detail = follow;
+                }
+                Ok(Response::Followed { snapshots, missing })
             }
             Request::ItemsBefore { session, before, limit } => match self.sessions.get(&session) {
                 None => Err(not_found(session)),
@@ -1192,7 +1214,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         }
         let pending = fx.pending_changed.then(|| live.state.pending().to_vec());
         let watching: Vec<ClientId> =
-            self.clients.iter().filter(|(_, c)| c.detail == Some(session)).map(|(id, _)| *id).collect();
+            self.clients.iter().filter(|(_, c)| c.detail.contains(&session)).map(|(id, _)| *id).collect();
         for client in watching {
             for item in &fx.upserts {
                 self.send(client, Envelope::Ev { ev: Event::ItemUpserted { session, item: item.clone() } });
@@ -1225,7 +1247,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let targets: Vec<ClientId> = self
             .clients
             .iter()
-            .filter(|(_, c)| c.ready && (c.summary || (session.is_some() && c.detail == session)))
+            .filter(|(_, c)| c.ready && (c.summary || session.is_some_and(|s| c.detail.contains(&s))))
             .map(|(id, _)| *id)
             .collect();
         for client in targets {
@@ -1321,7 +1343,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 // and attaches to its terminals again (each starts from a dump).
                 c.lagged = true;
                 c.summary = false;
-                c.detail = None;
+                c.detail.clear();
                 for t in self.terms.values_mut() {
                     t.attached.remove(&client);
                 }

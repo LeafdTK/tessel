@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub struct Model {
     pub sessions: Vec<SessionSummary>,
     pub open: Option<Open>,
+    /// chats shown in other panes: followed, but not the one you type into.
+    pub others: std::collections::HashMap<SessionId, Open>,
     pub connection: Connection,
     /// projects folded shut in the sidebar: their header shows, their sessions don't.
     pub collapsed: std::collections::HashSet<String>,
@@ -42,7 +44,7 @@ pub struct Open {
 }
 
 /// what changed in the transcript, so the list can be told precisely.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     None,
     /// rows were added at the end.
@@ -194,7 +196,20 @@ impl Model {
         }
     }
 
+    /// a chat on screen, focused or not.
+    pub fn open_of(&self, id: SessionId) -> Option<&Open> {
+        self.open.as_ref().filter(|o| o.id == id).or_else(|| self.others.get(&id))
+    }
+
+    pub fn open_of_mut(&mut self, id: SessionId) -> Option<&mut Open> {
+        match self.open.as_mut() {
+            Some(o) if o.id == id => Some(o),
+            _ => self.others.get_mut(&id),
+        }
+    }
+
     pub fn remove_session(&mut self, id: SessionId) {
+        self.others.remove(&id);
         self.sessions.retain(|s| s.id != id);
         if self.open.as_ref().is_some_and(|o| o.id == id) {
             self.open = None;
