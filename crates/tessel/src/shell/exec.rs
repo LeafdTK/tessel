@@ -249,9 +249,8 @@ impl Shell {
                 let module = MODULES.iter().find(|m| m.0 == name).map(|m| m.1).ok_or_else(|| {
                     format!("there's no \"{name}\" module. modules: {}", MODULES.iter().map(|m| m.0).collect::<Vec<_>>().join(", "))
                 })?;
-                let single = matches!(module, Module::Conversation | Module::Sessions | Module::Workspace);
-                if single && self.ui.panes().iter().any(|p| p.module == Some(module) && p.id != pane.id) {
-                    return Err(format!("{name} is already showing in another pane, and there can be one"));
+                if self.shown_elsewhere(module, Some(pane.id.as_str())) {
+                    return Err(format!("{name} is already in the window, and there can be one"));
                 }
                 self.set_pane_module(pane.trail, module, window, cx);
                 done

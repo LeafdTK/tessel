@@ -771,15 +771,26 @@ impl Shell {
     }
 
     /// an empty pane offers every module.
+    /// whether a module there can only be one of is already in the window,
+    /// in another pane or outside the panes (the sidebar's session list).
+    pub(crate) fn shown_elsewhere(&self, m: Module, pane: Option<&str>) -> bool {
+        let in_pane = self.ui.panes().iter().any(|p| p.module == Some(m) && Some(p.id.as_str()) != pane);
+        let outside = match m {
+            Module::Sessions => self.ui.find(crate::ui::Kind::Sessions).is_some(),
+            Module::Workspace => self.ui.find(crate::ui::Kind::Panel).is_some(),
+            Module::Conversation => [crate::ui::Kind::Transcript, crate::ui::Kind::Input, crate::ui::Kind::NewSession].iter().any(|k| self.ui.find(*k).is_some()),
+            _ => return false,
+        };
+        in_pane || outside
+    }
+
     fn module_menu_grid(&self, trail: Vec<usize>, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette.get();
-        let taken: Vec<Module> = self.ui.panes().iter().filter_map(|p| p.module).collect();
         // a list, not a grid: it reads the same in a narrow pane as in a wide one.
         let mut list = theme::float_list(&p).w_full().max_w(px(360.)).rounded(px(theme::R_PANEL)).border_1().border_color(p.separator).child(theme::float_label(&p, "Show in this pane"));
         for (_, m, title, icon, about) in MODULES {
             // one conversation, one session list, one workspace.
-            let single = matches!(m, Module::Conversation | Module::Sessions | Module::Workspace);
-            if single && taken.contains(&m) {
+            if self.shown_elsewhere(m, None) {
                 continue;
             }
             let t = trail.clone();
@@ -829,12 +840,11 @@ impl Shell {
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };
                 let this = shell.read(cx);
                 let p = this.palette.get();
-                let taken: Vec<Module> = this.ui.panes().iter().filter_map(|p| p.module).collect();
                 let list = theme::float_list(&p).w(px(256.)).child(theme::float_label(&p, "New pane beside this one"));
                 let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
                 for (_, m, title, icon, _) in MODULES {
                     // the ones there's only one of are already somewhere.
-                    if matches!(m, Module::Conversation | Module::Sessions | Module::Workspace) && taken.contains(&m) {
+                    if this.shown_elsewhere(m, None) {
                         continue;
                     }
                     let (me, popover, t) = (me.clone(), popover.clone(), trail.clone());
@@ -870,7 +880,6 @@ impl Shell {
                 let this = shell.read(cx);
                 let p = this.palette.get();
                 let zoomed = this.pane_zoom.as_deref() == Some(pid.as_str());
-                let taken: Vec<Module> = this.ui.panes().iter().filter_map(|p| p.module).collect();
                 let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>| {
                     let (me, popover) = (me.clone(), popover.clone());
                     move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -893,8 +902,7 @@ impl Shell {
                     .child(theme::float_label(&p, "Show here"));
                 let mut grid = h_flex().flex_wrap().gap(px(2.)).px(px(2.));
                 for (_, m, title, icon, _) in MODULES {
-                    let single = matches!(m, Module::Conversation | Module::Sessions | Module::Workspace);
-                    if single && taken.contains(&m) && current != Some(m) {
+                    if current != Some(m) && this.shown_elsewhere(m, Some(pid.as_str())) {
                         continue;
                     }
                     let t = trail.clone();

@@ -1206,6 +1206,16 @@ fn a_working_agent_says_so_above_the_message_box_and_an_idle_one_doesnt(cx: &mut
 }
 
 #[gpui_kit::test]
+fn the_sidebars_session_list_counts_so_a_pane_cant_add_a_second(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("pane.show", &serde_json::json!({"module": "sessions"}), window, cx))).unwrap();
+    assert!(r.is_err(), "the sidebar has the list already: {r:?}");
+    rig.click(cx, "pane-conversation-more");
+    assert!(rig.exists(cx, "pane-conversation-show-terminal") && !rig.exists(cx, "pane-conversation-show-sessions"), "and the menu doesn't offer it");
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.
