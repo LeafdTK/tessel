@@ -1051,8 +1051,8 @@ pub enum Variant {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Size {
     XSmall,
-    #[default]
     Small,
+    #[default]
     Medium,
 }
 

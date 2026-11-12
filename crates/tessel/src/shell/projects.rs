@@ -367,7 +367,7 @@ impl Shell {
         Popover::new(SharedString::from(format!("{id}-popover")))
             .p_0()
             .anchor(Anchor::TopRight)
-            .trigger(Button::new(id).ghost().xsmall().icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session"))
+            .trigger(Button::new(id).ghost().small().icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session"))
             .content(move |_, _, cx| {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };

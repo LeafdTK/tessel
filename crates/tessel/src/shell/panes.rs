@@ -476,7 +476,7 @@ impl Shell {
 
         let mut controls = h_flex().gap_0p5().flex_shrink_0();
         if live {
-            controls = controls.child(self.pane_menu(id, &trail, module, cx));
+            controls = controls.child(self.new_pane_menu(id, &trail, cx)).child(self.pane_menu(id, &trail, module, cx));
         }
         // only worth marking when there is more than one pane to choose between.
         let open_panes = self.ui.panes().iter().filter(|p| self.pane_open(p)).count();
@@ -580,7 +580,6 @@ impl Shell {
                 if self.model.open_summary().is_some_and(|s| s.run_state.is_busy()) && !self.show_new {
                     out.push(Button::new("toolbar-stop").xsmall().outline().label("Stop").tooltip("Stop the Agent").on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))).into_any_element());
                 }
-                out.push(self.add_menu("toolbar-new", cx).into_any_element());
                 out.push(Button::new("toolbar-overview").ghost().xsmall().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());
                 if !self.show_new && self.model.open_summary().is_some() && self.has_pane("inspector") {
                     out.push(
@@ -751,6 +750,47 @@ impl Shell {
                     )
                 })))
             })
+    }
+
+    /// the +: a new pane beside this one, showing what you pick.
+    fn new_pane_menu(&self, id: &str, trail: &[usize], cx: &mut Context<Self>) -> impl IntoElement {
+        let me = cx.entity().downgrade();
+        let (trail, pid) = (trail.to_vec(), id.to_owned());
+        let p = self.palette.get();
+        Popover::new(SharedString::from(format!("pane-{id}-new-menu")))
+            .p_0()
+            .anchor(Anchor::TopRight)
+            .trigger(Button::new(SharedString::from(format!("pane-{id}-new"))).ghost().xsmall().icon(Icon::empty().path("icons/plus.svg").text_color(p.tertiary)).tooltip("New Pane"))
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let taken: Vec<Module> = this.ui.panes().iter().filter_map(|p| p.module).collect();
+                let mut list = theme::float_list(&p).w(px(248.)).child(theme::float_label(&p, "New pane beside this one"));
+                for (_, m, title, icon, _) in MODULES {
+                    // the ones there's only one of are already somewhere.
+                    if matches!(m, Module::Conversation | Module::Sessions | Module::Workspace) && taken.contains(&m) {
+                        continue;
+                    }
+                    let (me, popover, t) = (me.clone(), popover.clone(), trail.clone());
+                    list = list.child(
+                        theme::float_item(&p, SharedString::from(format!("pane-{pid}-new-{}", m.name())), Some(icon), title, None, false).test_support().on_click(move |_, window, cx| {
+                            popover.update(cx, |st, cx| st.dismiss(window, cx));
+                            let _ = me.update(cx, |this, cx| this.open_beside(t.clone(), m, window, cx));
+                        }),
+                    );
+                }
+                list.into_any_element()
+            })
+    }
+
+    /// split a pane and show a module in the new half.
+    pub(crate) fn open_beside(&mut self, trail: Vec<usize>, module: Module, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.split_pane(trail, Axis::Row, window, cx) else { return };
+        if let Some(new) = self.ui.panes().iter().find(|p| p.id == id).map(|p| p.trail.clone()) {
+            self.set_pane_module(new, module, window, cx);
+        }
     }
 
     /// a pane's menu: split, maximize, what it shows, close. every one has a key.

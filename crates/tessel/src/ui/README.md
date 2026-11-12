@@ -142,7 +142,7 @@ Buttons: `icon` is any [lucide](https://lucide.dev/icons) icon name in kebab cas
 `settings`, ...). `label` is text beside it. A button needs at least one of the two.
 `tooltip` defaults to a description of the action. `variant`: `ghost` (default),
 `primary` (filled with the accent; one per view), `outline`, `text`. `size`: `xsmall`,
-`small` (default), `medium`.
+`small`, `medium` (default).
 
 ### The session
 
@@ -378,6 +378,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `session.next` | Next session that needs you | ⌘ J |  |
 | `session.stop` | Stop the agent | ⌘ . | session? |
 | `session.allow` | Allow | ⌘ ↩ | session? |
+| `composer.attach` | Attach files… | ⌘ U | opens the file picker; what you choose goes with the next message |
 | `session.open` | Open a session |  | session: id prefix, @open, or part of its name |
 | `session.send` | Send a message |  | text, session? |
 | `session.rename` | Rename a session |  | name, session? |

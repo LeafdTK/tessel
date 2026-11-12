@@ -68,6 +68,10 @@ impl Shell {
                 self.open(id, cx);
                 Ok(json!({"session": id.to_string()}))
             }
+            "composer.attach" => {
+                self.choose_attachments(window, cx);
+                done
+            }
             "session.stop" => {
                 let id = self.session_arg(args)?;
                 self.cmd(Cmd::Interrupt(id));

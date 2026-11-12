@@ -429,7 +429,7 @@ fn rows_hold_their_places_under_the_pointer_and_settle_when_it_leaves(cx: &mut T
     assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
 
     // the pointer leaves the list: now the queue forms.
-    cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-new", cx)).unwrap();
+    cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-overview", cx)).unwrap();
     rig.settle(cx);
     assert_eq!(order(&rig, cx), [1, 3, 2], "the session that needs you is on top");
 }
@@ -918,7 +918,7 @@ fn subagents_show_under_their_session_and_take_you_to_it(cx: &mut TestAppContext
     busy.tasks.clear();
     rig.feed(cx, vec![UiEvent::Session(busy)]);
     assert!(rig.exists(cx, a.clone()), "held in place while the pointer is here");
-    cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-new", cx)).unwrap();
+    cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-overview", cx)).unwrap();
     rig.settle(cx);
     assert!(!rig.exists(cx, a) && !rig.exists(cx, b));
 }
@@ -996,7 +996,7 @@ fn the_layout_file_is_watched_and_a_broken_one_keeps_the_last_that_worked(cx: &m
     std::fs::write(&file, r#"{"root": {"type": "colum"}}"#).unwrap();
     rig.settle(cx);
     assert!(rig.exists(cx, "ui-error"));
-    assert!(rig.exists(cx, "toolbar-new") && !rig.exists(cx, sid(2).0), "the last layout that worked is still up");
+    assert!(rig.exists(cx, "toolbar-overview") && !rig.exists(cx, sid(2).0), "the last layout that worked is still up");
 
     // fixed: the error goes, the new layout comes, and the sidebar is still as it was left.
     std::fs::write(&file, r#"{"theme": {"appearance": "dark"}}"#).unwrap();
@@ -1187,6 +1187,43 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
     rig.click(cx, "models-haiku-star");
     let favs = saved(&mut rig).unwrap();
     assert_eq!(favs.iter().map(|f| f.model.as_str()).collect::<Vec<_>>(), ["opus", "haiku"], "a star adds it at the end");
+}
+
+#[gpui_kit::test]
+fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
+    let _rig = Rig::new(cx);
+    // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.
+    let parse = |caps: &str| {
+        let mut m = (false, false, false, false, String::new());
+        for k in caps.split_whitespace() {
+            match k {
+                "⌃" => m.0 = true,
+                "⌥" => m.1 = true,
+                "⇧" => m.2 = true,
+                "⌘" => m.3 = true,
+                "↩" => m.4 = "enter".into(),
+                k => m.4 = k.to_lowercase(),
+            }
+        }
+        m
+    };
+    let bound: Vec<(bool, bool, bool, bool, String)> = cx.update(|cx| {
+        cx.key_bindings()
+            .borrow()
+            .bindings()
+            .filter(|b| b.keystrokes().len() == 1)
+            .map(|b| {
+                let k = &b.keystrokes()[0];
+                let m = k.modifiers();
+                (m.control, m.alt, m.shift, m.platform, k.key().to_owned())
+            })
+            .collect()
+    });
+    for spec in crate::commands::COMMANDS {
+        if let Some(caps) = spec.keys {
+            assert!(bound.contains(&parse(caps)), "{} shows {caps} but nothing is bound to it", spec.id);
+        }
+    }
 }
 
 #[gpui_kit::test]

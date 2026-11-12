@@ -1234,7 +1234,8 @@ impl Shell {
             .id(ElementId::from(sid.0))
             .test_support()
             .aria_label(label)
-            .h(px(crate::model::ROW_H))
+            .h(px(crate::model::ROW_H - 3.))
+            .my(px(1.5))
             .mx_2()
             .pl(px(SESSION_INDENT - 8.))
             .pr_2()
@@ -1243,8 +1244,8 @@ impl Shell {
             .when(selected, |d| d.bg(p.selection))
             .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
-            // at rest a session shows what it is (a branch of its own, or the folder
-            // itself); anything else shows its state, which is what matters then.
+            // at rest a session shows what it is (a branch of its own, or a
+            // conversation); anything else shows its state, which is what matters then.
             .child(match state {
                 Mark::Ring(_) => div()
                     .size(px(14.))
@@ -1252,7 +1253,7 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(gpui_kit::component::Icon::empty().path(if s.worktree.is_some() { "icons/git-branch.svg" } else { "icons/folder.svg" }).size(theme::z(14.)).text_color(p.tertiary))
+                    .child(gpui_kit::component::Icon::empty().path(if s.worktree.is_some() { "icons/git-branch.svg" } else { "icons/message-square.svg" }).size(theme::z(14.)).text_color(p.tertiary))
                     .into_any_element(),
                 m => mark(m).into_any_element(),
             })
@@ -1917,6 +1918,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &crate::Favorite5, window, cx| this.run_key("model.favorite", serde_json::json!({"n": 5}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::NextEffort, window, cx| this.run_key("model.effort", serde_json::json!({}), window, cx)))
             .on_action(cx.listener(|this, _: &crate::ToggleFast, window, cx| this.run_key("model.fast", serde_json::json!({}), window, cx)))
+            .on_action(cx.listener(|this, _: &crate::AttachFiles, window, cx| this.run_key("composer.attach", serde_json::json!({}), window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_end(cx);
                 this.pane_drag_end(window, cx);

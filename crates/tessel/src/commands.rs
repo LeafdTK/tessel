@@ -45,6 +45,7 @@ pub static COMMANDS: &[Spec] = &[
     c("session.next", "Next session that needs you", "bell", Some("⌘ J"), "{}", ""),
     c("session.stop", "Stop the agent", "square", Some("⌘ ."), "{}", "session?"),
     c("session.allow", "Allow", "check", Some("⌘ ↩"), "{}", "session?"),
+    c("composer.attach", "Attach files…", "paperclip", Some("⌘ U"), "{}", "opens the file picker; what you choose goes with the next message"),
     q("session.open", "Open a session", "session: id prefix, @open, or part of its name"),
     q("session.send", "Send a message", "text, session?"),
     q("session.rename", "Rename a session", "name, session?"),

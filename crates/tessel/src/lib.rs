@@ -50,6 +50,7 @@ actions!(
         Favorite5,
         NextEffort,
         ToggleFast,
+        AttachFiles,
         Quit,
         // only while the overview is up:
         CloseOverview,
@@ -102,6 +103,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-cmd-5", Favorite5, None),
         KeyBinding::new("shift-cmd-e", NextEffort, None),
         KeyBinding::new("alt-cmd-f", ToggleFast, None),
+        KeyBinding::new("cmd-u", AttachFiles, None),
         KeyBinding::new("escape", CloseSheet, Some("Sheet")),
         KeyBinding::new("cmd-enter", ConfirmSheet, Some("Sheet")),
         KeyBinding::new("escape", CloseSettings, Some("Settings")),
@@ -148,6 +150,8 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Favourite Model 5", Favorite5),
                 MenuItem::action("Think Harder", NextEffort),
                 MenuItem::action("Fast Mode", ToggleFast),
+                MenuItem::separator(),
+                MenuItem::action("Attach Files…", AttachFiles),
             ],
         ),
     ]);
