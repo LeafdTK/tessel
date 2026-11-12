@@ -178,6 +178,8 @@ pub struct Shell {
     /// workspaces asked about already, and the one being asked about now.
     pub(crate) scripts_tried: HashSet<String>,
     pub(crate) scripts_asked: Option<String>,
+    /// Settings → Scripts, while it's showing.
+    pub(crate) scripts_form: Option<scripts::ScriptsForm>,
     /// what each desktop you aren't looking at had on it.
     pub(crate) stashed: HashMap<String, desktops::Stashed>,
     /// a desktop's panes arriving: 1 just switched, fading to 0.
@@ -583,6 +585,7 @@ impl Shell {
             scripts: HashMap::new(),
             scripts_tried: HashSet::new(),
             scripts_asked: None,
+            scripts_form: None,
             desktop_slide: Spring::unit(0.0),
             swipe: (0.0, false, None),
             pane_zoom: None,
@@ -2224,6 +2227,7 @@ impl Render for Shell {
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
         // which pane shows which chat, now that the layout may have changed.
         self.sync_views(cx);
+        self.ensure_scripts_form(window, cx);
         if let Some(draft) = self.draft_to_set.take() {
             self.composer.update(cx, |c, cx| c.set_value(draft, window, cx));
         }

@@ -1,16 +1,18 @@
 //! what a workspace needs to be worked in from its first minute: the
 //! gitignored files the repository's checkout has (`.env`), its setup (install
 //! the dependencies), buttons for what you run in it (the dev server, the
-//! tests), and ports of its own so two workspaces can both run a server.
+//! tests), its archive script for when it's removed, and ports of its own so
+//! two workspaces can both run a server.
 //!
-//! a repository says all this in `.tessel/settings.toml`. one set up for
-//! Conductor works as it is: its `.conductor/settings.toml` (or the older
-//! `conductor.json`) is read when there's no tessel file, and every script also
-//! sees the `CONDUCTOR_` names for what it's given.
+//! a repository says all this in `.tessel/settings.toml`, committed so the
+//! whole team has it, and `.tessel/settings.local.toml` in the main checkout
+//! for what only this machine does. the local file wins.
 //!
 //! ```toml
 //! [scripts]
 //! setup = "pnpm install"
+//! archive = "docker compose down"
+//! run_mode = "concurrent"        # or "nonconcurrent": one workspace at a time
 //!
 //! [scripts.run.dev]
 //! command = "pnpm dev --port $TESSEL_PORT"
@@ -30,41 +32,43 @@ use std::path::{Path, PathBuf};
 use tessel_proto::{ScriptAction, WorkspaceScripts};
 use toml::Value;
 
-/// the files that can say what a workspace needs, least important first: a
-/// later one's keys win.
-const SOURCES: [&str; 5] = ["conductor.json", ".conductor/settings.toml", ".conductor/settings.local.toml", ".tessel/settings.toml", ".tessel/settings.local.toml"];
+pub const SHARED: &str = ".tessel/settings.toml";
+pub const LOCAL: &str = ".tessel/settings.local.toml";
 
 /// what's copied into a new workspace when nothing says otherwise.
 pub const DEFAULT_COPY: &str = ".env*";
 
-/// read what a workspace needs: from the workspace itself, else from the
-/// repository's own checkout (a settings file not committed yet lives there).
-pub fn load(workspace: &Path, root: &Path) -> WorkspaceScripts {
-    let found = read_from(workspace);
-    let mut scripts = if found.from.is_some() || workspace == root { found } else { read_from(root) };
-    if scripts.copy.is_empty() {
-        scripts.copy = worktreeinclude(root).unwrap_or_else(|| vec![DEFAULT_COPY.to_owned()]);
+/// the files that say what a workspace needs, least important first: a
+/// later one's keys win. the workspace's shared file is newer than the main
+/// checkout's when its branch changed it; this machine's file beats both.
+fn sources(workspace: &Path, root: &Path) -> Vec<PathBuf> {
+    let mut out = vec![root.join(SHARED)];
+    if workspace != root {
+        out.push(workspace.join(SHARED));
     }
-    scripts
+    out.push(root.join(LOCAL));
+    if workspace != root {
+        out.push(workspace.join(LOCAL));
+    }
+    out
 }
 
-fn read_from(dir: &Path) -> WorkspaceScripts {
+/// read what a workspace needs.
+pub fn load(workspace: &Path, root: &Path) -> WorkspaceScripts {
     let mut merged = toml::Table::new();
-    let mut from = None;
-    for name in SOURCES {
-        let Ok(text) = std::fs::read_to_string(dir.join(name)) else { continue };
-        let table = if name.ends_with(".json") {
-            serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| json_to_toml(&v)).and_then(|v| v.as_table().cloned())
-        } else {
-            text.parse::<toml::Table>().ok()
-        };
-        if let Some(table) = table {
+    let mut from = Vec::new();
+    for path in sources(workspace, root) {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        if let Ok(table) = text.parse::<toml::Table>() {
             merge(&mut merged, table);
-            from = Some(name.to_owned());
+            from.push(path.to_string_lossy().into_owned());
         }
     }
     let mut scripts = parse(&merged);
     scripts.from = from;
+    if scripts.copy.is_empty() {
+        scripts.copy = worktreeinclude(root).unwrap_or_else(|| vec![DEFAULT_COPY.to_owned()]);
+    }
     scripts
 }
 
@@ -80,46 +84,26 @@ fn merge(into: &mut toml::Table, from: toml::Table) {
     }
 }
 
-fn json_to_toml(v: &serde_json::Value) -> Option<Value> {
-    Some(match v {
-        serde_json::Value::String(s) => Value::String(s.clone()),
-        serde_json::Value::Bool(b) => Value::Boolean(*b),
-        serde_json::Value::Number(n) => n.as_i64().map(Value::Integer).or_else(|| n.as_f64().map(Value::Float))?,
-        serde_json::Value::Array(a) => Value::Array(a.iter().filter_map(json_to_toml).collect()),
-        serde_json::Value::Object(o) => Value::Table(o.iter().filter_map(|(k, v)| Some((k.clone(), json_to_toml(v)?))).collect()),
-        serde_json::Value::Null => return None,
-    })
-}
-
-/// the settings, in either spelling: tessel's, or Conductor's (`file_include_globs`,
-/// `runScript`, a single `scripts.run` string).
 pub fn parse(t: &toml::Table) -> WorkspaceScripts {
     let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
     let scripts = t.get("scripts").and_then(Value::as_table);
     let mut out = WorkspaceScripts {
         setup: text(scripts.and_then(|s| s.get("setup"))),
         archive: text(scripts.and_then(|s| s.get("archive"))),
+        concurrent: scripts.and_then(|s| s.get("run_mode")).and_then(Value::as_str) != Some("nonconcurrent"),
         ..WorkspaceScripts::default()
     };
     match scripts.and_then(|s| s.get("run")) {
+        // a single command: the one button.
         Some(Value::String(cmd)) if !cmd.trim().is_empty() => out.actions.push(ScriptAction { id: "run".into(), command: cmd.trim().into(), icon: None, default: true }),
         Some(Value::Table(run)) => {
-            // in the file's order would be nicer, but toml tables are sorted; name order is stable.
-            let ordered: BTreeMap<&String, &Value> = run.iter().collect();
-            for (id, a) in ordered {
+            for (id, a) in run {
                 let (command, icon, default) = match a {
                     Value::String(c) => (Some(c.trim().to_owned()), None, false),
                     Value::Table(a) => (text(a.get("command")), text(a.get("icon")), a.get("default").and_then(Value::as_bool).unwrap_or(false)),
                     _ => (None, None, false),
                 };
-                // an action only for Conductor's cloud has no business here.
-                let local = match a.get("available_in").and_then(Value::as_array) {
-                    Some(where_) => where_.iter().any(|w| w.as_str() == Some("local")),
-                    None => true,
-                };
-                if let Some(command) = command.filter(|c| !c.is_empty())
-                    && local
-                {
+                if let Some(command) = command.filter(|c| !c.is_empty()) {
                     out.actions.push(ScriptAction { id: id.clone(), command, icon, default });
                 }
             }
@@ -131,12 +115,65 @@ pub fn parse(t: &toml::Table) -> WorkspaceScripts {
     {
         first.default = true;
     }
-    let globs = |v: Option<&Value>| -> Vec<String> { v.and_then(Value::as_array).map(|a| a.iter().filter_map(|g| g.as_str().map(str::to_owned)).collect()).unwrap_or_default() };
-    out.copy = globs(t.get("files").and_then(Value::as_table).and_then(|f| f.get("copy")));
-    if out.copy.is_empty() {
-        out.copy = globs(t.get("file_include_globs"));
-    }
+    out.copy = t
+        .get("files")
+        .and_then(Value::as_table)
+        .and_then(|f| f.get("copy"))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|g| g.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default();
     out
+}
+
+/// the settings as a file says them, for writing back.
+pub fn to_toml(s: &WorkspaceScripts) -> String {
+    let mut scripts = toml::Table::new();
+    if let Some(setup) = s.setup.as_deref().filter(|c| !c.trim().is_empty()) {
+        scripts.insert("setup".into(), Value::String(setup.trim().into()));
+    }
+    if let Some(archive) = s.archive.as_deref().filter(|c| !c.trim().is_empty()) {
+        scripts.insert("archive".into(), Value::String(archive.trim().into()));
+    }
+    if !s.concurrent {
+        scripts.insert("run_mode".into(), Value::String("nonconcurrent".into()));
+    }
+    let mut run = toml::Table::new();
+    for a in s.actions.iter().filter(|a| !a.id.trim().is_empty() && !a.command.trim().is_empty()) {
+        let mut t = toml::Table::new();
+        t.insert("command".into(), Value::String(a.command.trim().into()));
+        if let Some(icon) = &a.icon {
+            t.insert("icon".into(), Value::String(icon.clone()));
+        }
+        if a.default {
+            t.insert("default".into(), Value::Boolean(true));
+        }
+        run.insert(a.id.trim().into(), Value::Table(t));
+    }
+    if !run.is_empty() {
+        scripts.insert("run".into(), Value::Table(run));
+    }
+    let mut file = toml::Table::new();
+    if !scripts.is_empty() {
+        file.insert("scripts".into(), Value::Table(scripts));
+    }
+    let copy: Vec<Value> = s.copy.iter().map(|g| g.trim()).filter(|g| !g.is_empty()).map(|g| Value::String(g.into())).collect();
+    // the default needn't be written down.
+    if !copy.is_empty() && !(copy.len() == 1 && copy[0].as_str() == Some(DEFAULT_COPY)) {
+        let mut files = toml::Table::new();
+        files.insert("copy".into(), Value::Array(copy));
+        file.insert("files".into(), Value::Table(files));
+    }
+    toml::to_string_pretty(&file).unwrap_or_default()
+}
+
+/// write a repository's scripts: this machine's file, or the shared one.
+pub fn save(s: &WorkspaceScripts, workspace: &Path, root: &Path, local: bool) -> std::io::Result<PathBuf> {
+    let path = if local { root.join(LOCAL) } else { workspace.join(SHARED) };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, to_toml(s))?;
+    Ok(path)
 }
 
 /// `.worktreeinclude`: one pattern a line, `#` for comments.
@@ -202,6 +239,23 @@ fn copy_path(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
+/// run a workspace's archive script before it's removed: shut down what it
+/// started, tidy what it left. it has a minute; the workspace goes either way.
+pub async fn archive(command: &str, workspace: &Path, env: &[(String, String)]) {
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+    let run = tokio::process::Command::new(shell)
+        .arg("-lc")
+        .arg(command)
+        .current_dir(workspace)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(60), run).await;
+}
+
 /// each workspace's ten ports, kept in `ports.json` so a workspace keeps its
 /// ports across restarts (a bookmarked `localhost:41020` keeps working).
 pub struct Ports {
@@ -246,18 +300,15 @@ impl Ports {
 }
 
 /// what every process in a workspace is told about it: the agent, its
-/// terminals, its scripts. Conductor's names too, so its scripts run unchanged.
+/// terminals, its scripts.
 pub fn env(workspace: &str, root: &str, port: u16) -> Vec<(String, String)> {
     let name = Path::new(workspace).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut out = Vec::new();
-    for prefix in ["TESSEL", "CONDUCTOR"] {
-        out.push((format!("{prefix}_PORT"), port.to_string()));
-        out.push((format!("{prefix}_WORKSPACE_NAME"), name.clone()));
-        out.push((format!("{prefix}_WORKSPACE_PATH"), workspace.to_owned()));
-        out.push((format!("{prefix}_ROOT_PATH"), root.to_owned()));
-    }
-    out.push(("CONDUCTOR_IS_LOCAL".into(), "1".into()));
-    out
+    vec![
+        ("TESSEL_PORT".into(), port.to_string()),
+        ("TESSEL_WORKSPACE_NAME".into(), name),
+        ("TESSEL_WORKSPACE_PATH".into(), workspace.to_owned()),
+        ("TESSEL_ROOT_PATH".into(), root.to_owned()),
+    ]
 }
 
 #[cfg(test)]
@@ -269,49 +320,54 @@ mod tests {
     }
 
     #[test]
-    fn tessels_file_and_conductors_say_the_same_things() {
+    fn the_settings_say_setup_buttons_files_and_how_scripts_share() {
         let s = parse(&table(
             r#"
             [scripts]
             setup = "pnpm install"
+            archive = "docker compose down"
+            run_mode = "nonconcurrent"
             [scripts.run.dev]
             command = "pnpm dev --port $TESSEL_PORT"
             [scripts.run.test]
             command = "pnpm test"
             icon = "test-tube"
             default = true
-            [scripts.run.deploy]
-            command = "make deploy"
-            available_in = ["cloud"]
             [files]
             copy = [".env*", "config/local.json"]
             "#,
         ));
-        assert_eq!(s.setup.as_deref(), Some("pnpm install"));
-        assert_eq!(s.actions.iter().map(|a| (a.id.as_str(), a.default)).collect::<Vec<_>>(), [("dev", false), ("test", true)], "cloud-only actions left out");
+        assert_eq!((s.setup.as_deref(), s.archive.as_deref(), s.concurrent), (Some("pnpm install"), Some("docker compose down"), false));
+        assert_eq!(s.actions.iter().map(|a| (a.id.as_str(), a.default)).collect::<Vec<_>>(), [("dev", false), ("test", true)]);
         assert_eq!(s.copy, [".env*", "config/local.json"]);
-        let old = parse(&table(r#"file_include_globs = [".env"]
-            [scripts]
-            run = "npm start""#));
-        assert_eq!(old.actions.iter().map(|a| (a.id.as_str(), a.command.as_str(), a.default)).collect::<Vec<_>>(), [("run", "npm start", true)], "a lone run script is the default");
-        assert_eq!(old.copy, [".env"]);
+        let one = parse(&table("[scripts]\nrun = \"npm start\""));
+        assert_eq!(one.actions.iter().map(|a| (a.id.as_str(), a.default)).collect::<Vec<_>>(), [("run", true)], "a lone command is the button");
+        assert!(one.concurrent, "workspaces may run theirs side by side unless told otherwise");
+        // what's written reads back the same.
+        assert_eq!(parse(&table(&to_toml(&s))).actions, s.actions);
+        assert_eq!(parse(&table(&to_toml(&s))).copy, s.copy);
     }
 
     #[test]
-    fn the_nearest_file_wins_and_a_repo_set_up_for_conductor_just_works() {
-        let dir = std::env::temp_dir().join(format!("tessel-setup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(dir.join(".conductor")).unwrap();
-        std::fs::write(dir.join(".conductor/settings.toml"), "[scripts]\nsetup = \"npm ci\"\n[scripts.run.web]\ncommand = \"npm run dev\"\n").unwrap();
-        let s = load(&dir, &dir);
-        assert_eq!((s.setup.as_deref(), s.from.as_deref(), s.copy.clone()), (Some("npm ci"), Some(".conductor/settings.toml"), vec![DEFAULT_COPY.to_owned()]));
-        std::fs::create_dir_all(dir.join(".tessel")).unwrap();
-        std::fs::write(dir.join(".tessel/settings.toml"), "[scripts]\nsetup = \"pnpm install\"\n").unwrap();
-        let s = load(&dir, &dir);
-        assert_eq!(s.setup.as_deref(), Some("pnpm install"), "tessel's own file wins");
-        assert_eq!(s.actions.len(), 1, "and keeps what it doesn't say from the other");
-        std::fs::write(dir.join(".worktreeinclude"), "# secrets\n.env.local\n").unwrap();
-        assert_eq!(load(&dir, &dir).copy, [".env.local"]);
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn this_machines_file_wins_and_a_branch_can_change_the_shared_one() {
+        let root = std::env::temp_dir().join(format!("tessel-setup-{}", uuid::Uuid::new_v4()));
+        let ws = root.with_extension("ws");
+        std::fs::create_dir_all(root.join(".tessel")).unwrap();
+        std::fs::create_dir_all(ws.join(".tessel")).unwrap();
+        std::fs::write(root.join(SHARED), "[scripts]\nsetup = \"npm ci\"\n[scripts.run.web]\ncommand = \"npm run dev\"\n").unwrap();
+        let s = load(&ws, &root);
+        assert_eq!((s.setup.as_deref(), s.copy.clone()), (Some("npm ci"), vec![DEFAULT_COPY.to_owned()]));
+        std::fs::write(ws.join(SHARED), "[scripts]\nsetup = \"pnpm install\"\n").unwrap();
+        let s = load(&ws, &root);
+        assert_eq!(s.setup.as_deref(), Some("pnpm install"), "the workspace's own copy is newer");
+        assert_eq!(s.actions.len(), 1, "and keeps what it doesn't say");
+        save(&WorkspaceScripts { setup: Some("make".into()), ..WorkspaceScripts::default() }, &ws, &root, true).unwrap();
+        assert_eq!(load(&ws, &root).setup.as_deref(), Some("make"), "this machine's file beats both");
+        assert_eq!(load(&ws, &root).from.last().map(String::as_str), Some(root.join(LOCAL).to_string_lossy().as_ref()));
+        std::fs::write(root.join(".worktreeinclude"), "# secrets\n.env.local\n").unwrap();
+        assert_eq!(load(&ws, &root).copy, [".env.local"]);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[test]
@@ -324,8 +380,7 @@ mod tests {
         ports.release("/w/a");
         assert_eq!(ports.of("/w/c"), FIRST, "a freed block is used again");
         let env = env("/w/b", "/repo", b);
-        assert!(env.contains(&("TESSEL_PORT".into(), "41010".into())) && env.contains(&("CONDUCTOR_PORT".into(), "41010".into())));
-        assert!(env.contains(&("TESSEL_WORKSPACE_NAME".into(), "b".into())));
+        assert!(env.contains(&("TESSEL_PORT".into(), "41010".into())) && env.contains(&("TESSEL_WORKSPACE_NAME".into(), "b".into())));
         let _ = std::fs::remove_file(path);
     }
 
@@ -348,6 +403,15 @@ mod tests {
         assert_eq!(std::fs::read_to_string(ws.join("apps/web/.env.local")).unwrap(), "B=2");
         assert!(!ws.join("node_modules").exists(), "ignored, but not asked for");
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[tokio::test]
+    async fn the_archive_script_runs_in_the_workspace_with_its_env() {
+        let ws = std::env::temp_dir().join(format!("tessel-archive-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&ws).unwrap();
+        archive("echo bye $TESSEL_PORT > out.txt", &ws, &[("TESSEL_PORT".into(), "41030".into())]).await;
+        assert_eq!(std::fs::read_to_string(ws.join("out.txt")).unwrap().trim(), "bye 41030");
         let _ = std::fs::remove_dir_all(&ws);
     }
 }

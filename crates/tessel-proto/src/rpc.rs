@@ -168,10 +168,18 @@ pub enum Request {
         tail: u32,
     },
     /// what a session's repository says its workspaces need: setup, run
-    /// buttons, files to copy. read from `.tessel/settings.toml`, or a
-    /// `.conductor/settings.toml` written for Conductor.
+    /// buttons, files to copy. read from `.tessel/settings.toml` (shared,
+    /// committed) and `.tessel/settings.local.toml` (this machine's).
     Scripts {
         session: SessionId,
+    },
+    /// write a repository's scripts. `local`: in the main checkout's
+    /// `.tessel/settings.local.toml`, for this machine only; otherwise in the
+    /// workspace's `.tessel/settings.toml`, to be committed and shared.
+    ScriptsSave {
+        session: SessionId,
+        scripts: WorkspaceScripts,
+        local: bool,
     },
     /// page older items in.
     ItemsBefore {
@@ -464,7 +472,7 @@ pub struct ScriptAction {
 }
 
 /// what a repository says each of its workspaces needs.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceScripts {
     /// run once, when a workspace is made (installing dependencies, say).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -477,9 +485,24 @@ pub struct WorkspaceScripts {
     /// gitignored files a new workspace gets a copy of (`.env*`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy: Vec<String>,
-    /// the file this came from, relative to the workspace. none: nothing set up yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
+    /// several workspaces may run the same script at once (each on its own
+    /// ports). false: starting one stops it in the repository's other
+    /// workspaces, for a script that needs a fixed port or a shared database.
+    #[serde(default = "yes")]
+    pub concurrent: bool,
+    /// the files this was read from, most important last. empty: nothing set up yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<String>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for WorkspaceScripts {
+    fn default() -> Self {
+        Self { setup: None, archive: None, actions: Vec::new(), copy: Vec::new(), concurrent: true, from: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn names_become_folder_names() {
-        assert_eq!(slug("Conductor Playground"), "conductor-playground");
+        assert_eq!(slug("Starter Playground"), "starter-playground");
         assert_eq!(slug("  my app!! v2 "), "my-app-v2");
         assert_eq!(slug("tessel.rs"), "tessel.rs");
         assert_eq!(slug("???"), "");

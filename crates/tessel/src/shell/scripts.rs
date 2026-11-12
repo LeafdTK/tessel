@@ -4,9 +4,10 @@
 //! have an agent write them.
 //!
 //! what a workspace's scripts are is the daemon's to say (`Request::Scripts`,
-//! read from `.tessel/settings.toml` or a Conductor file); running one is
-//! opening a terminal with it, so it shows, keeps running with the window shut,
-//! and is stopped by closing that terminal.
+//! read from `.tessel/settings.toml` and this machine's `settings.local.toml`);
+//! running one is opening a terminal with it, so it shows, keeps running with
+//! the window shut, and is stopped by closing that terminal. Settings has a
+//! page for writing them by hand.
 
 use super::Shell;
 use crate::bridge::Cmd;
@@ -36,7 +37,7 @@ icon = \"play\"      # a lucide icon name
 copy = [\".env*\"]   # gitignored files each new workspace needs from the main checkout
 ```
 
-Commands run in a non-interactive shell from the workspace folder, so put any toolchain setup in the command itself. If there's a `.conductor/settings.toml` or `conductor.json`, start from it. Don't commit the file. When it's written, say what each script does in a line each.";
+Add `archive = \"...\"` under [scripts] if something should be shut down or tidied when a workspace is removed, and `run_mode = \"nonconcurrent\"` if a script can only run in one workspace at a time (a fixed port, a shared database). Commands run in a non-interactive shell from the workspace folder, so put any toolchain setup in the command itself. Don't commit the file. When it's written, say what each script does in a line each.";
 
 impl Shell {
     /// the open chat's workspace and its scripts, once the daemon has said.
@@ -88,6 +89,24 @@ impl Shell {
     pub(crate) fn run_script(&mut self, command: String, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.model.open.as_ref().map(|o| o.id) else { return };
         let Some(pane) = self.script_pane(window, cx) else { return };
+        // one workspace at a time: starting it here stops it in the repository's others.
+        if self.open_scripts().is_some_and(|(s, _)| !s.concurrent) {
+            let repo = self.model.open_summary().map(crate::model::project_name);
+            let elsewhere: Vec<TermId> = self
+                .terms
+                .iter()
+                .filter(|(_, v)| {
+                    let v = v.borrow();
+                    v.info.exited.is_none()
+                        && v.info.command == [command.clone()]
+                        && v.info.session.is_some_and(|s| s != session && self.model.summary(s).map(crate::model::project_name) == repo)
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for id in elsewhere {
+                self.cmd(Cmd::TermClose(id));
+            }
+        }
         match self.running(&command) {
             Some(id) => {
                 self.pane_terms.insert((pane, Some(session)), id);
@@ -186,16 +205,217 @@ impl Shell {
                         if let Some(setup) = s.setup.clone() {
                             list = list.child(theme::float_item(&p, "run-setup", Some("rotate-ccw"), "Run setup again", Some(&setup), false).test_support().on_click(act(Box::new(move |this, window, cx| this.run_script(setup.clone(), window, cx)))));
                         }
-                        let label = if s.from.is_some() { "Change scripts with an agent" } else { "Set up scripts with an agent" };
+                        let label = if s.from.is_empty() { "Set up scripts with an agent" } else { "Change scripts with an agent" };
                         list = list.child(theme::float_item(&p, "run-ai", Some("sparkles"), label, Some("A new chat that writes .tessel/settings.toml"), false).test_support().on_click(act(Box::new(|this, _, cx| this.setup_scripts_with_ai(cx)))));
-                        if let Some(from) = s.from.clone() {
-                            list = list.child(theme::float_item(&p, "run-edit", Some("file-cog"), "Edit the settings file", Some(&from), false).test_support().on_click(act(Box::new(move |this, _, cx| this.open_file(from.clone(), cx)))));
-                        }
+                        list = list.child(theme::float_item(&p, "run-edit", Some("settings-2"), "Edit scripts", Some("Settings, by hand"), false).test_support().on_click(act(Box::new(|this, _, cx| {
+                            this.settings_section = "scripts";
+                            this.open_settings(cx);
+                        }))));
                         list = list.child(div().px(px(10.)).pt(px(4.)).pb(px(6.)).set(Type::Subheadline).text_color(p.tertiary).child(format!("Ports {} to {}, as $TESSEL_PORT", port, port + 9)));
                     }
                 }
                 list.into_any_element()
             });
         Some(h_flex().gap(px(1.)).items_center().child(main).child(menu).when(running, |d| d.child(super::live_dot(p.blocked, &p))).into_any_element())
+    }
+}
+
+
+/// the Scripts page's fields, for the workspace whose scripts they are.
+pub(crate) struct ScriptsForm {
+    pub(crate) cwd: String,
+    pub(crate) session: tessel_proto::SessionId,
+    pub(crate) setup: Entity<gpui_kit::component::input::InputState>,
+    pub(crate) archive: Entity<gpui_kit::component::input::InputState>,
+    pub(crate) copy: Entity<gpui_kit::component::input::InputState>,
+    pub(crate) rows: Vec<ScriptRow>,
+    pub(crate) concurrent: bool,
+    /// what saving last said.
+    pub(crate) said: Option<String>,
+}
+
+pub(crate) struct ScriptRow {
+    pub(crate) name: Entity<gpui_kit::component::input::InputState>,
+    pub(crate) command: Entity<gpui_kit::component::input::InputState>,
+    pub(crate) icon: Option<String>,
+    pub(crate) default: bool,
+}
+
+impl Shell {
+    fn field(value: &str, placeholder: &'static str, window: &mut Window, cx: &mut Context<Self>) -> Entity<gpui_kit::component::input::InputState> {
+        let value = value.to_owned();
+        cx.new(|cx| {
+            let mut s = gpui_kit::component::input::InputState::new(window, cx).placeholder(placeholder);
+            s.set_value(value, window, cx);
+            s
+        })
+    }
+
+    fn script_row(name: &str, command: &str, icon: Option<String>, default: bool, window: &mut Window, cx: &mut Context<Self>) -> ScriptRow {
+        ScriptRow { name: Self::field(name, "dev", window, cx), command: Self::field(command, "pnpm dev --port $TESSEL_PORT", window, cx), icon, default }
+    }
+
+    /// the page's fields, filled from what the open workspace has, made when
+    /// the page is first shown for it (inputs need the window).
+    pub(crate) fn ensure_scripts_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.settings_open || self.settings_section != "scripts" {
+            return;
+        }
+        let Some(summary) = self.model.open_summary() else { return };
+        let (cwd, session) = (summary.cwd.clone(), summary.id);
+        if self.scripts_form.as_ref().is_some_and(|f| f.cwd == cwd) {
+            return;
+        }
+        let Some((s, _)) = self.open_scripts().cloned() else {
+            self.ask_scripts(false);
+            return;
+        };
+        let rows = s.actions.iter().map(|a| Self::script_row(&a.id, &a.command, a.icon.clone(), a.default, window, cx)).collect();
+        self.scripts_form = Some(ScriptsForm {
+            cwd,
+            session,
+            setup: Self::field(s.setup.as_deref().unwrap_or(""), "pnpm install", window, cx),
+            archive: Self::field(s.archive.as_deref().unwrap_or(""), "docker compose down", window, cx),
+            copy: Self::field(&s.copy.join(", "), ".env*", window, cx),
+            rows,
+            concurrent: s.concurrent,
+            said: None,
+        });
+    }
+
+    /// what the page says, as settings.
+    fn form_scripts(&self, f: &ScriptsForm, cx: &App) -> WorkspaceScripts {
+        let text = |e: &Entity<gpui_kit::component::input::InputState>| Some(e.read(cx).value().trim().to_owned()).filter(|t| !t.is_empty());
+        WorkspaceScripts {
+            setup: text(&f.setup),
+            archive: text(&f.archive),
+            actions: f
+                .rows
+                .iter()
+                .filter_map(|r| Some(tessel_proto::ScriptAction { id: text(&r.name)?, command: text(&r.command)?, icon: r.icon.clone(), default: r.default }))
+                .collect(),
+            copy: f.copy.read(cx).value().split([',', ' ', '\n']).map(str::trim).filter(|g| !g.is_empty()).map(str::to_owned).collect(),
+            concurrent: f.concurrent,
+            from: Vec::new(),
+        }
+    }
+
+    /// write the page: for the team (the committed file) or for this Mac only.
+    pub(crate) fn save_scripts(&mut self, local: bool, cx: &mut Context<Self>) {
+        let Some(f) = self.scripts_form.as_ref() else { return };
+        let (scripts, session, cwd) = (self.form_scripts(f, cx), f.session, f.cwd.clone());
+        if self.scripts_asked.is_some() {
+            return;
+        }
+        self.scripts_asked = Some(cwd);
+        self.cmd(Cmd::Ask { tag: "scripts", req: Request::ScriptsSave { session, scripts, local } });
+        if let Some(f) = self.scripts_form.as_mut() {
+            f.said = Some(if local { "Saved for this Mac, in the main checkout's .tessel/settings.local.toml.".into() } else { "Saved in this workspace's .tessel/settings.toml. Commit it to share it.".into() });
+        }
+        cx.notify();
+    }
+
+    /// Settings → Scripts.
+    pub(crate) fn scripts_settings(&self, cx: &mut Context<Self>) -> gpui_kit::Div {
+        use gpui_kit::component::input::Input;
+        use gpui_kit::component::v_flex;
+        let p = self.palette.get();
+        let note = |t: String| div().px_4().py_3().set(Type::Callout).text_color(p.secondary).child(t);
+        let Some(summary) = self.model.open_summary() else {
+            return v_flex().child(note("Open a chat in a repository to set up its scripts.".into()));
+        };
+        let Some(f) = self.scripts_form.as_ref().filter(|f| f.cwd == summary.cwd) else {
+            return v_flex().child(note("Reading this workspace's scripts…".into()));
+        };
+        let port = self.open_scripts().map_or(0, |(_, p)| *p);
+        let input = |e: &Entity<gpui_kit::component::input::InputState>, id: String| Input::new(e).id(SharedString::from(id)).small();
+        let mut rows = v_flex().gap(px(6.)).w(px(440.));
+        for (i, r) in f.rows.iter().enumerate() {
+            rows = rows.child(
+                h_flex()
+                    .gap(px(6.))
+                    .items_center()
+                    .child(div().w(px(90.)).child(input(&r.name, format!("script-{i}-name"))))
+                    .child(div().flex_1().min_w_0().child(input(&r.command, format!("script-{i}-command"))))
+                    .child(
+                        Button::new(SharedString::from(format!("script-{i}-default")))
+                            .ghost()
+                            .small()
+                            .icon(Icon::empty().path(if r.default { "icons/circle-check.svg" } else { "icons/circle.svg" }))
+                            .tooltip("The run button starts this one")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(f) = this.scripts_form.as_mut() {
+                                    for (j, r) in f.rows.iter_mut().enumerate() {
+                                        r.default = j == i;
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(Button::new(SharedString::from(format!("script-{i}-remove"))).ghost().small().icon(Icon::empty().path("icons/x.svg")).tooltip("Remove").on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(f) = this.scripts_form.as_mut()
+                            && i < f.rows.len()
+                        {
+                            f.rows.remove(i);
+                        }
+                        cx.notify();
+                    }))),
+            );
+        }
+        rows = rows.child(h_flex().child(Button::new("script-add").ghost().small().icon(Icon::empty().path("icons/plus.svg")).label("Add a script").on_click(cx.listener(|this, _, window, cx| {
+            let first = this.scripts_form.as_ref().is_some_and(|f| f.rows.is_empty());
+            let row = Self::script_row("", "", None, first, window, cx);
+            if let Some(f) = this.scripts_form.as_mut() {
+                f.rows.push(row);
+            }
+            cx.notify();
+        }))));
+        let mode = if f.concurrent { "together" } else { "alone" };
+        v_flex()
+            .child(note(format!(
+                "What every workspace of {} gets. Saved for the team, it's .tessel/settings.toml in the repository; saved for this Mac, .tessel/settings.local.toml beside it, which wins. Each workspace has ports {port} to {}, as $TESSEL_PORT.",
+                crate::model::project_name(summary),
+                port + 9
+            )))
+            .child(self.setting_row("Setup", "Runs once in each new workspace, in a terminal you can watch.", div().w(px(300.)).child(input(&f.setup, "scripts-setup".into()))))
+            .child(
+                v_flex()
+                    .px_4()
+                    .py_2()
+                    .gap(px(8.))
+                    .border_t_1()
+                    .border_color(p.separator)
+                    .child(v_flex().gap(px(2.)).child(div().set(Type::Body).child("Run scripts")).child(div().set(Type::Subheadline).text_color(p.secondary).child("Each is a button; the ticked one is the run button.")))
+                    .child(rows),
+            )
+            .child(self.setting_row("Archive", "Runs when a workspace is removed: shut down what it started.", div().w(px(300.)).child(input(&f.archive, "scripts-archive".into()))))
+            .child(self.setting_row("Files to copy", "Ignored files each new workspace gets from the main checkout. Separate them with commas.", div().w(px(300.)).child(input(&f.copy, "scripts-copy".into()))))
+            .child(self.setting_row(
+                "Run mode",
+                "Together: every workspace can run them at once, each on its own ports. Alone: starting one stops it in the others.",
+                self.segmented("scripts-mode", &[("together", "Together"), ("alone", "Alone")], mode, cx, |this, v, _, cx| {
+                    if let Some(f) = this.scripts_form.as_mut() {
+                        f.concurrent = v == "together";
+                    }
+                    cx.notify();
+                }),
+            ))
+            .child(
+                h_flex()
+                    .px_4()
+                    .py_3()
+                    .gap(px(8.))
+                    .border_t_1()
+                    .border_color(p.separator)
+                    .items_center()
+                    .child(Button::new("scripts-save-team").primary().small().label("Save for the team").on_click(cx.listener(|this, _, _, cx| this.save_scripts(false, cx))))
+                    .child(Button::new("scripts-save-local").outline().small().label("Save for this Mac").on_click(cx.listener(|this, _, _, cx| this.save_scripts(true, cx))))
+                    .child(div().flex_1())
+                    .child(Button::new("scripts-ai").ghost().small().icon(Icon::empty().path("icons/sparkles.svg")).label("Set up with an agent").on_click(cx.listener(|this, _, _, cx| {
+                        this.settings_open = false;
+                        this.setup_scripts_with_ai(cx);
+                    }))),
+            )
+            .children(f.said.clone().map(note))
     }
 }

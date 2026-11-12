@@ -1325,10 +1325,10 @@ async fn a_new_workspace_gets_its_files_its_setup_its_ports_and_its_buttons() {
     // its buttons and its ports.
     let Response::Scripts { scripts, port } = c.request(Request::Scripts { session: s.id }).await.unwrap() else { panic!() };
     assert_eq!(scripts.actions.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["dev"]);
-    assert_eq!(scripts.from.as_deref(), Some(".tessel/settings.toml"));
+    assert!(scripts.from.last().is_some_and(|f| f.ends_with(".tessel/settings.toml")), "{:?}", scripts.from);
     assert!(port >= 41000 && port % 10 == 0);
     // the agent is told them too.
     until(&c, s.id, "finished", |s| wants(s) == Some(AttentionReason::Finished)).await;
     let env = d.backend.spawned.lock().unwrap()[0].env.clone();
-    assert!(env.contains(&("TESSEL_PORT".into(), port.to_string())) && env.contains(&("CONDUCTOR_WORKSPACE_PATH".into(), s.cwd.clone())), "{env:?}");
+    assert!(env.contains(&("TESSEL_PORT".into(), port.to_string())) && env.contains(&("TESSEL_WORKSPACE_PATH".into(), s.cwd.clone())), "{env:?}");
 }

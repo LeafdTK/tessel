@@ -22,13 +22,14 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 7] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 8] = [
     ("appearance", "Appearance", "icons/sun-moon.svg"),
     ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
     ("models", "Models", "icons/box.svg"),
     ("terminal", "Terminal", "icons/square-terminal.svg"),
     ("agents", "Agents", "icons/bot.svg"),
+    ("scripts", "Scripts", "icons/play.svg"),
     ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
 
@@ -451,6 +452,7 @@ impl Shell {
             "themes" => ("Themes", themes_rows),
             "models" => ("Models", v_flex().child(self.models_settings(cx))),
             "terminal" => ("Terminal", self.terminal_settings(cx)),
+            "scripts" => ("Scripts", self.scripts_settings(cx)),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };
@@ -580,7 +582,7 @@ impl Shell {
             ))
     }
 
-    fn setting_row(&self, label: &'static str, hint: &'static str, control: impl IntoElement) -> Div {
+    pub(crate) fn setting_row(&self, label: &'static str, hint: &'static str, control: impl IntoElement) -> Div {
         let p = self.palette.get();
         h_flex()
             .min_h(px(52.))
@@ -656,7 +658,7 @@ impl Shell {
     }
 
     /// one of a few: a sunken tray with the chosen option raised in it.
-    fn segmented(
+    pub(crate) fn segmented(
         &self,
         name: &'static str,
         options: &[(&'static str, &'static str)],

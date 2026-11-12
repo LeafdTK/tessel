@@ -163,7 +163,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info" | "scripts", .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -2216,7 +2216,7 @@ fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
     // a dev script: the button starts it, in a terminal pane of its own.
     let scripts = tessel_proto::WorkspaceScripts {
         actions: vec![tessel_proto::ScriptAction { id: "dev".into(), command: "npm run dev".into(), icon: None, default: true }],
-        from: Some(".tessel/settings.toml".into()),
+        from: vec![".tessel/settings.toml".into()],
         ..Default::default()
     };
     rig.shell.update(cx, |s, _| {
@@ -2241,4 +2241,35 @@ fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
     rig.click(cx, "run-default");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::TermClose(7))));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn scripts_can_be_written_by_hand_for_the_team_or_this_mac(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    let scripts = tessel_proto::WorkspaceScripts {
+        setup: Some("pnpm install".into()),
+        actions: vec![tessel_proto::ScriptAction { id: "dev".into(), command: "pnpm dev".into(), icon: None, default: true }],
+        copy: vec![".env*".into()],
+        ..Default::default()
+    };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts, port: 41000 }) }]);
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("app.settings", &serde_json::json!({"section": "scripts"}), window, cx))).unwrap().unwrap();
+    rig.settle(cx);
+    assert!(rig.exists(cx, "scripts-setup") && rig.exists(cx, "script-0-command"), "the page, filled in");
+    rig.asked();
+    rig.click(cx, "scripts-mode-alone");
+    rig.click(cx, "scripts-save-local");
+    match rig.asked().as_slice() {
+        [Cmd::Ask { req: tessel_proto::Request::ScriptsSave { session, scripts, local: true }, .. }] => {
+            assert_eq!(*session, a.id);
+            assert_eq!((scripts.setup.as_deref(), scripts.concurrent), (Some("pnpm install"), false), "what the page says, one workspace at a time");
+            assert_eq!(scripts.actions.iter().map(|a| (a.id.as_str(), a.command.as_str(), a.default)).collect::<Vec<_>>(), [("dev", "pnpm dev", true)]);
+        }
+        other => panic!("{other:?}"),
+    }
+    // the answer is what the workspace has now.
+    let saved = tessel_proto::WorkspaceScripts { concurrent: false, ..Default::default() };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts: saved, port: 41000 }) }]);
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.open_scripts().map(|(s, _)| s.concurrent)), Some(false));
 }

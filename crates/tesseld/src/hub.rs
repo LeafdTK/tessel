@@ -547,12 +547,23 @@ impl Hub {
                     let dir = self.cfg.paths.session_dir(&session);
                     let wt = live.state.meta.worktree.clone().filter(|_| remove_worktree);
                     let path = live.state.meta.cwd.clone();
-                    // a workspace removed gives its ports back.
+                    // a workspace removed runs its archive script first, then gives its ports back.
+                    let archive_env = wt.as_ref().map(|w| crate::setup::env(&path, &w.repo, self.ports.of(&path)));
                     if wt.is_some() {
                         self.ports.release(&path);
                     }
                     tokio::spawn(async move {
                         let _ = tokio::fs::remove_dir_all(dir).await;
+                        if let (Some(wt), Some(env)) = (&wt, &archive_env) {
+                            let (ws, repo) = (std::path::PathBuf::from(&path), std::path::PathBuf::from(&wt.repo));
+                            let scripts = {
+                                let (ws, repo) = (ws.clone(), repo.clone());
+                                tokio::task::spawn_blocking(move || crate::setup::load(&ws, &repo)).await.unwrap_or_default()
+                            };
+                            if let Some(cmd) = scripts.archive {
+                                crate::setup::archive(&cmd, &ws, env).await;
+                            }
+                        }
                         if let Some(wt) = wt
                             && let Err(e) = worktree::remove(&wt.repo, &path).await
                         {
@@ -805,6 +816,22 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 return self.in_workdir(client, id, session, move |dir| async move {
                     let scripts = tokio::task::spawn_blocking(move || crate::setup::load(&dir, std::path::Path::new(&root))).await.unwrap_or_default();
                     Ok(Response::Scripts { scripts, port })
+                });
+            }
+            Request::ScriptsSave { session, scripts, local } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let (cwd, root) = (live.state.meta.cwd.clone(), live.state.meta.worktree.as_ref().map(|w| w.repo.clone()));
+                let port = self.ports.of(&cwd);
+                let root = root.unwrap_or_else(|| cwd.clone());
+                // answered with what the workspace has now, so the window shows it at once.
+                return self.in_workdir(client, id, session, move |dir| async move {
+                    tokio::task::spawn_blocking(move || {
+                        let root = std::path::Path::new(&root);
+                        crate::setup::save(&scripts, &dir, root, local).map_err(|e| RpcError::new(ErrorCode::Internal, format!("couldn't write the settings: {e}")))?;
+                        Ok(Response::Scripts { scripts: crate::setup::load(&dir, root), port })
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(RpcError::new(ErrorCode::Internal, e.to_string())))
                 });
             }
             Request::TermList => Ok(Response::Terms { terms: self.terms.values().map(|t| t.info.clone()).collect() }),
