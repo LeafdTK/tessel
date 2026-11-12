@@ -422,6 +422,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `desktop.use` | Show a desktop |  | desktop: its number (from 1), name or id |
 | `desktop.rename` | Rename a desktop |  | name; desktop? |
 | `desktop.scope` | Pick the projects a desktop lists |  | projects: project names, or [] for all; desktop? |
+| `desktop.show` | Show a chat on a desktop |  | session: id prefix or part of its name; desktop?: number, name or id, or "new" for one of its own |
 | `desktop.list` | Every desktop |  |  |
 | `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |

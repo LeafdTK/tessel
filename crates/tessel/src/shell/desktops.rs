@@ -28,6 +28,23 @@ pub(crate) struct Stashed {
     pub(crate) scroller: Entity<MessageScrollerState>,
     pub(crate) pane_focus: Option<String>,
     pub(crate) show_new: bool,
+    /// its chat was changed while it was away: start at that chat's end.
+    pub(crate) fresh: bool,
+}
+
+/// a chat being carried, from the overview to a desktop.
+#[derive(Clone)]
+pub(crate) struct ChatDrag(pub(crate) SessionId);
+
+/// what follows the pointer while a chat is carried: its name.
+pub(crate) struct ChatGhost(pub(crate) SharedString);
+
+impl Render for ChatGhost {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::theme::{self, Type, Typeset as _};
+        let _ = cx;
+        div().px_3().py_2().rounded(px(theme::R_TILE)).bg(gpui_kit::black().opacity(0.72)).text_color(gpui_kit::white()).set(Type::Callout).child(self.0.clone())
+    }
 }
 
 /// the desktop a layout shows: its id. a file without desktops is "d1", the
@@ -61,6 +78,7 @@ impl Shell {
             scroller,
             pane_focus: self.pane_focus.take(),
             show_new: self.show_new,
+            fresh: false,
         };
         self.stashed.insert(key, stashed);
         self.answers.clear();
@@ -79,7 +97,7 @@ impl Shell {
                 self.pane_focus = st.pane_focus;
                 self.show_new = st.show_new;
                 match st.open {
-                    Some(s) => self.switch_open(s, true, cx),
+                    Some(s) => self.switch_open(s, !st.fresh, cx),
                     None => self.draft_to_set = Some(String::new()),
                 }
             }
@@ -217,6 +235,119 @@ impl Shell {
             return Some(self.ui.desktop);
         }
         self.ui.desktops.iter().position(|d| d.scope.contains(&project)).or_else(|| self.ui.desktops.iter().position(lists))
+    }
+
+    /// show a chat on a desktop: in its focused pane, now if it's showing,
+    /// else for when you go there. a desktop that doesn't exist yet (`at` past
+    /// the end) is made for it.
+    pub(crate) fn show_on_desktop(&mut self, session: SessionId, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if at >= self.ui.desktops.len().max(1) {
+            let name = self.model.sessions.iter().find(|s| s.id == session).map(crate::model::project_name);
+            self.new_desktop(name, None, false, Vec::new(), window, cx);
+            self.show_new = false;
+            self.open(session, cx);
+            return;
+        }
+        if at == self.ui.desktop {
+            self.show_new = false;
+            self.open(session, cx);
+            return;
+        }
+        let id = self.ui.desktops[at].id.clone();
+        if let Some(st) = self.stashed.get_mut(&id) {
+            st.open = Some(session);
+            st.show_new = false;
+            st.fresh = true;
+        }
+        let text = session.0.to_string();
+        self.edit_desktop(at, |d| {
+            d.insert("open".into(), json!(text));
+        }, window, cx);
+        self.sync_follow();
+        cx.notify();
+    }
+
+    /// the desktops across the top of the overview: each with the chat it has
+    /// open. click one to go there; drop a chat on one to show it there, or
+    /// on + for a desktop of its own.
+    pub(crate) fn overview_desktops(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::theme::{self, Type, Typeset as _};
+        use gpui_kit::component::{Icon, h_flex, v_flex};
+        use gpui_kit::prelude::FluentBuilder as _;
+        let p = self.palette.get();
+        let count = self.ui.desktops.len().max(1);
+        let mut row = h_flex().id("overview-desktops").test_support().gap(theme::z(6.)).items_center();
+        for i in 0..count {
+            let on = i == self.ui.desktop;
+            let name = self.ui.desktops.get(i).map_or_else(|| "Main".to_owned(), |d| d.name.clone());
+            let chat = if on {
+                self.model.open.as_ref().map(|o| o.id)
+            } else {
+                let d = &self.ui.desktops[i];
+                self.stashed.get(&d.id).and_then(|st| st.open).or_else(|| d.open.as_deref().and_then(|s| s.parse::<uuid::Uuid>().ok()).map(SessionId))
+            };
+            let chat = chat.and_then(|c| self.model.sessions.iter().find(|s| s.id == c)).map_or_else(|| "No chat".to_owned(), |s| s.goal.clone());
+            let wants = !on && self.desktop_wants(i);
+            row = row.child(
+                v_flex()
+                    .id(SharedString::from(format!("overview-desktop-{}", i + 1)))
+                    .test_support()
+                    .w(theme::z(150.))
+                    .px(theme::z(10.))
+                    .py(theme::z(5.))
+                    .rounded(theme::z(theme::R_CONTROL + 2.))
+                    .border_1()
+                    .border_color(if on { p.accent.opacity(0.5) } else { p.separator })
+                    .when(on, |d| d.bg(p.selection))
+                    .cursor_pointer()
+                    .hover(|d| d.bg(p.hover))
+                    .drag_over::<ChatDrag>(move |d, _, _, _| d.border_color(p.accent).bg(p.accent.opacity(0.08)))
+                    .child(
+                        h_flex()
+                            .gap(theme::z(5.))
+                            .items_center()
+                            .child(div().min_w_0().truncate().set(Type::Headline).text_color(p.label).child(name))
+                            .when(wants, |d| d.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(theme::info(&p)))),
+                    )
+                    .child(div().min_w_0().truncate().set(Type::Subheadline).text_color(p.secondary).child(chat))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if i != this.ui.desktop {
+                            this.use_desktop(i, window, cx);
+                        }
+                        this.close_overview(None, cx);
+                    }))
+                    .on_drop(cx.listener(move |this, drag: &ChatDrag, window, cx| this.show_on_desktop(drag.0, i, window, cx))),
+            );
+        }
+        row = row.child(
+            h_flex()
+                .id("overview-desktop-new")
+                .test_support()
+                .h(theme::z(40.))
+                .px(theme::z(12.))
+                .gap(theme::z(6.))
+                .items_center()
+                .rounded(theme::z(theme::R_CONTROL + 2.))
+                .border_1()
+                .border_dashed()
+                .border_color(p.separator)
+                .cursor_pointer()
+                .hover(|d| d.bg(p.hover))
+                .drag_over::<ChatDrag>(move |d, _, _, _| d.border_color(p.accent).bg(p.accent.opacity(0.08)))
+                .set(Type::Callout)
+                .text_color(p.secondary)
+                .child(Icon::empty().path("icons/plus.svg").size(theme::z(13.)))
+                .child("Desktop")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.run_key("desktop.new", json!({}), window, cx);
+                    this.close_overview(None, cx);
+                }))
+                .on_drop(cx.listener(move |this, drag: &ChatDrag, window, cx| {
+                    this.show_on_desktop(drag.0, usize::MAX, window, cx);
+                    this.close_overview(None, cx);
+                })),
+        );
+        row.into_any_element()
     }
 
     /// ⌘1…⌘9: that desktop, when there is one.

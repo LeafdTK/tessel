@@ -2117,3 +2117,37 @@ fn desktops_keep_their_own_chats_and_projects(cx: &mut TestAppContext) {
     assert!(exec(&mut rig, cx, "desktop.close", serde_json::json!({})).is_err(), "the last one stays");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[gpui_kit::test]
+fn a_chat_can_be_put_on_another_desktop_or_one_of_its_own(cx: &mut TestAppContext) {
+    let dir = layout_dir("desktop-show");
+    let file = dir.join("ui.json");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| {
+        let r = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+        rig.settle(cx);
+        r
+    };
+    let open = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| (s.ui.desktop, s.model.open.as_ref().map(|o| o.id).or(s.awaiting)));
+    exec(&mut rig, cx, "desktop.new", serde_json::json!({"name": "Two"})).unwrap();
+
+    // the overview shows every desktop, and a place to start another.
+    rig.press(cx, "shift-cmd-\\");
+    assert!(rig.exists(cx, "overview-desktop-1") && rig.exists(cx, "overview-desktop-2") && rig.exists(cx, "overview-desktop-new"));
+    rig.press(cx, "escape");
+
+    // "Split the auth module" onto Main, from Two: Main shows it when you go back.
+    exec(&mut rig, cx, "desktop.show", serde_json::json!({"session": "Split the auth", "desktop": "Main"})).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 1, "you stay where you are");
+    exec(&mut rig, cx, "desktop.use", serde_json::json!({"desktop": 1})).unwrap();
+    assert_eq!(open(&rig, cx), (0, Some(sid(2))));
+
+    // a desktop of its own: made, named after its project, showing it.
+    let before = rig.shell.read_with(cx, |s, _| s.ui.desktops.len());
+    exec(&mut rig, cx, "desktop.show", serde_json::json!({"session": "Write the docs", "desktop": "new"})).unwrap();
+    let (n, name) = rig.shell.read_with(cx, |s, _| (s.ui.desktops.len(), s.ui.desktops[s.ui.desktop].name.clone()));
+    assert_eq!((n, name.as_str()), (before + 1, "api"));
+    assert_eq!(open(&rig, cx).1, Some(sid(3)));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

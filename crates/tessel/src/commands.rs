@@ -123,6 +123,7 @@ pub static COMMANDS: &[Spec] = &[
     q("desktop.use", "Show a desktop", "desktop: its number (from 1), name or id"),
     q("desktop.rename", "Rename a desktop", "name; desktop?"),
     q("desktop.scope", "Pick the projects a desktop lists", "projects: project names, or [] for all; desktop?"),
+    q("desktop.show", "Show a chat on a desktop", "session: id prefix or part of its name; desktop?: number, name or id, or \"new\" for one of its own"),
     q("desktop.list", "Every desktop", ""),
     c("app.notch", "Notch: Show agents", "panel-top", None, r#"{"show":true}"#, "show: true|false. the agents at work, around the camera"),
     c("app.notch", "Notch: Hide", "panel-top-close", None, r#"{"show":false}"#, ""),

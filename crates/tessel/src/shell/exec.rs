@@ -81,6 +81,16 @@ impl Shell {
                 self.close_desktop(at, window, cx)?;
                 done
             }
+            "desktop.show" => {
+                let s = need(args, "session", cmd)?;
+                let session = self.find_session(s)?;
+                let at = match args.get("desktop") {
+                    Some(Value::String(n)) if n == "new" => usize::MAX,
+                    other => self.desktop_index(other)?,
+                };
+                self.show_on_desktop(session, at, window, cx);
+                Ok(json!({"desktop": self.ui.desktop + 1}))
+            }
             "desktop.list" => {
                 let list: Vec<Value> = if self.ui.desktops.is_empty() {
                     vec![json!({"number": 1, "id": "d1", "name": "Main", "scope": [], "showing": true})]

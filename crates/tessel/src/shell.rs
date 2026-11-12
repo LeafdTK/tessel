@@ -1489,7 +1489,8 @@ impl Shell {
                     .pr(px(12.))
                     .set(Type::Title)
                     .text_color(p.label)
-                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .child(div().flex_shrink_0().max_w(px(280.)).truncate().child(title))
+                    .child(div().flex_1().min_w_0().px(px(16.)).overflow_hidden().child(self.overview_desktops(cx)))
                     // always a way back, not only escape.
                     .child(
                         h_flex()
@@ -1560,6 +1561,11 @@ impl Shell {
                     .bg(p.sidebar)
                     .opacity(fade)
                     .on_click(cx.listener(move |this, _, _, cx| this.close_overview(Some(sid), cx)))
+                    // carry it to a desktop at the top to show it there.
+                    .on_drag(desktops::ChatDrag(sid), {
+                        let name = SharedString::from(s.goal.clone());
+                        move |_, _, _, cx| cx.new(|_| desktops::ChatGhost(name.clone()))
+                    })
                     .child(
                         v_flex()
                             .w(px(inner_w))
