@@ -85,16 +85,27 @@ impl Shell {
         self.models.iter().filter(|m| m.value != "default").find(hit).or_else(|| self.models.iter().find(hit))
     }
 
+    /// the open chat's model; with none yet (a new chat), tessel's default,
+    /// which is what the daemon gives it: the loadout's first.
     fn current_model(&self) -> Option<String> {
-        self.model.open_summary().and_then(|s| s.model.clone())
+        match self.model.open_summary().filter(|_| !self.show_new) {
+            Some(s) => s.model.clone().or_else(|| self.favorites().first().map(|f| f.model.clone())),
+            None => self.favorites().first().map(|f| f.model.clone()),
+        }
     }
 
     fn current_effort(&self) -> Option<String> {
-        self.model.open_summary().and_then(|s| s.effort.clone())
+        match self.model.open_summary().filter(|s| !self.show_new && s.model.is_some()) {
+            Some(s) => s.effort.clone(),
+            None => self.favorites().first().and_then(|f| f.effort.clone()),
+        }
     }
 
     fn current_fast(&self) -> bool {
-        self.model.open_summary().is_some_and(|s| s.fast)
+        match self.model.open_summary().filter(|s| !self.show_new && s.model.is_some()) {
+            Some(s) => s.fast,
+            None => self.favorites().first().is_some_and(|f| f.fast),
+        }
     }
 
     /// the effort levels a model takes; all of them while the agent hasn't said.

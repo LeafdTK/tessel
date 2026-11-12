@@ -1283,6 +1283,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let meta = Meta { id, goal, cwd, worktree: wt, parent: c.parent, created_ms: now, linked_dirs: Vec::new() };
         let mut state = SessionState::new(meta);
         state.model = c.model;
+        // no model asked for: tessel's own default, the first in the loadout,
+        // as it runs there. never the agent's, which it would pick otherwise.
+        self.default_model(&mut state);
         let mut fork_from = None;
         if let Some(f) = c.fork {
             state.effort = f.effort;
@@ -1313,6 +1316,19 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let response = Response::Session { summary };
         self.remember(c.cmd_id, response.clone());
         Ok(response)
+    }
+
+    /// a session with no model gets tessel's default: the loadout's first, with
+    /// its effort and speed.
+    fn default_model(&self, state: &mut SessionState) {
+        if state.model.is_some() {
+            return;
+        }
+        if let Some(f) = self.settings.models.first() {
+            state.model = Some(f.model.clone());
+            state.effort = f.effort.clone();
+            state.fast = f.fast;
+        }
     }
 
     /// change which folders a session may work in. a running agent only
@@ -1373,6 +1389,14 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let cwd = live.state.meta.cwd.clone();
         if !Path::new(&cwd).is_dir() {
             return Err(RpcError::new(ErrorCode::Conflict, format!("{cwd} no longer exists")));
+        }
+        // a session from before there was a default, or made without one: it gets it now.
+        if live.state.model.is_none()
+            && let Some(f) = self.settings.models.first()
+        {
+            live.state.model = Some(f.model.clone());
+            live.state.effort = live.state.effort.clone().or_else(|| f.effort.clone());
+            live.state.fast = live.state.fast || f.fast;
         }
         let known = live.state.agent_session_id.clone();
         // a fork's first start carries on from its parent's conversation under a new id.

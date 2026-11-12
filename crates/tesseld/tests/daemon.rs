@@ -705,6 +705,18 @@ async fn a_model_and_mode_chosen_before_the_first_message_are_what_the_agent_sta
 }
 
 #[tokio::test]
+async fn a_new_session_starts_on_tessels_default_model_not_the_agents() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    // the loadout's first, as it runs there.
+    assert_eq!((s.model.as_deref(), s.effort.as_deref()), (Some("opus"), Some("high")));
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "go".into(), attachments: vec![] }).await.unwrap();
+    let opts = d.backend.spawned.lock().unwrap()[0].clone();
+    assert_eq!((opts.model.as_deref(), opts.effort.as_deref()), (Some("opus"), Some("high")), "the agent is told, so it never falls back to its own");
+}
+
+#[tokio::test]
 async fn a_screenshot_goes_to_the_agent_with_the_message_and_other_files_are_refused_up_front() {
     let d = Daemon::start(&["plain"]).await;
     let (c, _ev) = d.client().await;
