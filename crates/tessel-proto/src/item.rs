@@ -62,6 +62,23 @@ pub enum ItemBody {
         #[serde(default = "inline_region")]
         region: String,
     },
+    /// a turn ended: how long it ran, what it cost and took, and the files it changed.
+    Turn {
+        started_ms: Millis,
+        finished_ms: Millis,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cost_usd: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default)]
+        fast: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<TurnUsage>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<TurnFile>,
+    },
     /// something the daemon wants in the transcript: interrupted, aborted, error.
     Notice {
         level: NoticeLevel,
@@ -105,4 +122,23 @@ pub enum NoticeLevel {
 
 fn inline_region() -> String {
     "inline".into()
+}
+
+/// what a turn took from the model, in tokens.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnUsage {
+    pub input: u64,
+    pub output: u64,
+    /// read back from the prompt cache.
+    pub cache_read: u64,
+    /// written to the prompt cache.
+    pub cache_write: u64,
+}
+
+/// a file a turn changed, and by how many lines.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnFile {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
 }

@@ -267,7 +267,10 @@ async fn a_session_runs_blocks_on_a_prompt_and_finishes_once_answered() {
     let snap = snapshot(&c, s.id).await;
     assert!(snap.pending.is_empty());
     assert_eq!(tool_statuses(&snap), [("Bash".into(), ToolStatus::Ok)]);
-    assert!(matches!(&snap.items.last().unwrap().body, ItemBody::Text { text, streaming: false } if text == "done"));
+    // the reply, then the turn it ended.
+    assert!(matches!(&snap.items.last().unwrap().body, ItemBody::Turn { .. }), "a finished turn closes the transcript");
+    let reply = snap.items.iter().rev().find(|i| !matches!(i.body, ItemBody::Turn { .. })).unwrap();
+    assert!(matches!(&reply.body, ItemBody::Text { text, streaming: false } if text == "done"));
     assert_eq!(snap.items.iter().filter(|i| matches!(i.body, ItemBody::User { .. })).count(), 1, "our message appears once, not once more when echoed");
 
     // exactly what reached the agent: our message, then one answer.

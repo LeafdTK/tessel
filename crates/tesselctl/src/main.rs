@@ -739,6 +739,13 @@ fn item_line(item: &Item) -> String {
             format!("{indent}tool {tool} [{status}] {}{out}", one_line(&input.to_string(), 120))
         }
         ItemBody::Surface { surface, node, .. } => format!("  ▣ surface {surface}{}", if node.is_null() { " (removed)" } else { "" }),
+        ItemBody::Turn { duration_ms, cost_usd, usage, files, .. } => {
+            let took = duration_ms.map(|d| format!("{:.1}s", d as f64 / 1000.0)).unwrap_or_default();
+            let cost = cost_usd.map(|c| format!(" ${c:.2}")).unwrap_or_default();
+            let tokens = usage.map(|u| format!(" {} in, {} out, {} cached", u.input, u.output, u.cache_read)).unwrap_or_default();
+            let changed = if files.is_empty() { String::new() } else { format!(" · {} file{} changed", files.len(), if files.len() == 1 { "" } else { "s" }) };
+            format!("{indent}-- turn {took}{cost}{tokens}{changed} --")
+        }
         ItemBody::Notice { text, .. } => format!("{indent}-- {text} --"),
         ItemBody::Unknown => format!("{indent}(something this build does not know how to show)"),
     }

@@ -92,5 +92,5 @@
 {"tokens":53395,"type":"context_used"}
 {"item_id":"msg_011CguwnkyW6pMVGSTkGtdfb/0","parent":null,"text":"Created `hello.txt` in `/private/tmp/photon-probe/repo` with `hi` as its content, plus a trailing newline. I read it back to confirm. Nothing was committed.","type":"text"}
 {"tokens":1000000,"type":"context_window"}
-{"cost_usd":0.1481235,"duration_ms":7236,"outcome":{"kind":"completed"},"type":"turn_finished"}
+{"cost_usd":0.1481235,"duration_ms":7236,"outcome":{"kind":"completed"},"type":"turn_finished","usage":{"cache_read":172647,"cache_write":71278,"input":10,"output":719}}
 {"phase":"idle","type":"phase"}

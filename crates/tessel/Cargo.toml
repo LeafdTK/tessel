@@ -21,6 +21,8 @@ tokio.workspace = true
 uuid.workspace = true
 serde_json.workspace = true
 base64 = "0.22"
+# clock times for turns ("8:04 PM"); already in the build with this feature.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # only for its Frame type, which gpui takes images as. no features of its own:
 # gpui already picks them, and adding any would rebuild the ui stack.
 image = { version = "0.25", default-features = false }

@@ -295,7 +295,7 @@ fn a_turn_can_start_by_itself_and_still_reports_when_done() {
     assert_eq!(s.activity().unwrap().0, "background: run the dev server");
     s.apply(Input::Agent(AgentEvent::Phase { phase: AgentPhase::Running }), T0 + 5_000);
     assert_eq!(s.run_state(T0 + 5_000), RunState::Working);
-    s.apply(Input::Agent(AgentEvent::TurnFinished { outcome: TurnOutcome::Completed, cost_usd: Some(0.5), duration_ms: None }), T0 + 6_000);
+    s.apply(Input::Agent(AgentEvent::TurnFinished { outcome: TurnOutcome::Completed, cost_usd: Some(0.5), duration_ms: None, usage: None }), T0 + 6_000);
     assert_eq!(s.attention.as_ref().unwrap().reason, AttentionReason::Finished);
 }
 
@@ -449,7 +449,7 @@ fn restore_gives_back_the_same_session() {
 #[test]
 fn cost_accumulates_across_agent_processes() {
     let mut s = SessionState::new(meta());
-    let done = |c| Input::Agent(AgentEvent::TurnFinished { outcome: TurnOutcome::Completed, cost_usd: Some(c), duration_ms: None });
+    let done = |c| Input::Agent(AgentEvent::TurnFinished { outcome: TurnOutcome::Completed, cost_usd: Some(c), duration_ms: None, usage: None });
     s.apply(done(0.10), T0);
     s.apply(done(0.25), T0 + 1); // the process reports a running total
     assert!((s.cost_usd() - 0.25).abs() < 1e-9);
@@ -787,4 +787,35 @@ fn switching_model_between_turns_leaves_the_session_idle() {
     assert_eq!(s.run_state(now + 2), RunState::Idle, "nothing was asked of the agent");
     assert_eq!(s.summary(now + 2).model.as_deref(), Some("claude-sonnet-5-5"));
     assert_eq!(s.items().iter().filter(|i| matches!(i.body, ItemBody::User { .. })).count(), users, "and no message appeared in the transcript");
+}
+
+#[test]
+fn a_finished_turn_leaves_what_it_took_and_the_files_it_changed() {
+    let mut s = SessionState::new(meta());
+    s.apply(Input::UserSent { item_id: ItemId::from("u1"), text: "tidy the readme".into(), attachments: vec![] }, T0);
+    s.apply(Input::Agent(AgentEvent::Phase { phase: AgentPhase::Running }), T0 + 100);
+    let edit = |id: &str, old: &str, new: &str| AgentEvent::ToolCall { item_id: ItemId::from(id), parent: None, tool: "Edit".into(), input: serde_json::json!({"file_path": "/tmp/x/README.md", "old_string": old, "new_string": new}) };
+    s.apply(Input::Agent(edit("e1", "a", "b\nc")), T0 + 200);
+    s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("e1"), ok: true, output: String::new() }), T0 + 300);
+    s.apply(Input::Agent(edit("e2", "x\ny", "z")), T0 + 400);
+    s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("e2"), ok: true, output: String::new() }), T0 + 500);
+    s.apply(Input::Agent(AgentEvent::ToolCall { item_id: ItemId::from("w1"), parent: None, tool: "Write".into(), input: serde_json::json!({"file_path": "/elsewhere/notes.md", "content": "one\ntwo\nthree"}) }), T0 + 600);
+    s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("w1"), ok: true, output: String::new() }), T0 + 700);
+    // a call that failed changed nothing.
+    s.apply(Input::Agent(edit("e3", "q", "r")), T0 + 800);
+    s.apply(Input::Agent(AgentEvent::ToolResult { item_id: ItemId::from("e3"), ok: false, output: "no match".into() }), T0 + 900);
+    let usage = TurnUsage { input: 12, output: 3780, cache_read: 4_159_013, cache_write: 4356 };
+    s.apply(Input::Agent(AgentEvent::TurnFinished { outcome: TurnOutcome::Completed, cost_usd: Some(0.30), duration_ms: Some(44_000), usage: Some(usage) }), T0 + 44_000);
+    let turn = s.items().iter().rev().find_map(|i| match &i.body {
+        ItemBody::Turn { started_ms, duration_ms, cost_usd, usage, files, .. } => Some((*started_ms, *duration_ms, *cost_usd, *usage, files.clone())),
+        _ => None,
+    });
+    let (started, duration, cost, u, files) = turn.expect("the turn is in the transcript");
+    assert_eq!((started, duration, u), (T0, Some(44_000), Some(usage)), "from the message that began it, with what it took");
+    assert!((cost.unwrap() - 0.30).abs() < 1e-9);
+    assert_eq!(
+        files,
+        vec![TurnFile { path: "README.md".into(), added: 3, removed: 3 }, TurnFile { path: "/elsewhere/notes.md".into(), added: 3, removed: 0 }],
+        "edits to one file add up; paths inside the session's folder are relative; the failed edit isn't counted"
+    );
 }

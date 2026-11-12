@@ -30,5 +30,5 @@
 {"item_id":"msg_011CguwmKnQtrf4yLKUsHNaQ/1","text":"17.","type":"delta"}
 {"item_id":"msg_011CguwmKnQtrf4yLKUsHNaQ/1","parent":null,"text":"No, 221 isn't prime because it equals 13 × 17.","type":"text"}
 {"tokens":1000000,"type":"context_window"}
-{"cost_usd":0.00371323,"duration_ms":2124,"outcome":{"kind":"completed"},"type":"turn_finished"}
+{"cost_usd":0.00371323,"duration_ms":2124,"outcome":{"kind":"completed"},"type":"turn_finished","usage":{"cache_read":15473,"cache_write":16782,"input":2,"output":151}}
 {"phase":"idle","type":"phase"}

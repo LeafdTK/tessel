@@ -1224,7 +1224,7 @@ fn a_pane_takes_whatever_share_it_is_given(cx: &mut TestAppContext) {
     let file = dir.join("ui.json");
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions_launched(cx, idle, vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
-    let mut exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
     let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": "conversation", "dir": "right"})).unwrap();
     let new = new["pane"].as_str().unwrap().to_owned();
     exec(&mut rig, cx, "pane.size", serde_json::json!({"pane": "conversation", "size": 0.75})).unwrap();
@@ -1282,7 +1282,7 @@ fn the_terminal_look_is_set_from_a_command_and_kept_in_the_file(cx: &mut TestApp
     let dir = layout_dir("terminal-look");
     let file = dir.join("ui.json");
     let mut rig = Rig::launched(cx, Launch { ui: Some(file.clone()), ..Launch::default() });
-    let mut exec = |rig: &mut Rig, cx: &mut TestAppContext, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("terminal.look", &args, window, cx))).unwrap();
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("terminal.look", &args, window, cx))).unwrap();
     exec(&mut rig, cx, serde_json::json!({"size": 15, "colors": "ink"})).unwrap();
     let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!((f["theme"]["terminal"]["size"].as_f64(), f["theme"]["terminal"]["colors"].as_str()), (Some(15.0), Some("ink")));
@@ -1293,6 +1293,33 @@ fn the_terminal_look_is_set_from_a_command_and_kept_in_the_file(cx: &mut TestApp
     assert!(f["theme"]["terminal"].get("colors").is_none(), "theme is the default, so it isn't written");
     assert!(exec(&mut rig, cx, serde_json::json!({"size": 3})).is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn a_turn_ends_with_its_time_its_reply_and_the_files_it_changed(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    let it = |id: &str, seq: u64, body: ItemBody| Item { id: ItemId::from(id), parent: None, seq, order: seq, created_ms: 0, body };
+    let file = |p: &str, a: u32, r: u32| tessel_proto::TurnFile { path: p.into(), added: a, removed: r };
+    let items = vec![
+        it("u1", 1, ItemBody::User { text: "tidy the readme".into(), attachments: vec![] }),
+        it("t1", 2, ItemBody::Text { text: "done, the readme is tidy".into(), streaming: false }),
+        it("turn/3", 3, ItemBody::Turn {
+            started_ms: 1_000,
+            finished_ms: 45_000,
+            duration_ms: Some(44_000),
+            cost_usd: Some(0.3),
+            model: Some("claude-opus-5-5".into()),
+            fast: false,
+            usage: Some(tessel_proto::TurnUsage { input: 12, output: 3780, cache_read: 4_159_013, cache_write: 4356 }),
+            files: vec![file("README.md", 3, 3), file("docs/a.md", 1, 0), file("docs/b.md", 2, 1)],
+        }),
+    ];
+    rig.feed(cx, vec![snapshot_of(idle, items, vec![])]);
+    assert!(rig.exists(cx, "turn-turn/3-usage"), "the time, which opens what it took");
+    assert!(rig.exists(cx, "turn-turn/3-file-0") && rig.exists(cx, "turn-turn/3-file-1"), "two files by name");
+    assert!(rig.exists(cx, "turn-turn/3-file-more") && !rig.exists(cx, "turn-turn/3-file-2"), "and the rest as one");
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.turn_text_for_test(2)), "done, the readme is tidy", "copy takes the reply");
 }
 
 #[gpui_kit::test]

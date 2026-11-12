@@ -750,11 +750,14 @@ impl SessionState {
                 self.tasks.retain(|t| t.id != task_id);
                 fx.summary_changed |= self.tasks.len() != n;
             }
-            AgentEvent::TurnFinished { outcome, cost_usd, .. } => {
+            AgentEvent::TurnFinished { outcome, cost_usd, duration_ms, usage } => {
+                // the agent reports what its process has cost so far; the turn is the step.
+                let turn_cost = cost_usd.map(|c| (c - self.cost_process).max(0.0));
                 if let Some(c) = cost_usd {
                     self.cost_process = c;
                 }
                 self.end_turn(Some(outcome), now, fx);
+                self.turn_item(turn_cost, duration_ms, usage, now, fx);
                 fx.summary_changed = true;
             }
             AgentEvent::RateLimit { status, resets_at, .. } => {
@@ -898,6 +901,50 @@ impl SessionState {
         self.seq += 1;
         self.items[i].seq = self.seq;
         fx.upserts.push(self.items[i].clone());
+    }
+
+    /// the turn that just ended, as an item: from the message that started it
+    /// to now, with what it cost and took, and the files its edits touched.
+    fn turn_item(&mut self, cost_usd: Option<f64>, duration_ms: Option<u64>, usage: Option<tessel_proto::TurnUsage>, now: Millis, fx: &mut Effects) {
+        let start = self.items.iter().rposition(|i| matches!(&i.body, ItemBody::User { text, .. } if !text.starts_with('<'))).unwrap_or(0);
+        let started_ms = self.items.get(start).map_or(now, |i| i.created_ms);
+        let lines = |t: &str| if t.is_empty() { 0 } else { t.lines().count() as u32 };
+        let mut files: Vec<tessel_proto::TurnFile> = Vec::new();
+        for item in &self.items[start..] {
+            let ItemBody::Tool { tool, input, status: ToolStatus::Ok, .. } = &item.body else { continue };
+            let s = |k: &str| input.get(k).and_then(serde_json::Value::as_str).unwrap_or("");
+            let (path, added, removed) = match tool.as_str() {
+                "Edit" => (s("file_path"), lines(s("new_string")), lines(s("old_string"))),
+                "Write" => (s("file_path"), lines(s("content")), 0),
+                "MultiEdit" => {
+                    let edits = input.get("edits").and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+                    let (mut a, mut r) = (0, 0);
+                    for e in &edits {
+                        a += lines(e.get("new_string").and_then(serde_json::Value::as_str).unwrap_or(""));
+                        r += lines(e.get("old_string").and_then(serde_json::Value::as_str).unwrap_or(""));
+                    }
+                    (s("file_path"), a, r)
+                }
+                "NotebookEdit" => (s("notebook_path"), lines(s("new_source")), 0),
+                _ => continue,
+            };
+            if path.is_empty() {
+                continue;
+            }
+            // shown relative to the session's folder when it's inside it.
+            let cwd = self.meta.cwd.trim_end_matches('/');
+            let shown = path.strip_prefix(cwd).map(|p| p.trim_start_matches('/')).filter(|p| !p.is_empty()).unwrap_or(path).to_owned();
+            match files.iter_mut().find(|f| f.path == shown) {
+                Some(f) => {
+                    f.added += added;
+                    f.removed += removed;
+                }
+                None => files.push(tessel_proto::TurnFile { path: shown, added, removed }),
+            }
+        }
+        let id = ItemId(format!("turn/{}", self.seq + 1));
+        let body = ItemBody::Turn { started_ms, finished_ms: now, duration_ms, cost_usd, model: self.model.clone(), fast: self.fast, usage, files };
+        self.upsert(id, None, body, now, fx);
     }
 
     fn notice(&mut self, level: NoticeLevel, text: String, now: Millis, fx: &mut Effects) {

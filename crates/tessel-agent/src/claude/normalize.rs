@@ -340,10 +340,15 @@ impl ClaudeNormalizer {
         if let Some(tokens) = window {
             out.push(AgentEvent::ContextWindow { tokens });
         }
+        let usage = v.get("usage").map(|u| {
+            let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+            tessel_proto::TurnUsage { input: n("input_tokens"), output: n("output_tokens"), cache_read: n("cache_read_input_tokens"), cache_write: n("cache_creation_input_tokens") }
+        });
         out.push(AgentEvent::TurnFinished {
             outcome,
             cost_usd: v.get("total_cost_usd").and_then(Value::as_f64),
             duration_ms: v.get("duration_ms").and_then(Value::as_u64),
+            usage,
         });
         out
     }

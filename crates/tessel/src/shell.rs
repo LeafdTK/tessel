@@ -1688,6 +1688,9 @@ impl Shell {
                 let ran = started_ms.zip(*finished_ms).map(|(s, f)| f.saturating_sub(s));
                 Some(tool_row(tool, input, *status, output.as_deref(), ran, &p).into_any_element())
             }
+            ItemBody::Turn { started_ms, finished_ms, duration_ms, cost_usd, model, fast, usage, files } => {
+                Some(self.turn_footer(ix, &item.id, *started_ms, *finished_ms, *duration_ms, *cost_usd, model.as_deref(), *fast, *usage, files, me))
+            }
             ItemBody::Notice { level, text } => {
                 let color = if *level == NoticeLevel::Error { p.failed } else { p.secondary };
                 Some(h_flex().justify_center().set(Type::Subheadline).text_color(color).child(sentence(text)).into_any_element())
@@ -1734,6 +1737,7 @@ impl Shell {
                 ItemBody::Text { .. } => (8., 8.),
                 ItemBody::Thinking { .. } => (6., 6.),
                 ItemBody::Tool { .. } => (3., 3.),
+                ItemBody::Turn { .. } => (2., 6.),
                 _ => (8., 8.),
             };
             div().pt(px(top)).pb(px(bottom)).child(body)
@@ -1742,6 +1746,131 @@ impl Shell {
         // each row keeps to the reading column in the middle of it.
         let t = self.transcript_opts;
         h_flex().w_full().justify_center().child(row.w_full().max_w(px(t.width)).px(px(t.gutter))).into_any_element()
+    }
+
+    /// the end of a turn: how long it ran and when, the reply to copy, and the
+    /// files it changed. its time opens a card of what it cost and took.
+    #[allow(clippy::too_many_arguments)]
+    fn turn_footer(
+        &self,
+        ix: usize,
+        id: &ItemId,
+        started_ms: Millis,
+        finished_ms: Millis,
+        duration_ms: Option<u64>,
+        cost_usd: Option<f64>,
+        model: Option<&str>,
+        fast: bool,
+        usage: Option<tessel_proto::TurnUsage>,
+        files: &[tessel_proto::TurnFile],
+        me: &Entity<Self>,
+    ) -> AnyElement {
+        let p = self.palette.get();
+        let took = ago(0, duration_ms.unwrap_or(finished_ms.saturating_sub(started_ms)));
+        let clock = |ms: Millis, date: bool| {
+            use chrono::TimeZone as _;
+            chrono::Local.timestamp_millis_opt(ms as i64).single().map_or(String::new(), |t| t.format(if date { "%b %-d, %Y, %-I:%M %p" } else { "%-I:%M %p" }).to_string())
+        };
+        // the card: what answered, from when to when, and what it took.
+        let mut rows: Vec<(String, String)> = vec![("Fast mode".into(), if fast { "On".into() } else { "Off".into() })];
+        if let Some(u) = usage {
+            for (k, v) in [("Input", u.input), ("Output", u.output), ("Cache read", u.cache_read), ("Cache write", u.cache_write)] {
+                rows.push((k.into(), panel::thousands(v)));
+            }
+        }
+        if let Some(c) = cost_usd {
+            rows.push(("Cost".into(), format!("${c:.2}")));
+        }
+        let tip = TurnTip {
+            p,
+            title: model.map_or_else(|| "The agent".to_owned(), |m| self.model_name(m)),
+            when: format!("{} → {}", clock(started_ms, true), clock(finished_ms, true)),
+            rows,
+        };
+        // the reply, all of it: every piece of text since the message that began the turn.
+        let reply = self.turn_text(ix);
+        let mut row = h_flex()
+            .gap(px(10.))
+            .set(Type::Subheadline)
+            .text_color(p.tertiary)
+            .child(
+                div()
+                    .id(SharedString::from(format!("turn-{id}-usage")))
+                    .test_support()
+                    .cursor_default()
+                    .tooltip(move |_, cx| cx.new(|_| tip.clone()).into())
+                    .child(format!("{took} · {}", clock(finished_ms, false))),
+            )
+            .child(
+                Button::new(SharedString::from(format!("turn-{id}-copy")))
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::component::Icon::empty().path("icons/copy.svg"))
+                    .tooltip("Copy the reply")
+                    .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(reply.clone()))),
+            );
+        // the files it changed: two by name, then the rest as one.
+        let chip = |id: SharedString, name: String, added: u32, removed: u32| {
+            h_flex()
+                .id(id)
+                .h(px(22.))
+                .px(px(7.))
+                .gap(px(6.))
+                .rounded(px(theme::R_TILE - 2.))
+                .border_1()
+                .border_color(p.separator)
+                .cursor_pointer()
+                .hover(move |d| d.bg(p.hover))
+                .child(gpui_kit::component::Icon::empty().path("icons/file.svg").size(px(12.)).text_color(p.secondary))
+                .child(div().max_w(px(180.)).truncate().text_color(p.label).child(name))
+                .child(div().set(Type::Code).text_color(p.finished).child(format!("+{added}")))
+                .child(div().set(Type::Code).text_color(p.failed).child(format!("-{removed}")))
+        };
+        for (i, f) in files.iter().take(2).enumerate() {
+            let name = f.path.rsplit('/').next().unwrap_or(&f.path).to_owned();
+            let (me, path) = (me.clone(), f.path.clone());
+            row = row.child(chip(SharedString::from(format!("turn-{id}-file-{i}")), name, f.added, f.removed).tooltip({
+                let path = f.path.clone();
+                move |w, cx| gpui_kit::component::tooltip::Tooltip::new(path.clone()).build(w, cx)
+            }).on_click(move |_, window, cx| {
+                me.update(cx, |this, cx| {
+                    let _ = this.exec("files.open", &serde_json::json!({"path": path}), window, cx);
+                });
+            }).test_support());
+        }
+        if files.len() > 2 {
+            let rest = &files[2..];
+            let (a, r) = rest.iter().fold((0, 0), |(a, r), f| (a + f.added, r + f.removed));
+            let me = me.clone();
+            row = row.child(chip(SharedString::from(format!("turn-{id}-file-more")), format!("+{} more", rest.len()), a, r).on_click(move |_, window, cx| {
+                me.update(cx, |this, cx| {
+                    let _ = this.exec("workspace.tab", &serde_json::json!({"tab": "changes"}), window, cx);
+                });
+            }).test_support());
+        }
+        row.into_any_element()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn turn_text_for_test(&self, ix: usize) -> String {
+        self.turn_text(ix)
+    }
+
+    /// the text of the turn ending at row `ix`: everything the agent said since
+    /// the message that started it.
+    fn turn_text(&self, ix: usize) -> String {
+        let Some(open) = self.model.open.as_ref() else { return String::new() };
+        let mut parts = Vec::new();
+        for j in (0..ix).rev() {
+            let Some((item, depth)) = open.row(j) else { break };
+            match &item.body {
+                ItemBody::User { text, .. } if depth == 0 && !text.starts_with('<') => break,
+                ItemBody::Text { text, .. } if depth == 0 && !text.trim().is_empty() => parts.push(text.trim().to_owned()),
+                _ => {}
+            }
+        }
+        parts.reverse();
+        parts.join("\n\n")
     }
 
     /// a mermaid diagram (`diagram`) or a formula, drawn once and kept. one
@@ -2473,5 +2602,37 @@ fn notify_os(goal: &str, reason: AttentionReason) {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (goal, what);
+    }
+}
+
+/// the card a turn's time opens: what answered, from when to when, and what it took.
+#[derive(Clone)]
+struct TurnTip {
+    p: Palette,
+    title: String,
+    when: String,
+    rows: Vec<(String, String)>,
+}
+
+impl Render for TurnTip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let p = self.p;
+        let mut card = v_flex()
+            .w(px(300.))
+            .p(px(12.))
+            .gap(px(4.))
+            .rounded(px(theme::R_FLOAT))
+            .border_1()
+            .border_color(p.separator)
+            .bg(p.raised)
+            .shadow_lg()
+            .set(Type::Callout)
+            .child(div().font_weight(FontWeight::MEDIUM).text_color(p.label).child(self.title.clone()))
+            .child(div().pb(px(6.)).text_color(p.secondary).child(self.when.clone()))
+            .child(div().h(px(1.)).bg(p.separator).mb(px(4.)));
+        for (k, v) in &self.rows {
+            card = card.child(h_flex().child(div().flex_1().text_color(p.secondary).child(k.clone())).child(div().set(Type::Code).text_color(p.label).child(v.clone())));
+        }
+        card
     }
 }

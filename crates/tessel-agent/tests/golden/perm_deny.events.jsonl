@@ -23,5 +23,5 @@
 {"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","text":" not retry.","type":"delta"}
 {"item_id":"msg_011CguTwZ6sMJ5abQPGZsT25/1","parent":null,"text":"The command was denied by the user, so `denied.txt` was not created and I did not retry.","type":"text"}
 {"tokens":1000000,"type":"context_window"}
-{"cost_usd":0.00469866,"duration_ms":2450,"outcome":{"kind":"completed"},"type":"turn_finished"}
+{"cost_usd":0.00469866,"duration_ms":2450,"outcome":{"kind":"completed"},"type":"turn_finished","usage":{"cache_read":47746,"cache_write":19993,"input":4,"output":179}}
 {"phase":"idle","type":"phase"}

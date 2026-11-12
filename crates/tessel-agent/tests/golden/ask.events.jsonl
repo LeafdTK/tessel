@@ -16,5 +16,5 @@
 {"item_id":"msg_011CguTziDtHp4ko2u8RbVcZ/1","text":"You picked red.","type":"delta"}
 {"item_id":"msg_011CguTziDtHp4ko2u8RbVcZ/1","parent":null,"text":"You picked red.","type":"text"}
 {"tokens":1000000,"type":"context_window"}
-{"cost_usd":0.00474396,"duration_ms":2375,"outcome":{"kind":"completed"},"type":"turn_finished"}
+{"cost_usd":0.00474396,"duration_ms":2375,"outcome":{"kind":"completed"},"type":"turn_finished","usage":{"cache_read":47756,"cache_write":20115,"input":4,"output":228}}
 {"phase":"idle","type":"phase"}

@@ -78,6 +78,9 @@ pub enum AgentEvent {
         outcome: TurnOutcome,
         cost_usd: Option<f64>,
         duration_ms: Option<u64>,
+        /// the tokens the turn took, as the agent counted them.
+        #[serde(default)]
+        usage: Option<crate::TurnUsage>,
     },
     RateLimit {
         status: String,
