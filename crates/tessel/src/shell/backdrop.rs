@@ -148,9 +148,9 @@ pub(crate) fn project_hue(name: &str) -> f32 {
 }
 
 impl Shell {
-    /// whether to draw it: the theme asks, and it's on unless switched off.
+    /// whether to draw it: only when the theme asks for it.
     pub(crate) fn backdrop_on(&self) -> bool {
-        self.ui.theme.backdrop.unwrap_or(true)
+        self.ui.theme.backdrop.unwrap_or(false)
     }
 
     /// the hue for the room: the open session's project, else the one a new session would start in.

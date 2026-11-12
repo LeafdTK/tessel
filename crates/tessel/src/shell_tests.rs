@@ -1227,11 +1227,11 @@ fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn the_backdrop_switches_off_from_settings_and_says_so_in_the_file(cx: &mut TestAppContext) {
+fn the_backdrop_switches_on_from_settings_and_says_so_in_the_file(cx: &mut TestAppContext) {
     let dir = layout_dir("backdrop");
     let file = dir.join("ui.json");
     let mut rig = Rig::launched(cx, Launch { ui: Some(file.clone()), ..Launch::default() });
-    assert!(rig.shell.read_with(cx, |s, _| s.backdrop_on()), "on by default");
+    assert!(!rig.shell.read_with(cx, |s, _| s.backdrop_on()), "off by default");
     rig.shell.update(cx, |s, cx| {
         s.settings_section = "themes";
         s.open_settings(cx);
@@ -1240,11 +1240,11 @@ fn the_backdrop_switches_off_from_settings_and_says_so_in_the_file(cx: &mut Test
     // it's below the theme gallery.
     cx.update_window(rig.window, |_, window, cx| window.scroll("settings-body", gpui_kit::ScrollDelta::Pixels(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(-5000.))), cx)).unwrap();
     rig.settle(cx);
-    rig.click(cx, "backdrop-none");
+    rig.click(cx, "backdrop-dither");
     let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(written["theme"]["backdrop"], "none");
+    assert_eq!(written["theme"]["backdrop"], "dither");
     rig.settle(cx);
-    assert!(!rig.shell.read_with(cx, |s, _| s.backdrop_on()), "and the window follows the file");
+    assert!(rig.shell.read_with(cx, |s, _| s.backdrop_on()), "and the window follows the file");
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

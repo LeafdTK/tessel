@@ -385,7 +385,7 @@ pub struct ThemeSpec {
     pub compact: Option<bool>,
     /// the desktop shows through, blurred, behind the frame.
     pub glass: Option<bool>,
-    /// the dithered backdrop behind the panes: on unless it's "none".
+    /// the dithered backdrop behind the panes: off unless it's "dither".
     pub backdrop: Option<bool>,
 }
 
@@ -1464,8 +1464,8 @@ mod tests {
     }
 
     #[test]
-    fn the_backdrop_is_on_unless_it_is_none() {
-        assert_eq!(parse(r#"{"theme": "tessel"}"#).unwrap().theme.backdrop, None, "unsaid: the app's default, on");
+    fn the_backdrop_is_off_unless_asked_for() {
+        assert_eq!(parse(r#"{"theme": "tessel"}"#).unwrap().theme.backdrop, None, "unsaid: the app's default, off");
         assert_eq!(parse(r#"{"theme": {"backdrop": "none"}}"#).unwrap().theme.backdrop, Some(false));
         assert_eq!(parse(r#"{"theme": {"backdrop": "dither"}}"#).unwrap().theme.backdrop, Some(true));
         assert!(parse(r#"{"theme": {"backdrop": "plaid"}}"#).unwrap_err().contains("theme.backdrop"));

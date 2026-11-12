@@ -186,7 +186,7 @@ impl Shell {
                 if !matches!(b, "dither" | "none") {
                     return Err(format!("\"{b}\" isn't a backdrop. use dither or none"));
                 }
-                let v = (b != "dither").then(|| json!(b));
+                let v = (b != "none").then(|| json!(b));
                 self.edit_ui(|f| Self::set_in(f, "theme", "backdrop", v), window, cx);
                 done
             }

@@ -189,7 +189,7 @@ impl Shell {
         let _ = base;
         let density = if theme.compact.unwrap_or(false) { "compact" } else { "islands" };
         let material = if theme.glass.unwrap_or(false) { "glass" } else { "solid" };
-        let backdrop = if theme.backdrop.unwrap_or(true) { "dither" } else { "none" };
+        let backdrop = if theme.backdrop.unwrap_or(false) { "dither" } else { "none" };
         let themes_rows = v_flex()
             .child(
                 v_flex()
