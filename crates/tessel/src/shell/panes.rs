@@ -1359,6 +1359,16 @@ impl Shell {
         tabs
     }
 
+    /// close a tab: a chat that never got a message goes at once, there's
+    /// nothing in it to lose; one with history takes a second click.
+    pub(crate) fn close_tab(&mut self, id: SessionId, cx: &mut Context<Self>) {
+        let empty = self.model.sessions.iter().find(|s| s.id == id).is_some_and(|s| s.goal == "untitled" && s.cost_usd == 0.0 && !s.run_state.is_busy());
+        if empty {
+            self.confirm_delete = Some(id);
+        }
+        self.delete(id, cx);
+    }
+
     /// a new tab in the open session's workspace: a chat in the same folder,
     /// made at once and opened, the cursor in its message box. no form.
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1380,22 +1390,52 @@ impl Shell {
         let mut strip = h_flex().id("workspace-tabs").test_support().px(theme::z(12.)).pt(theme::z(8.)).pb(theme::z(4.)).gap(theme::z(4.)).overflow_x_scroll();
         for s in self.workspace_tabs() {
             let (id, on) = (s.id, s.id == open);
+            let armed = self.confirm_delete == Some(id);
+            let group = SharedString::from(format!("tab-group-{id}"));
+            // close: a cross on the open tab and on whichever you point at. a
+            // chat with history asks once more, in words, before it goes.
+            let close = h_flex()
+                .id(SharedString::from(format!("tab-close-{id}")))
+                .test_support()
+                .aria_label(SharedString::from(if armed { format!("Delete {}", s.goal) } else { format!("Close {}", s.goal) }))
+                .flex_shrink_0()
+                .h(theme::z(18.))
+                .rounded(theme::z(5.))
+                .justify_center()
+                .items_center()
+                .cursor_pointer()
+                .when(armed, |d| d.px(theme::z(6.)).bg(p.failed.opacity(0.14)).text_color(p.failed).set(Type::Subheadline).child("Delete"))
+                .when(!armed, |d| {
+                    d.w(theme::z(18.))
+                        .when(!on, |d| d.opacity(0.).group_hover(group.clone(), |s| s.opacity(1.)))
+                        .hover(|d| d.bg(p.hover))
+                        .child(Icon::empty().path("icons/x.svg").size(theme::z(12.)).text_color(p.tertiary))
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.close_tab(id, cx);
+                }));
             strip = strip.child(
                 h_flex()
                     .id(SharedString::from(format!("tab-{}", s.id)))
                     .test_support()
+                    .group(group)
                     .aria_label(SharedString::from(format!("{}{}", s.goal, if on { ", open" } else { "" })))
                     .flex_shrink_0()
                     .h(theme::z(28.))
-                    .px(theme::z(10.))
+                    .pl(theme::z(10.))
+                    .pr(theme::z(5.))
                     .gap(theme::z(7.))
                     .rounded(theme::z(theme::R_CONTROL))
                     .cursor_pointer()
                     .when(on, |d| d.bg(p.selection))
                     .when(!on, |d| d.hover(|d| d.bg(p.hover)))
                     .on_click(cx.listener(move |this, _, _, cx| this.open(id, cx)))
+                    // a middle click closes, as it does a browser's tab.
+                    .on_mouse_down(MouseButton::Middle, cx.listener(move |this, _, _, cx| this.close_tab(id, cx)))
                     .child(mark(state_mark(s, &p)))
-                    .child(div().max_w(theme::z(180.)).truncate().set(Type::Callout).text_color(if on { p.label } else { p.secondary }).child(s.goal.clone())),
+                    .child(div().max_w(theme::z(180.)).truncate().set(Type::Callout).text_color(if on { p.label } else { p.secondary }).child(s.goal.clone()))
+                    .child(close),
             );
         }
         strip = strip.child(

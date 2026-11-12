@@ -1392,6 +1392,37 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn a_tab_closes_an_empty_chat_at_once_and_asks_before_losing_history(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut b = SessionSummary { cwd: a.cwd.clone(), ..session(2, "untitled", RunState::Idle, None) };
+    b.cost_usd = 0.0;
+    let c = SessionSummary { cwd: a.cwd.clone(), ..session(3, "Write tests", RunState::Idle, None) };
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.feed(cx, vec![UiEvent::Sessions(vec![a.clone(), b.clone(), c.clone()])]);
+    rig.asked();
+    let close = |s: &SessionSummary| SharedString::from(format!("tab-close-{}", s.id));
+
+    // nothing in it: gone on the first click, and the tab it was on stays open.
+    // a background tab's cross shows when you point at the tab.
+    let tab_b = SharedString::from(format!("tab-{}", b.id));
+    cx.update_window(rig.window, |_, window, cx| window.hover(tab_b, cx)).unwrap();
+    rig.click(cx, close(&b));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Delete { session, .. }] if *session == b.id), "an empty chat goes at once");
+    rig.feed(cx, vec![UiEvent::Removed(b.id)]);
+    assert!(!rig.exists(cx, SharedString::from(format!("tab-{}", b.id))));
+
+    // history: the first click only asks.
+    rig.click(cx, close(&a));
+    assert!(rig.asked().is_empty(), "one stray click doesn't lose a conversation");
+    rig.click(cx, close(&a));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Delete { session, .. }] if *session == a.id));
+
+    // the open tab gone, the one beside it opens.
+    rig.feed(cx, vec![UiEvent::Removed(a.id)]);
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == c.id), "its neighbour, not the new-session form");
+}
+
+#[gpui_kit::test]
 fn the_changes_list_shows_all_uncommitted_this_session_s_or_the_last_turn_s(cx: &mut TestAppContext) {
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);

@@ -702,11 +702,26 @@ impl Shell {
             }
             UiEvent::Removed(id) => {
                 let was_open = self.model.open.as_ref().is_some_and(|o| o.id == id);
+                // closing the open tab moves to the one beside it, as a browser does:
+                // the next to its right, else its left.
+                let beside = was_open
+                    .then(|| {
+                        let tabs = self.workspace_tabs();
+                        let at = tabs.iter().position(|s| s.id == id)?;
+                        tabs.get(at + 1).or(at.checked_sub(1).and_then(|i| tabs.get(i))).map(|s| s.id)
+                    })
+                    .flatten();
                 self.model.remove_session(id);
                 self.reflow_sidebar();
+                if self.confirm_delete == Some(id) {
+                    self.confirm_delete = None;
+                }
                 if was_open {
                     self.scroller.update(cx, |s, cx| s.reset(0, cx));
-                    self.show_new = true;
+                    match beside {
+                        Some(next) => self.open(next, cx),
+                        None => self.show_new = true,
+                    }
                 }
             }
             UiEvent::Snapshot(snap) => {
