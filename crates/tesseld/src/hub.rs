@@ -116,6 +116,8 @@ struct Client {
     window: Option<(String, u64)>,
     /// set when it listens to what windows publish: the kinds it wants (empty: all).
     ui_kinds: Option<Vec<String>>,
+    /// a window that shows pages itself: agents' browser acts go to it.
+    hosts_pages: bool,
 }
 
 /// a window command on its way to a window and back.
@@ -124,10 +126,14 @@ struct UiCall {
     id: u64,
     window: ClientId,
     deadline: Millis,
+    /// a browser act: answered as `Response::Browser`.
+    browser: bool,
 }
 
 /// how long a window has to answer a command before the caller is told it didn't.
 const UI_CALL_TIMEOUT_MS: Millis = 10_000;
+/// a page may take its time loading before it answers.
+const BROWSER_CALL_TIMEOUT_MS: Millis = 45_000;
 
 struct Live {
     state: SessionState,
@@ -299,7 +305,7 @@ impl Hub {
     fn handle(&mut self, msg: HubMsg) -> bool {
         match msg {
             HubMsg::Connected { client, tx } => {
-                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: Vec::new(), lagged: false, dead: false, window: None, ui_kinds: None });
+                self.clients.insert(client, Client { tx, ready: false, summary: false, detail: Vec::new(), lagged: false, dead: false, window: None, ui_kinds: None, hosts_pages: false });
             }
             HubMsg::Disconnected { client } => {
                 let gone = self.clients.remove(&client);
@@ -897,6 +903,26 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 let cwd = live.state.meta.cwd.clone();
                 // a new page starts at what the workspace serves.
                 let first = format!("http://localhost:{}", self.ports.of(&cwd));
+                // with a window open that shows pages itself, the page is the window's:
+                // what's done to it is done there, where the person sees it.
+                let page_act = !matches!(
+                    act,
+                    tessel_proto::BrowserAct::Watch { .. } | tessel_proto::BrowserAct::Resize { .. } | tessel_proto::BrowserAct::Pick { .. } | tessel_proto::BrowserAct::Mouse { .. } | tessel_proto::BrowserAct::Wheel { .. }
+                );
+                let host = self
+                    .clients
+                    .iter()
+                    .filter(|(_, c)| c.hosts_pages)
+                    .filter_map(|(id, c)| c.window.as_ref().map(|(_, s)| (*id, *s)))
+                    .max_by_key(|(_, s)| *s)
+                    .map(|(id, _)| id);
+                if let Some(target) = host.filter(|_| page_act) {
+                    let call = self.next_ui;
+                    self.next_ui += 1;
+                    self.ui_calls.insert(call, UiCall { client, id, window: target, deadline: now_ms() + BROWSER_CALL_TIMEOUT_MS, browser: true });
+                    self.respond_event(target, Event::BrowserCall { call, session, act, agent, first });
+                    return None;
+                }
                 // watching is per window; the page sends frames while anyone watches.
                 let act = match act {
                     tessel_proto::BrowserAct::Watch { on } => {
@@ -920,6 +946,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     let _ = tx.send(HubMsg::Reply { client, id, result });
                 });
                 return None;
+            }
+            Request::BrowserHost { on } => {
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.hosts_pages = on;
+                }
+                Ok(Response::Ack)
             }
             Request::BrowserEngine => Ok(Response::BrowserEngine { engine: self.browser.engine() }),
             Request::Usage => Ok(Response::Usage { windows: self.usage.clone() }),
@@ -1068,7 +1100,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 };
                 let call = self.next_ui;
                 self.next_ui += 1;
-                self.ui_calls.insert(call, UiCall { client, id, window: target, deadline: now_ms() + UI_CALL_TIMEOUT_MS });
+                self.ui_calls.insert(call, UiCall { client, id, window: target, deadline: now_ms() + UI_CALL_TIMEOUT_MS, browser: false });
                 self.respond_event(target, Event::UiCall { call, cmd, args });
                 return None;
             }
@@ -1076,6 +1108,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 if let Some(c) = self.ui_calls.remove(&call).filter(|c| c.window == client) {
                     let result = match err {
                         Some(e) => Err(RpcError::new(ErrorCode::Invalid, e)),
+                        None if c.browser => {
+                            let mut v = ok.unwrap_or(serde_json::Value::Null);
+                            if let Some(o) = v.as_object_mut() {
+                                o.insert("kind".into(), "browser".into());
+                            }
+                            serde_json::from_value::<Response>(v).map_err(|e| RpcError::new(ErrorCode::Invalid, format!("the window's answer: {e}")))
+                        }
                         None => Ok(Response::UiResult { value: ok.unwrap_or(serde_json::Value::Null) }),
                     };
                     self.respond(c.client, c.id, result);

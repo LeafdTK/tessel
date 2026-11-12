@@ -12,7 +12,7 @@
 
 use gpui_kit::component::{Theme, ThemeMode};
 use crate::ui::{ThemeSpec, Token};
-use gpui_kit::{App, FontWeight, Hsla, Pixels, SharedString, Styled, Window, WindowAppearance, px, rgb};
+use gpui_kit::{App, FontWeight, Hsla, ParentElement as _, Pixels, SharedString, Styled, Window, WindowAppearance, px, rgb};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
@@ -501,7 +501,14 @@ pub const FLOAT_ITEM_H: f32 = 28.0;
 /// the inside of a floating menu: inset so its items sit concentric in its corner.
 pub fn float_list(_p: &Palette) -> gpui_kit::Div {
     // a menu never takes the weight or size of what opened it.
-    gpui_kit::component::v_flex().p(z(FLOAT_PAD)).gap(px(1.)).font_weight(FontWeight::NORMAL).text_size(z(13.))
+    gpui_kit::component::v_flex()
+        .relative()
+        .p(z(FLOAT_PAD))
+        .gap(px(1.))
+        .font_weight(FontWeight::NORMAL)
+        .text_size(z(13.))
+        // where it is, so a page in the window can step aside for it.
+        .child(gpui_kit::canvas(|b, _, _| crate::shell::floating_at(b), |_, _, _, _| {}).absolute().inset_0())
 }
 
 /// blue: waiting on someone (you, or a queue). orchard's status colour for it.

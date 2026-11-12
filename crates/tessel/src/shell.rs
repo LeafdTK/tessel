@@ -14,6 +14,7 @@ mod exec;
 mod mentions;
 mod backdrop;
 mod browser;
+pub(crate) use browser::floating_at;
 mod chats;
 mod desktops;
 mod space;
@@ -196,6 +197,11 @@ pub struct Shell {
     pub(crate) browser_url_next: Option<String>,
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
+    /// the window's own view, when pages are shown natively in it (see `webview`).
+    pub(crate) native_view: Option<usize>,
+    /// what's to be done to pages at the next frame, and pages being made.
+    pub(crate) page_calls: Vec<browser::PageCall>,
+    pub(crate) page_opening: HashSet<SessionId>,
     pub(crate) browser_moved: Option<Instant>,
     /// the tour's step showing, and where seeing it is remembered.
     pub(crate) tour: Option<usize>,
@@ -457,7 +463,7 @@ impl Shell {
                     if !url.is_empty()
                         && let Some(session) = this.model.open.as_ref().map(|o| o.id)
                     {
-                        this.cmd(Cmd::Browser { session, act: tessel_proto::BrowserAct::Navigate { url } });
+                        this.browser_act(session, tessel_proto::BrowserAct::Navigate { url }, cx);
                         window.focus(&this.browser_focus, cx);
                     }
                 }
@@ -639,6 +645,9 @@ impl Shell {
             browser_url_next: None,
             browser_focus: cx.focus_handle(),
             browser_show_next: false,
+            native_view: browser::native_host(window),
+            page_calls: Vec::new(),
+            page_opening: HashSet::new(),
             browser_moved: None,
             draft_append: None,
             shipping: false,
@@ -732,6 +741,24 @@ impl Shell {
             _tasks: vec![pump, clock, beat],
         };
         this.adopt_ui(ui);
+        // pages in the window itself: the daemon is told, and their state is
+        // looked at a few times a second.
+        if this.native_view.is_some() {
+            this.cmd(Cmd::BrowserHost);
+            let poll = cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_millis(120)).await;
+                    let alive = this.update_in(cx, |this, window, cx| {
+                        this.poll_page(cx);
+                        this.follow_page_focus(window, cx);
+                    });
+                    if alive.is_err() {
+                        break;
+                    }
+                }
+            });
+            this._tasks.push(poll);
+        }
         if launch.focus {
             // only the open session: every drawer starts shut.
             for d in &mut this.drawers {
@@ -848,6 +875,7 @@ impl Shell {
                     })
                     .flatten();
                 self.model.remove_session(id);
+                self.forget_page(id);
                 // panes that showed it go back to showing the focused chat.
                 self.views.retain(|_, v| v.session != id);
                 self.drafts.remove(&id);
@@ -958,6 +986,13 @@ impl Shell {
             UiEvent::Usage(windows) => self.usage = windows,
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
+            UiEvent::BrowserCall { call, session, act, agent, first } => {
+                if self.native_view.is_some() {
+                    self.page_calls.push(browser::PageCall { session, act, agent, call: Some(call), first: Some(first) });
+                } else {
+                    self.cmd(Cmd::UiAnswer { call, result: Err("this window doesn't show pages itself".into()) });
+                }
+            }
             ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
@@ -1864,7 +1899,8 @@ impl Shell {
                         .test_support()
                         .aria_label(if open { "Thought, showing all of it" } else { "Thought, folded" })
                         .gap(px(6.))
-                        .when(!*streaming, |d| d.cursor_pointer().on_click(move |_, _, cx| me.update(cx, |this, cx| this.toggle_thought(id.clone(), ix, cx))))
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| me.update(cx, |this, cx| this.toggle_thought(id.clone(), ix, cx)))
                         .child(
                             h_flex()
                                 .gap(px(4.))
@@ -2306,6 +2342,7 @@ impl Shell {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
+        browser::floats_reset();
         // which pane shows which chat, now that the layout may have changed.
         self.sync_views(cx);
         self.ensure_scripts_form(window, cx);
@@ -2470,6 +2507,8 @@ impl Render for Shell {
             }))
             // drop a file anywhere on the window to send it with the next message.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.attach_paths(paths.paths().to_vec(), window, cx)))
+            // a click outside a page takes the keyboard back from it.
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| this.page_focus(ev.position, window, cx)))
             .children(root)
             // a broken layout file is said over the top of everything, so no
             // layout can hide its own mistake.

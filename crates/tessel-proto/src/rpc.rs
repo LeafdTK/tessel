@@ -194,6 +194,12 @@ pub enum Request {
         #[serde(default)]
         agent: bool,
     },
+    /// this window shows pages itself, natively: what agents do in a
+    /// session's browser is relayed to it (`Event::BrowserCall`) while it's
+    /// open, and the daemon's own engine is only for when no window is.
+    BrowserHost {
+        on: bool,
+    },
     /// which browser engine the daemon would drive, if any.
     BrowserEngine,
     /// the account's usage limits, as the agent last said.
@@ -748,6 +754,18 @@ pub enum Event {
     /// this client fell too far behind and events were dropped. resubscribe.
     Lagged,
     // ---- windows ------------------------------------------------------------
+    /// to a window that hosts pages: do this to a session's page and
+    /// `UiAnswer` with `call`, the answer being a `Response::Browser`'s fields.
+    /// `first`: where a new page starts.
+    BrowserCall {
+        call: u64,
+        session: SessionId,
+        act: crate::BrowserAct,
+        #[serde(default)]
+        agent: bool,
+        #[serde(default)]
+        first: String,
+    },
     /// to a window: run this command and `UiAnswer` with `call`.
     UiCall {
         call: u64,

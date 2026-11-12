@@ -15,6 +15,7 @@ pub mod shell;
 mod shell_tests;
 pub mod theme;
 pub mod ui;
+pub mod webview;
 
 use gpui_kit::*;
 use shell::{Launch, Shell};

@@ -24,6 +24,8 @@ pub enum Cmd {
     Follow(Vec<SessionId>),
     /// do something to a session's page, from the pane.
     Browser { session: SessionId, act: tessel_proto::BrowserAct },
+    /// this window shows pages itself (see `hosts_pages`).
+    BrowserHost,
     Create { cwd: String, worktree: bool, prompt: String },
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
     Fork { session: SessionId, workspace: bool },
@@ -109,6 +111,8 @@ pub enum UiEvent {
     BrowserPicked { session: SessionId, picked: tessel_proto::Picked },
     BrowserActivity { session: SessionId, what: String, at: Option<(f64, f64)> },
     BrowserEngine(tessel_proto::BrowserEngine),
+    /// do this to a session's page and answer `call` (the window shows pages itself).
+    BrowserCall { call: u64, session: SessionId, act: tessel_proto::BrowserAct, agent: bool, first: String },
     /// the account's usage limits.
     Usage(Vec<tessel_proto::UsageWindow>),
     Answer { tag: &'static str, result: Result<Response, String> },
@@ -286,6 +290,13 @@ async fn session(
         Ok(_) | Err(ClientError::Rpc(_)) => {}
         Err(_) => return Ended::Lost,
     }
+    // a window that shows pages itself says so again on every connection.
+    if HOSTS_PAGES.load(std::sync::atomic::Ordering::Acquire) {
+        match client.request(Request::BrowserHost { on: true }).await {
+            Ok(_) | Err(ClientError::Rpc(_)) => {}
+            Err(_) => return Ended::Lost,
+        }
+    }
     // the daemon's settings, for the settings page. an older daemon has none.
     ask(client, ui, Request::Settings, |r| match r {
         Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
@@ -334,6 +345,7 @@ async fn session(
                     Event::BrowserPicked { session, picked } => UiEvent::BrowserPicked { session, picked },
                     Event::BrowserActivity { session, what, x, y } => UiEvent::BrowserActivity { session, what, at: x.zip(y) },
                     Event::BrowserEngine { engine } => UiEvent::BrowserEngine(engine),
+                    Event::BrowserCall { call, session, act, agent, first } => UiEvent::BrowserCall { call, session, act, agent, first },
                     Event::Usage { windows } => UiEvent::Usage(windows),
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
@@ -355,6 +367,14 @@ async fn session(
                         ask(client, ui, Request::Browser { session, act, agent: false }, move |r| match r {
                             Response::Browser { state, .. } => Some(UiEvent::BrowserState { session, state }),
                             _ => None,
+                        });
+                        Ok(())
+                    }
+                    Cmd::BrowserHost => {
+                        HOSTS_PAGES.store(true, std::sync::atomic::Ordering::Release);
+                        let client = client.clone();
+                        tokio::spawn(async move {
+                            let _ = client.request(Request::BrowserHost { on: true }).await;
                         });
                         Ok(())
                     }
@@ -542,6 +562,9 @@ async fn session(
         }
     }
 }
+
+/// set once the window shows pages natively: the daemon hears it on each connection.
+static HOSTS_PAGES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// a page's frame as pixels for the window: base64 JPEG to bgra.
 fn decode_frame(jpeg: &str) -> Option<(Vec<u8>, u32, u32)> {

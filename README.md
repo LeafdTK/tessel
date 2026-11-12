@@ -37,11 +37,12 @@ with main. Rather not use pull requests? Squash the work straight into main (and
 Nothing makes a merge commit, and a conflict comes back untouched with a button that
 hands it to the agent.
 
-**A browser you share with the agent.** The daemon runs a Chromium-based browser and
-shows the chat's page live in a pane. The agent opens your app, clicks through it and
-takes screenshots with its tools while you watch; you can use the page too. Press Pick
-and click part of the page to put it in your next message: a picture of it, its
-selector and its HTML. No Chromium installed? Tessel can download Chrome for Testing.
+**A browser you share with the agent.** Each chat has a page in a Browser pane: a real
+WebKit view, as sharp and quick as Safari. The agent opens your app, clicks through it,
+types and takes screenshots with its tools, in that same page, while you watch; you can
+use the page too. Press Pick and click part of the page to put it in your next message:
+a picture of it, its selector and its HTML. With no window open, the daemon drives a
+Chromium-based browser instead, and can download Chrome for Testing if there isn't one.
 
 **Desktops.** Several layouts, each with its own panes and chats, and optionally only
 some projects in the sidebar. Switch with `Cmd 1` to `Cmd 9`, `Opt Cmd Left/Right`, or a

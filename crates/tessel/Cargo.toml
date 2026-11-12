@@ -40,4 +40,5 @@ rich = ["dep:tessel-rich"]
 # the notch: how big it is, and a window over the menu bar around it. both are
 # already in the build through gpui, with these same features.
 objc2 = "0.6"
+block2 = "0.6"
 raw-window-handle = "0.6"

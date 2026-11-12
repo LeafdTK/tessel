@@ -55,14 +55,14 @@ impl Shell {
                 let session = self.model.open.as_ref().map(|o| o.id).ok_or("open a chat first: the browser is the chat's")?;
                 self.show_browser(window, cx);
                 if let Some(url) = arg(args, "url") {
-                    self.cmd(crate::bridge::Cmd::Browser { session, act: tessel_proto::BrowserAct::Navigate { url: url.to_owned() } });
+                    self.browser_act(session, tessel_proto::BrowserAct::Navigate { url: url.to_owned() }, cx);
                 }
                 done
             }
             "browser.pick" => {
                 let session = self.model.open.as_ref().map(|o| o.id).ok_or("open a chat first: the browser is the chat's")?;
                 self.show_browser(window, cx);
-                self.cmd(crate::bridge::Cmd::Browser { session, act: tessel_proto::BrowserAct::Pick { on: true } });
+                self.browser_act(session, tessel_proto::BrowserAct::Pick { on: true }, cx);
                 done
             }
             "workspace.run" | "workspace.stop" => {

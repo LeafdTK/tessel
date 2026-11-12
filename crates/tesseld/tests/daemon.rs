@@ -842,6 +842,42 @@ async fn a_window_command_goes_through_the_daemon_and_its_answer_comes_back() {
 }
 
 #[tokio::test]
+async fn an_agents_browser_acts_go_to_the_window_that_shows_the_page() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (agent, _) = d.client().await;
+    let s = create(&agent, "/tmp", None).await.id;
+    let (win, mut win_ev) = d.client().await;
+    win.request(Request::UiRegister { name: "main".into() }).await.unwrap();
+    win.request(Request::BrowserHost { on: true }).await.unwrap();
+
+    let answering = tokio::spawn(async move {
+        let call = loop {
+            let e = tokio::time::timeout(Duration::from_secs(5), win_ev.recv()).await.expect("no call in time").expect("closed");
+            if let Event::BrowserCall { call, session, act, agent, first } = e {
+                assert_eq!((session, act, agent), (s, tessel_proto::BrowserAct::Read, true));
+                assert!(first.starts_with("http://localhost:"), "where a new page starts: {first}");
+                break call;
+            }
+        };
+        let state = serde_json::json!({"url": "http://localhost:41000/", "title": "Home"});
+        win.request(Request::UiAnswer { call, ok: Some(serde_json::json!({"state": state, "text": "Home"})), err: None }).await.unwrap();
+        win
+    });
+    let reply = agent.request(Request::Browser { session: s, act: tessel_proto::BrowserAct::Read, agent: true }).await.unwrap();
+    let Response::Browser { state, text, image } = reply else { panic!("{reply:?}") };
+    assert_eq!((state.title.as_str(), text.as_deref(), image), ("Home", Some("Home"), None));
+    let win = answering.await.unwrap();
+
+    // once the window stops showing pages, the daemon's own engine is used again.
+    win.request(Request::BrowserHost { on: false }).await.unwrap();
+    let err = tokio::time::timeout(Duration::from_secs(5), agent.request(Request::Browser { session: s, act: tessel_proto::BrowserAct::Read, agent: true })).await.expect("not relayed, not hung");
+    if let Err(e) = err {
+        assert!(!e.to_string().contains("window"), "{e}");
+    }
+    d.stop().await;
+}
+
+#[tokio::test]
 async fn any_byte_stream_is_a_connection_so_a_remote_transport_only_has_to_carry_bytes() {
     let mut d = Daemon::start(&["plain"]).await;
     // an in-memory pipe stands in for a quic stream or a websocket.

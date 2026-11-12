@@ -530,7 +530,7 @@ async fn follow_events(events: &mut Events, json: bool) {
                 }
             }
             Event::BrowserState { .. } | Event::BrowserFrame { .. } | Event::BrowserEngine { .. } => {}
-            Event::UiCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
+            Event::UiCall { .. } | Event::BrowserCall { .. } | Event::UiWatched { .. } | Event::Unknown => {}
         }
     }
     println!("connection closed");

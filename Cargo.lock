@@ -7477,6 +7477,7 @@ name = "tessel"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "block2 0.6.2",
  "chrono",
  "gpui-kit",
  "image",
@@ -7563,6 +7564,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "globset",
  "libc",
  "rusqlite",
  "serde",
@@ -7573,6 +7575,7 @@ dependencies = [
  "tessel-proto",
  "tessel-term",
  "tokio",
+ "toml 0.8.23",
  "uuid",
 ]
 
