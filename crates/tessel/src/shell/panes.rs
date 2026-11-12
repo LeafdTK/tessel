@@ -427,9 +427,11 @@ impl Shell {
                 continue;
             }
             let pane = leaves.iter().find(|p| &p.id == id).copied();
-            // the workspace starts near the window's left edge when nothing is beside it.
-            let at_left = (x - f32::from(origin.x)).abs() < 1.0 && f32::from(origin.x) < theme::WINDOW_BUTTONS_W;
-            let at_top = (y - f32::from(origin.y)).abs() < 1.0;
+            // how much of the window's buttons sit over this pane's header, measured
+            // from where the pane is this frame: the header makes exactly that much
+            // room, whichever of the sidebar and the pane is ahead as they move.
+            let at_top = (y - f32::from(origin.y)).abs() < 1.0 && y < 40.0;
+            let under_buttons = if at_top { (theme::WINDOW_BUTTONS_W - x).clamp(0.0, theme::WINDOW_BUTTONS_W) } else { 0.0 };
             layer = layer.child(
                 div()
                     .absolute()
@@ -438,7 +440,7 @@ impl Shell {
                     .w(px(w))
                     .h(px(h))
                     .opacity(alpha)
-                    .child(self.pane_el(pane, fx.module, id, at_left && at_top, now, cx)),
+                    .child(self.pane_el(pane, fx.module, id, under_buttons, now, cx)),
             );
         }
         // the gaps can be grabbed to give one neighbour more room.
@@ -475,13 +477,14 @@ impl Shell {
         self.aim_panes(&tree, rect, settle);
     }
 
-    fn pane_el(&self, pane: Option<&Pane>, module: Option<Module>, id: &str, under_window_buttons: bool, now: Millis, cx: &mut Context<Self>) -> AnyElement {
+    fn pane_el(&self, pane: Option<&Pane>, module: Option<Module>, id: &str, under_buttons: f32, now: Millis, cx: &mut Context<Self>) -> AnyElement {
+        let under_window_buttons = under_buttons > 0.5;
         let p = self.palette.get();
         let group = SharedString::from(format!("pane-{id}"));
         let trail = pane.map(|p| p.trail.clone()).unwrap_or_default();
         let live = pane.is_some();
         // the window's buttons sit over the top left pane when nothing else is there.
-        let inset = if under_window_buttons { theme::WINDOW_BUTTONS_W * self.drawer_shut("sidebar") } else { 0.0 };
+        let inset = under_buttons;
 
         let mut controls = h_flex().gap_0p5().flex_shrink_0();
         if live {
