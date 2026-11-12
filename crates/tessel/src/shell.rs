@@ -209,6 +209,8 @@ pub struct Shell {
     pub(crate) attachments: Vec<Attachment>,
     /// the dithered backdrop behind the panes, once drawn.
     pub(crate) backdrop: backdrop::Shared,
+    /// the felt under the window, once drawn.
+    pub(crate) felt: backdrop::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
     pub(crate) thumbs: std::cell::RefCell<HashMap<(usize, usize), Arc<Image>>>,
     /// how many images have been pasted, to name the next one.
@@ -518,6 +520,7 @@ impl Shell {
             ws_parked: HashMap::new(),
             attachments: Vec::new(),
             backdrop: Default::default(),
+            felt: Default::default(),
             thumbs: Default::default(),
             pasted: 0,
             models: Vec::new(),
@@ -1903,12 +1906,15 @@ impl Render for Shell {
         let font = ui.theme.font.clone();
 
         // glass: nothing opaque under the frame, so the blurred desktop shows through it.
+        // felt: the cloth is drawn under everything, and the frame is clear over it.
         let glass = self.ui.theme.glass.unwrap_or(false);
+        let felt = self.felt_on();
         div()
             .id("shell")
             .relative()
             .size_full()
             .when(!glass, |d| d.bg(p.window))
+            .when(felt, |d| d.child(self.felt_el(cx)))
             .text_color(p.label)
             .set(Type::Body)
             .when_some(font, |d, f| d.font_family(f))

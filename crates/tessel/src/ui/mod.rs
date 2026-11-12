@@ -385,6 +385,8 @@ pub struct ThemeSpec {
     pub compact: Option<bool>,
     /// the desktop shows through, blurred, behind the frame.
     pub glass: Option<bool>,
+    /// the frame is felt: a fine grain with a soft sheen, the panes set into it.
+    pub felt: Option<bool>,
     /// the dithered backdrop behind the panes: off unless it's "dither".
     pub backdrop: Option<bool>,
 }
@@ -427,7 +429,9 @@ impl ThemeSpec {
             t.compact = Some(one_of(d, "theme.density", &[("islands", false), ("compact", true)])?);
         }
         if let Some(m) = obj.get("material") {
-            t.glass = Some(one_of(m, "theme.material", &[("solid", false), ("glass", true)])?);
+            let (glass, felt) = one_of(m, "theme.material", &[("solid", (false, false)), ("glass", (true, false)), ("felt", (false, true))])?;
+            t.glass = Some(glass);
+            t.felt = Some(felt);
         }
         if let Some(b) = obj.get("backdrop") {
             t.backdrop = Some(one_of(b, "theme.backdrop", &[("dither", true), ("none", false)])?);
@@ -455,6 +459,7 @@ impl ThemeSpec {
         self.mono = over.mono.or(self.mono.take());
         self.compact = over.compact.or(self.compact);
         self.glass = over.glass.or(self.glass);
+        self.felt = over.felt.or(self.felt);
         self.backdrop = over.backdrop.or(self.backdrop);
         self.light.extend(over.light);
         self.dark_tokens.extend(over.dark_tokens);

@@ -188,7 +188,13 @@ impl Shell {
 
         let _ = base;
         let density = if theme.compact.unwrap_or(false) { "compact" } else { "islands" };
-        let material = if theme.glass.unwrap_or(false) { "glass" } else { "solid" };
+        let material = if theme.glass.unwrap_or(false) {
+            "glass"
+        } else if theme.felt.unwrap_or(false) {
+            "felt"
+        } else {
+            "solid"
+        };
         let backdrop = if theme.backdrop.unwrap_or(false) { "dither" } else { "none" };
         let themes_rows = v_flex()
             .child(
@@ -212,8 +218,8 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Material",
-                "Glass lets the desktop through, blurred, behind the frame.",
-                self.segmented("material", &[("solid", "Solid"), ("glass", "Glass")], material, cx, |this, v, w, cx| {
+                "Glass lets the desktop through, blurred. Felt gives the frame a fine grain and a soft sheen.",
+                self.segmented("material", &[("solid", "Solid"), ("glass", "Glass"), ("felt", "Felt")], material, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
                 }),
             ))

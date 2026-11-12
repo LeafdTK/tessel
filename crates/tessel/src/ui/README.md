@@ -408,7 +408,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.use` | Use a theme |  | name: one of theme.list, or a file in ~/.tessel/themes |
 | `theme.list` | Every theme |  |  |
 | `theme.density` | Density: Islands |  | density: islands|compact |
-| `theme.material` | Material: Solid |  | material: solid|glass |
+| `theme.material` | Material: Solid |  | material: solid|glass|felt |
 | `theme.backdrop` | Backdrop: Dither |  | backdrop: dither|none |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |
 | `layout.reset` | Reset the layout |  |  |

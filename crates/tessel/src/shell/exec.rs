@@ -173,9 +173,9 @@ impl Shell {
                 done
             }
             "theme.material" => {
-                let m = arg(args, "material").ok_or("material: solid or glass")?;
-                if !matches!(m, "solid" | "glass") {
-                    return Err(format!("\"{m}\" isn't a material. use solid or glass"));
+                let m = arg(args, "material").ok_or("material: solid, glass or felt")?;
+                if !matches!(m, "solid" | "glass" | "felt") {
+                    return Err(format!("\"{m}\" isn't a material. use solid, glass or felt"));
                 }
                 let v = (m != "solid").then(|| json!(m));
                 self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);

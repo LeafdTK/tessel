@@ -1,0 +1,35 @@
+{
+  "name": "Oxblood",
+  "about": "Deep red felt, ivory ink, a brass accent",
+  "base": "tessel",
+  "light": {
+    "app": "#e6d3d1",
+    "sheet": "#fbf6f5",
+    "raised": "#ffffff",
+    "sunken": "#f1e6e4",
+    "border": "#dfcac8",
+    "text": "#2b1214",
+    "muted": "#74504f",
+    "accent": "#8e1b2b",
+    "hover": "#f3e8e7",
+    "active": "#f2d9dc",
+    "faint": "#9b8584",
+    "ghost": "#c9b6b5",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#3a1218",
+    "sheet": "#1c0d10",
+    "raised": "#291418",
+    "sunken": "#160a0c",
+    "border": "#47232a",
+    "text": "#f4e9e3",
+    "muted": "#c4a7a2",
+    "accent": "#d9b27c",
+    "hover": "#2e181c",
+    "active": "#4a2329",
+    "faint": "#8f7773",
+    "ghost": "#5e4746",
+    "on-accent": "#2a1407"
+  }
+}

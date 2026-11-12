@@ -361,6 +361,11 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     if glass {
         palette.sidebar = palette.sidebar.opacity(0.62);
     }
+    // felt: the frame's colour is drawn as cloth underneath (see `shell::backdrop`),
+    // so the frame itself is left clear over it.
+    if spec.felt.unwrap_or(false) && !glass {
+        palette.sidebar = palette.sidebar.opacity(0.0);
+    }
     set_mono(spec.mono.as_deref().unwrap_or(MONO));
     set_scale(spec.scale.unwrap_or(1.0));
     // the library's own controls are sized in rems.
@@ -559,7 +564,8 @@ pub fn count_pill(p: &Palette, n: impl Into<SharedString>, hot: bool) -> gpui_ki
         .items_center()
         .justify_center()
         .rounded_full()
-        .bg(if hot { p.blocked.opacity(0.16) } else { p.fill })
+        // a wash of the ink, not a fill colour: it sits on any surface, felt included.
+        .bg(if hot { p.blocked.opacity(0.16) } else { p.label.opacity(0.08) })
         .text_size(z(11.))
         .font_weight(FontWeight::MEDIUM)
         .text_color(if hot { p.blocked } else { p.secondary })

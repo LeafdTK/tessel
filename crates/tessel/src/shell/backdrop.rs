@@ -1,5 +1,6 @@
-//! the backdrop: a dithered band of colour behind the panes, its hues from
-//! the project you're in, so each one has a sky of its own.
+//! images drawn under the window: the dithered backdrop behind the panes (a
+//! band in the colours of the project you're in), and felt, the cloth the
+//! frame is made of when the material is felt.
 //!
 //! it is drawn once, off the ui thread, at the room's real pixel size, and
 //! handed to the gpu as one image in its atlas; after that a frame costs one
@@ -23,6 +24,8 @@ pub(crate) struct Key {
     pub hue: f32,
     pub dark: bool,
     pub bg: [u8; 3],
+    /// felt rather than the dithered band.
+    pub felt: bool,
 }
 
 #[derive(Default)]
@@ -79,8 +82,42 @@ fn ramp(hue: f32, s: f32) -> [f32; 3] {
     mix(stops[i], stops[i + 1], t - i as f32)
 }
 
-/// the backdrop's pixels, bgra, `key.w` × `key.h`.
+/// felt: the frame's colour with a fine grain, a slight horizontal nap, and a
+/// broad sheen from the upper left, the way light lies across a pile. all of
+/// it a few percent either way: you feel it more than see it, and text never
+/// sits on it.
+fn draw_felt(key: &Key) -> Vec<u8> {
+    let (w, h) = (key.w as usize, key.h as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let base = key.bg.map(|c| c as f32 / 255.0);
+    let (grain, nap, sheen) = if key.dark { (0.055, 0.035, 0.07) } else { (0.022, 0.014, 0.035) };
+    let span = (w + h) as f32;
+    for y in 0..h {
+        let row = &mut out[y * w * 4..(y + 1) * w * 4];
+        for x in 0..w {
+            let fine = noise(x as u32, y as u32, 3) - 0.5;
+            // fibres lie along the cloth: a value shared by a short run of pixels.
+            let fibre = noise((x / 5) as u32, y as u32, 11) - 0.5;
+            // the sheen: brightest along a broad diagonal near the upper left.
+            let d = (x + y) as f32 / span - 0.22;
+            let lift = (-(d * d) / 0.06).exp() * sheen - sheen * 0.35;
+            let k = 1.0 + fine * grain + fibre * nap + lift;
+            let c = base.map(|b| (b * k).clamp(0.0, 1.0));
+            let at = x * 4;
+            row[at] = (c[2] * 255.0 + 0.5) as u8;
+            row[at + 1] = (c[1] * 255.0 + 0.5) as u8;
+            row[at + 2] = (c[0] * 255.0 + 0.5) as u8;
+            row[at + 3] = 255;
+        }
+    }
+    out
+}
+
+/// an image's pixels, bgra, `key.w` × `key.h`.
 pub(crate) fn draw(key: &Key) -> Vec<u8> {
+    if key.felt {
+        return draw_felt(key);
+    }
     let (w, h, cell) = (key.w as usize, key.h as usize, key.cell.max(2) as usize);
     let mut out = vec![0u8; w * h * 4];
     let bg = key.bg.map(|c| c as f32 / 255.0);
@@ -165,57 +202,79 @@ impl Shell {
     /// the backdrop as an element filling its parent.
     pub(crate) fn backdrop_el(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
-        let state = self.backdrop.clone();
-        let me = cx.entity().downgrade();
-        let hue = self.backdrop_hue();
-        let bg = p.window.to_rgb();
-        let bg = [(bg.r * 255.0) as u8, (bg.g * 255.0) as u8, (bg.b * 255.0) as u8];
-        let dark = p.dark;
-        canvas(
-            |_, _, _| {},
-            move |bounds, _, window, cx| {
-                let scale = window.scale_factor();
-                let w = (f32::from(bounds.size.width) * scale).round() as u32;
-                let h = (f32::from(bounds.size.height) * scale).round() as u32;
-                if w == 0 || h == 0 {
-                    return;
-                }
-                // a dot of about two points, whatever the screen.
-                let key = Key { w, h, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg };
-                let mut st = state.borrow_mut();
-                // a freshly drawn one goes to the gpu, and the old one leaves its atlas.
-                if let Some((k, bytes)) = st.ready.take()
-                    && let Some(buf) = image::RgbaImage::from_raw(k.w, k.h, bytes)
-                {
-                    let fresh = Arc::new(RenderImage::new(vec![image::Frame::new(buf)]));
-                    if let Some((_, old)) = st.texture.replace((k, fresh)) {
-                        let _ = window.drop_image(old);
-                    }
-                }
-                if st.texture.as_ref().map(|(k, _)| *k) != Some(key) && st.drawing.is_none() {
-                    st.drawing = Some(key);
-                    let (state, me) = (state.clone(), me.clone());
-                    let work = cx.background_executor().spawn(async move { draw(&key) });
-                    cx.spawn(async move |cx| {
-                        let bytes = work.await;
-                        {
-                            let mut st = state.borrow_mut();
-                            st.drawing = None;
-                            st.ready = Some((key, bytes));
-                        }
-                        let _ = me.update(cx, |_, cx| cx.notify());
-                    })
-                    .detach();
-                }
-                if let Some((_, t)) = st.texture.clone() {
-                    let _ = window.paint_image(bounds, bounds, Corners::all(px(theme::R_PANEL)), t, 0, false);
-                }
-            },
-        )
-        .absolute()
-        .inset_0()
-        .into_any_element()
+        let (hue, dark) = (self.backdrop_hue(), p.dark);
+        let bg = rgb8(p.window);
+        // a dot of about two points, whatever the screen, drawn 1:1 so its edges stay sharp.
+        image_el(self.backdrop.clone(), cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
+            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false })
+        })
     }
+
+    /// whether the frame is felt.
+    pub(crate) fn felt_on(&self) -> bool {
+        self.ui.theme.felt.unwrap_or(false) && !self.ui.theme.glass.unwrap_or(false)
+    }
+
+    /// the felt under the whole window.
+    pub(crate) fn felt_el(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        // the frame was cleared to let the felt through; its colour is still in it.
+        let bg = rgb8(p.sidebar.opacity(1.0));
+        let dark = p.dark;
+        // a point per pixel: the gpu's smoothing softens the grain, as cloth is soft.
+        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true }))
+    }
+}
+
+fn rgb8(c: Hsla) -> [u8; 3] {
+    let c = c.to_rgb();
+    [(c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8]
+}
+
+/// an image drawn off the ui thread for the size it's shown at, handed to the
+/// gpu once, and painted every frame as one sprite. `key_for` names the image
+/// for a size in points and a scale; a different key draws a new one.
+fn image_el(state: Shared, me: WeakEntity<Shell>, radius: f32, key_for: impl Fn(f32, f32, f32) -> Option<Key> + 'static) -> AnyElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            let Some(key) = key_for(f32::from(bounds.size.width), f32::from(bounds.size.height), window.scale_factor()) else { return };
+            if key.w == 0 || key.h == 0 {
+                return;
+            }
+            let mut st = state.borrow_mut();
+            // a freshly drawn one goes to the gpu, and the old one leaves its atlas.
+            if let Some((k, bytes)) = st.ready.take()
+                && let Some(buf) = image::RgbaImage::from_raw(k.w, k.h, bytes)
+            {
+                let fresh = Arc::new(RenderImage::new(vec![image::Frame::new(buf)]));
+                if let Some((_, old)) = st.texture.replace((k, fresh)) {
+                    let _ = window.drop_image(old);
+                }
+            }
+            if st.texture.as_ref().map(|(k, _)| *k) != Some(key) && st.drawing.is_none() {
+                st.drawing = Some(key);
+                let (state, me) = (state.clone(), me.clone());
+                let work = cx.background_executor().spawn(async move { draw(&key) });
+                cx.spawn(async move |cx| {
+                    let bytes = work.await;
+                    {
+                        let mut st = state.borrow_mut();
+                        st.drawing = None;
+                        st.ready = Some((key, bytes));
+                    }
+                    let _ = me.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+            if let Some((_, t)) = st.texture.clone() {
+                let _ = window.paint_image(bounds, bounds, Corners::all(px(radius)), t, 0, false);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+    .into_any_element()
 }
 
 #[cfg(test)]
@@ -231,7 +290,7 @@ mod tests {
 
     #[test]
     fn a_backdrop_is_dots_with_gaps_and_cheap_to_draw() {
-        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30] };
+        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false };
         let started = std::time::Instant::now();
         let px = draw(&key);
         let took = started.elapsed();
@@ -243,6 +302,21 @@ mod tests {
         // somewhere the band is lit: not every dot is the room's colour.
         assert!(px.chunks_exact(4).any(|p| p[0] > 120 || p[1] > 120 || p[2] > 120), "the band shows");
         // a retina window, off the ui thread: well under a frame's worth of a second.
+        assert!(took.as_millis() < 250, "drawing it took {took:?}");
+    }
+
+    #[test]
+    fn felt_stays_close_to_its_colour_and_is_cheap_to_draw() {
+        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true };
+        let started = std::time::Instant::now();
+        let px = draw(&key);
+        let took = started.elapsed();
+        assert_eq!(px.len(), 1440 * 900 * 4);
+        // grain, not pattern: every pixel within a few steps of the cloth's colour.
+        let red = px.chunks_exact(4).map(|p| i32::from(p[2]));
+        let (lo, hi) = red.fold((255, 0), |(lo, hi), r| (lo.min(r), hi.max(r)));
+        assert!(lo >= 58 - 12 && hi <= 58 + 12, "the red channel stays near 58: {lo}..{hi}");
+        assert!(hi > lo, "and it isn't flat");
         assert!(took.as_millis() < 250, "drawing it took {took:?}");
     }
 }

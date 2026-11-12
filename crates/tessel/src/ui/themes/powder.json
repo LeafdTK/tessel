@@ -1,0 +1,35 @@
+{
+  "name": "Powder",
+  "about": "Light blue felt, navy ink",
+  "base": "tessel",
+  "light": {
+    "app": "#c6d9ea",
+    "sheet": "#f7fafd",
+    "raised": "#ffffff",
+    "sunken": "#eaf1f8",
+    "border": "#d2dfeb",
+    "text": "#14202e",
+    "muted": "#4f6378",
+    "accent": "#2d5f9a",
+    "hover": "#edf3f9",
+    "active": "#d9e7f5",
+    "faint": "#8796a6",
+    "ghost": "#bccad8",
+    "on-accent": "#ffffff"
+  },
+  "dark": {
+    "app": "#1c2c3d",
+    "sheet": "#0f1720",
+    "raised": "#172331",
+    "sunken": "#0b1219",
+    "border": "#26384b",
+    "text": "#e8f0f8",
+    "muted": "#9fb3c7",
+    "accent": "#8fc1ec",
+    "hover": "#1c2a39",
+    "active": "#24405c",
+    "faint": "#6f8193",
+    "ghost": "#3c4d5e",
+    "on-accent": "#0b1622"
+  }
+}

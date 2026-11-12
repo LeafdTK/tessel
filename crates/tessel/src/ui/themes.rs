@@ -8,7 +8,7 @@ use super::ThemeSpec;
 use serde_json::{Map, Value};
 use std::path::Path;
 
-pub const SHIPPED: [(&str, &str); 11] = [
+pub const SHIPPED: [(&str, &str); 13] = [
     ("tessel", include_str!("themes/tessel.json")),
     ("orchard", include_str!("themes/orchard.json")),
     ("tern", include_str!("themes/tern.json")),
@@ -20,6 +20,8 @@ pub const SHIPPED: [(&str, &str); 11] = [
     ("plum", include_str!("themes/plum.json")),
     ("sand", include_str!("themes/sand.json")),
     ("graphite", include_str!("themes/graphite.json")),
+    ("oxblood", include_str!("themes/oxblood.json")),
+    ("powder", include_str!("themes/powder.json")),
 ];
 
 /// the keys of a theme's colours: everything else in ui.json's theme is the person's.

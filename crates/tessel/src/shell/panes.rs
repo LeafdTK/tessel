@@ -541,15 +541,44 @@ impl Shell {
         };
         let fid = id.to_owned();
         let compact = self.ui.theme.compact.unwrap_or(false);
+        let felt = self.felt_on();
         // a conversation with nothing in it yet is a window onto the backdrop:
         // the prompt card floats on it.
         let open_sky = self.backdrop_on() && module == Some(Module::Conversation) && (self.show_new || self.model.open_summary().is_none());
         v_flex()
             .group(group)
             .size_full()
-            .when(!compact && !open_sky, |d| d.rounded(px(theme::R_PANEL)).border_1().shadow_sm())
+            .when(!compact && !open_sky, |d| d.rounded(px(theme::R_PANEL)).border_1())
+            // on felt a pane is set into the cloth: a dark rim and a hairline of light
+            // under its lower edge, where the cloth turns up to meet it.
+            .when(!compact && !open_sky && !felt, |d| d.shadow_sm())
+            .when(!compact && !open_sky && felt, |d| {
+                d.shadow(vec![
+                    gpui_kit::BoxShadow {
+                        color: gpui_kit::white().opacity(if p.dark { 0.07 } else { 0.55 }),
+                        offset: gpui_kit::point(px(0.), px(1.)),
+                        blur_radius: px(0.),
+                        spread_radius: px(0.),
+                        inset: false,
+                    },
+                    // and inside, a soft shade under the top edge: the cloth's lip over it.
+                    gpui_kit::BoxShadow {
+                        color: gpui_kit::black().opacity(if p.dark { 0.35 } else { 0.08 }),
+                        offset: gpui_kit::point(px(0.), px(1.)),
+                        blur_radius: px(3.),
+                        spread_radius: px(0.),
+                        inset: true,
+                    },
+                ])
+            })
             // the pane your keys act on wears a faint ring of the accent.
-            .border_color(if focused { p.accent.opacity(0.35) } else { p.separator })
+            .border_color(if focused {
+                p.accent.opacity(0.35)
+            } else if felt {
+                gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.12 })
+            } else {
+                p.separator
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, _| {
                 if this.pane_focus.as_deref() != Some(fid.as_str()) {
                     this.pane_focus = Some(fid.clone());
