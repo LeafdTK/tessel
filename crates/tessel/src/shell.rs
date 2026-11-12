@@ -757,8 +757,8 @@ impl Shell {
                 if let Some(path) = self.folder_asked.borrow_mut().take() {
                     let git = match result {
                         Ok(tessel_proto::Response::FolderInfo { git_root }) => Some(git_root.is_some()),
-                        // an older daemon, or it couldn't look: don't stand in the way.
-                        _ => Some(true),
+                        // an older daemon, or it couldn't look: in place, which always works.
+                        _ => Some(false),
                     };
                     self.folder_git.borrow_mut().insert(path, git);
                 }
