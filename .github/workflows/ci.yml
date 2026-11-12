@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # the terminal core is built with zig.
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      # rust-toolchain.toml pins the toolchain; rustup installs it on first use.
+      - run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test -p tessel -p tesseld -p tesselctl -p tessel-proto -p tessel-client -p tessel-agent -p tessel-term

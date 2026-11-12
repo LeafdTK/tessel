@@ -24,7 +24,8 @@ for b in tessel tesseld tesselctl; do
 done
 cp "$root/assets/icon/tessel.icns" "$app/Contents/Resources/tessel.icns"
 
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/crates/tessel/Cargo.toml" | head -1)
+# the workspace's version: the first `version = ` in the root Cargo.toml is [workspace.package]'s.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

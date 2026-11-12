@@ -1,0 +1,59 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # keeps a release pull request open from the commits since the last release
+  # (feat: bumps the minor version, fix: the patch); merging it tags a release.
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - run: rustup show active-toolchain
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p tessel -p tesseld -p tesselctl
+
+      - name: Bundle
+        run: |
+          scripts/bundle-macos.sh release
+          # signed ad hoc, so it runs on Apple silicon; not notarized.
+          codesign --force --deep --sign - target/release/Tessel.app
+          ditto -c -k --keepParent target/release/Tessel.app "Tessel-${TAG}-macos-arm64.zip"
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}
+
+      - name: Upload
+        run: gh release upload "$TAG" "Tessel-${TAG}-macos-arm64.zip" --clobber
+        env:
+          TAG: ${{ needs.release-please.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
