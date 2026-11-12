@@ -109,6 +109,8 @@ pub enum UiEvent {
     BrowserPicked { session: SessionId, picked: tessel_proto::Picked },
     BrowserActivity { session: SessionId, what: String, at: Option<(f64, f64)> },
     BrowserEngine(tessel_proto::BrowserEngine),
+    /// the account's usage limits.
+    Usage(Vec<tessel_proto::UsageWindow>),
     Answer { tag: &'static str, result: Result<Response, String> },
     /// something the user did failed. shown, not fatal.
     Error(String),
@@ -332,6 +334,7 @@ async fn session(
                     Event::BrowserPicked { session, picked } => UiEvent::BrowserPicked { session, picked },
                     Event::BrowserActivity { session, what, x, y } => UiEvent::BrowserActivity { session, what, at: x.zip(y) },
                     Event::BrowserEngine { engine } => UiEvent::BrowserEngine(engine),
+                    Event::Usage { windows } => UiEvent::Usage(windows),
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
                     Event::Settings { settings } => UiEvent::DaemonSettings(settings),

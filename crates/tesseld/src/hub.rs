@@ -161,6 +161,8 @@ pub struct Hub {
     git_undo: GitUndoStacks,
     /// each workspace's ten ports.
     ports: crate::setup::Ports,
+    /// the account's usage limits, as an agent last said them.
+    usage: Vec<tessel_proto::UsageWindow>,
     /// the browser, and who's watching each session's page.
     browser: Arc<crate::browser::Browser>,
     browser_watch: HashMap<SessionId, std::collections::HashSet<ClientId>>,
@@ -239,7 +241,9 @@ impl Hub {
             ports: crate::setup::Ports::load(ports_path),
             browser,
             browser_watch: HashMap::new(),
+            usage: Vec::new(),
         };
+        hub.usage = std::fs::read_to_string(hub.cfg.paths.home.join("usage.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         hub.settings = load_settings(&hub.cfg.paths.settings());
         let now = now_ms();
         for p in hub.store.load_sessions().await? {
@@ -918,6 +922,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 return None;
             }
             Request::BrowserEngine => Ok(Response::BrowserEngine { engine: self.browser.engine() }),
+            Request::Usage => Ok(Response::Usage { windows: self.usage.clone() }),
             Request::BrowserInstall => {
                 let (b, tx) = (self.browser.clone(), self.tx.clone());
                 tokio::spawn(async move {
@@ -1378,6 +1383,17 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
             AgentOutput::Events(events) => {
                 for ev in events {
+                    // the account's limits, as any of its agents last heard them: everyone's.
+                    if let AgentEvent::RateLimit { windows, .. } = &ev
+                        && !windows.is_empty()
+                        && *windows != self.usage
+                    {
+                        self.usage = windows.clone();
+                        if let Ok(text) = serde_json::to_string(&self.usage) {
+                            let _ = std::fs::write(self.cfg.paths.home.join("usage.json"), text);
+                        }
+                        self.tell_everyone(Event::Usage { windows: self.usage.clone() });
+                    }
                     let _ = self.apply(session, Input::Agent(ev));
                 }
             }

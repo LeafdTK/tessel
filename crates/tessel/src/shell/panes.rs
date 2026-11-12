@@ -738,6 +738,7 @@ impl Shell {
                     // in a narrow pane the pickers give way; send never does.
                     .child(h_flex().flex_1().min_w_0().overflow_hidden().gap(theme::z(2.)).child(self.plus_menu(cx)).child(self.model_chip(cx)).child(self.mode_menu(cx)))
                     .child(self.mcp_menu(cx))
+                    .children(self.usage_meter_el(cx))
                     .children(self.context_meter_el(cx))
                     .child(div().pl(theme::z(4.)).child(send)),
             );

@@ -9,7 +9,7 @@
 //! thing was. and nothing in a list moves while the pointer rests on it.
 
 mod compose;
-mod composer;
+pub(crate) mod composer;
 mod exec;
 mod mentions;
 mod backdrop;
@@ -193,6 +193,8 @@ pub struct Shell {
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
     pub(crate) browser_moved: Option<Instant>,
+    /// the account's usage limits, as the daemon last said.
+    pub(crate) usage: Vec<tessel_proto::UsageWindow>,
     /// a ship step under way, and what the last one did.
     pub(crate) shipping: bool,
     pub(crate) shipped: Option<Result<(String, Option<String>), String>>,
@@ -633,6 +635,7 @@ impl Shell {
             browser_moved: None,
             draft_append: None,
             shipping: false,
+            usage: Vec::new(),
             shipped: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
@@ -768,6 +771,7 @@ impl Shell {
         match ev {
             UiEvent::Connected => {
                 self.model.connection = Connection::Connected;
+                self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
                 if self.models.is_empty() {
                     self.cmd(Cmd::Models);
                 }
@@ -937,6 +941,12 @@ impl Shell {
             }
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
+            UiEvent::Answer { tag: "usage", result } => {
+                if let Ok(tessel_proto::Response::Usage { windows }) = result {
+                    self.usage = windows;
+                }
+            }
+            UiEvent::Usage(windows) => self.usage = windows,
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
             ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),

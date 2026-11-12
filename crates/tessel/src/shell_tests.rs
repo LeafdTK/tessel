@@ -163,7 +163,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -2364,4 +2364,17 @@ fn a_turns_changes_can_be_taken_back_and_that_undone(cx: &mut TestAppContext) {
     rig.feed(cx, vec![UiEvent::Answer { tag: "rewind", result: Ok(Response::Shipped { said: "The files are back as they were before that turn.".into(), url: None }) }]);
     rig.click(cx, "shipped-undo");
     assert_eq!(rewind(&mut rig), Some((a.id, None)), "and going back is undone");
+}
+
+#[gpui_kit::test]
+fn the_tightest_usage_limit_shows_beside_the_message_box(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a, vec![]);
+    assert!(!rig.exists(cx, "usage"), "nothing heard yet: nothing shown");
+    let w = |name: &str, used: f64, status: &str| tessel_proto::UsageWindow { name: name.into(), used, resets_at: Some(1_800_000_000), status: status.into() };
+    rig.feed(cx, vec![UiEvent::Usage(vec![w("five_hour", 0.42, "allowed"), w("seven_day", 0.85, "allowed_warning")])]);
+    assert!(rig.exists(cx, "usage"));
+    assert_eq!(crate::shell::composer::usage_name("five_hour"), "5-hour limit");
+    assert_eq!(crate::shell::composer::usage_name("seven_day_opus"), "Weekly Opus limit");
+    assert_eq!(crate::shell::composer::usage_name("monthly_cap"), "Monthly cap");
 }

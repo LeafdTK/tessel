@@ -2,7 +2,7 @@
 {"agent_session_id":"9ea63e76-0745-4f07-b761-781ef378370a","agent_version":"2.1.319","cwd":"/private/tmp/tessel-spike/repo","model":"claude-haiku-5-5","permission_mode":"default","type":"init"}
 {"item_id":"d8569dd9-4590-4878-8a6b-9cadd4cfc074","text":"Use the Write tool to create notes.md containing the single line: hello   Then use the Edit tool to change hello to goodbye. Then reply done.","type":"user_message"}
 {"block":{"kind":"thinking"},"item_id":"msg_011CguTyzY8FRiF6KsLuaK9R/0","parent":null,"type":"block_started"}
-{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1}
+{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1,"windows":[{"name":"seven_day","resets_at":1800000000,"status":"allowed","used":0.1}]}
 {"tokens":32435,"type":"context_used"}
 {"item_id":"msg_011CguTyzY8FRiF6KsLuaK9R/0","parent":null,"text":"","type":"thinking"}
 {"block":{"kind":"tool","tool":"Write"},"item_id":"toolu_01VRqPdUBDFYZEY96iRK2jvA","parent":null,"type":"block_started"}

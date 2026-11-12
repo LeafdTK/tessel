@@ -405,6 +405,50 @@ impl Shell {
         )
     }
 
+    /// the account's usage limits: a ring for the tightest, the rest on hover.
+    pub(crate) fn usage_meter_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette.get();
+        let top = self.usage.iter().max_by(|a, b| a.used.total_cmp(&b.used))?.clone();
+        let blocked = self.usage.iter().any(|w| w.status == "rejected");
+        let pct = (top.used * 100.0).round().clamp(0.0, 100.0) as u32;
+        let color = if blocked || pct >= 95 { p.failed } else if pct >= 70 { p.blocked } else { p.secondary };
+        let label: SharedString = format!("{} {pct}% used{}", usage_name(&top.name), top.resets_at.map(|t| format!(", resets {}", resets(t))).unwrap_or_default()).into();
+        let trigger = tool_button("usage")
+            .child(
+                h_flex()
+                    .gap(theme::z(6.))
+                    .child(gpui_kit::component::Icon::empty().path("icons/gauge.svg").size(theme::z(14.)).text_color(color))
+                    .child(div().set(Type::Callout).text_color(if pct >= 70 || blocked { color } else { p.secondary }).child(format!("{pct}%"))),
+            )
+            .tooltip(label);
+        let me = cx.entity().downgrade();
+        Some(
+            Popover::new("usage-popover")
+                .p_0()
+                .anchor(Anchor::BottomRight)
+                .trigger(trigger)
+                .content(move |_, _, cx| {
+                    let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                    let this = shell.read(cx);
+                    let p = this.palette.get();
+                    let mut col = v_flex().w(px(300.)).p_4().gap(px(12.)).child(div().set(Type::Headline).child("Usage limits"));
+                    for w in &this.usage {
+                        let pct = (w.used * 100.0).round().clamp(0.0, 100.0) as u32;
+                        let color = if w.status == "rejected" || pct >= 95 { p.failed } else if pct >= 70 { p.blocked } else { p.accent };
+                        col = col.child(
+                            v_flex()
+                                .gap(px(4.))
+                                .child(h_flex().child(div().flex_1().set(Type::Callout).child(usage_name(&w.name))).child(div().set(Type::Callout).text_color(p.secondary).child(format!("{pct}%"))))
+                                .child(div().h(px(6.)).w_full().rounded_full().bg(p.fill).child(div().h_full().rounded_full().bg(color).w(relative((pct as f32 / 100.0).clamp(0.0, 1.0)))))
+                                .children(w.resets_at.map(|t| div().set(Type::Subheadline).text_color(p.secondary).child(format!("Resets {}", resets(t))))),
+                        );
+                    }
+                    col.child(div().set(Type::Subheadline).text_color(p.tertiary).child("For the whole account, as the agent last heard. It updates as agents work.")).into_any_element()
+                })
+                .into_any_element(),
+        )
+    }
+
     /// what else can go with a message, and how much the agent may do.
     pub(crate) fn plus_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
@@ -588,4 +632,27 @@ fn kind_of(media: &str, name: &str) -> String {
         return "PDF".into();
     }
     name.rsplit_once('.').map_or_else(|| "File".into(), |(_, ext)| ext.to_uppercase())
+}
+
+/// a limit's name, for people.
+pub(crate) fn usage_name(name: &str) -> String {
+    match name {
+        "five_hour" => "5-hour limit".into(),
+        "seven_day" => "Weekly limit".into(),
+        "seven_day_opus" => "Weekly Opus limit".into(),
+        "seven_day_sonnet" => "Weekly Sonnet limit".into(),
+        other => {
+            let words = other.replace('_', " ");
+            let mut c = words.chars();
+            c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+        }
+    }
+}
+
+/// when a limit starts over: a time today, else a day and time.
+pub(crate) fn resets(unix: i64) -> String {
+    use chrono::TimeZone as _;
+    let Some(at) = chrono::Local.timestamp_opt(unix, 0).single() else { return String::new() };
+    let now = chrono::Local::now();
+    if at.date_naive() == now.date_naive() { at.format("at %-I:%M %p").to_string() } else { at.format("%a at %-I:%M %p").to_string() }
 }

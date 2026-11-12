@@ -305,9 +305,9 @@ fn a_turn_can_start_by_itself_and_still_reports_when_done() {
 #[test]
 fn usage_limit_shows_as_limited_until_it_clears() {
     let mut s = SessionState::new(meta());
-    s.apply(Input::Agent(AgentEvent::RateLimit { status: "rejected".into(), resets_at: Some(42), utilization: Some(1.0) }), T0);
+    s.apply(Input::Agent(AgentEvent::RateLimit { status: "rejected".into(), resets_at: Some(42), utilization: Some(1.0), windows: vec![] }), T0);
     assert_eq!(s.run_state(T0), RunState::Limited { reset_at: Some(42) });
-    s.apply(Input::Agent(AgentEvent::RateLimit { status: "allowed".into(), resets_at: None, utilization: Some(0.1) }), T0 + 1);
+    s.apply(Input::Agent(AgentEvent::RateLimit { status: "allowed".into(), resets_at: None, utilization: Some(0.1), windows: vec![] }), T0 + 1);
     assert_eq!(s.run_state(T0 + 1), RunState::Idle);
 }
 

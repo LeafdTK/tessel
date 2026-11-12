@@ -86,6 +86,9 @@ pub enum AgentEvent {
         status: String,
         resets_at: Option<i64>,
         utilization: Option<f64>,
+        /// each limit the account has (five hours, a week...), as of now.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        windows: Vec<UsageWindow>,
     },
     /// the tool servers the agent has, and whether each is connected.
     McpServers { servers: Vec<McpServer> },
@@ -158,6 +161,21 @@ pub struct PermissionRequest {
     /// backend-specific "always allow" style suggestions, passed through.
     #[serde(default)]
     pub suggestions: Vec<Value>,
+}
+
+/// one of the account's usage limits, and how much of it is used.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct UsageWindow {
+    /// `five_hour`, `seven_day`, `seven_day_opus`...
+    pub name: String,
+    /// how much is used, 0 to 1.
+    pub used: f64,
+    /// unix seconds, when it starts over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// `allowed`, `allowed_warning`, `rejected`.
+    #[serde(default)]
+    pub status: String,
 }
 
 /// a tool server the agent is connected to (or failed to connect to).

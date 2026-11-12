@@ -1,6 +1,6 @@
 {"phase":"running","type":"phase"}
 {"agent_session_id":"316819a3-be7f-4600-99dc-fb6704568a83","agent_version":"2.1.319","cwd":"/private/tmp/tessel-spike/repo","model":"claude-haiku-5-5","permission_mode":"auto","type":"init"}
-{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1}
+{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1,"windows":[{"name":"seven_day","resets_at":1800000000,"status":"allowed","used":0.1}]}
 {"item_id":"fd8521a2-d9f2-4804-ba46-7616da7b2bc2","text":"Say hi in exactly five words. Do not use any tools.","type":"user_message"}
 {"block":{"kind":"text"},"item_id":"msg_011CguTqsYUMkqVQdCvKgQQQ/0","parent":null,"type":"block_started"}
 {"item_id":"msg_011CguTqsYUMkqVQdCvKgQQQ/0","text":"hi there here","type":"delta"}

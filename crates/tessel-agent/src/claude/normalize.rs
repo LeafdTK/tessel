@@ -393,10 +393,24 @@ impl ClaudeNormalizer {
             .flat_map(|w| w.values())
             .filter_map(|w| w.get("utilization").and_then(Value::as_f64))
             .fold(None, |max: Option<f64>, u| Some(max.map_or(u, |m| m.max(u))));
+        let mut windows: Vec<tessel_proto::UsageWindow> = info
+            .get("unifiedWindows")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+            .map(|(name, w)| tessel_proto::UsageWindow {
+                name: name.clone(),
+                used: w.get("utilization").and_then(Value::as_f64).unwrap_or(0.0),
+                resets_at: w.get("resetsAt").and_then(Value::as_i64),
+                status: str_at(w, "status").unwrap_or("").to_owned(),
+            })
+            .collect();
+        windows.sort_by(|a, b| a.name.cmp(&b.name));
         vec![AgentEvent::RateLimit {
             status: str_at(info, "status").unwrap_or("unknown").to_owned(),
             resets_at: info.get("resetsAt").and_then(Value::as_i64),
             utilization,
+            windows,
         }]
     }
 }

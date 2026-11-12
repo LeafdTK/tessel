@@ -196,6 +196,8 @@ pub enum Request {
     },
     /// which browser engine the daemon would drive, if any.
     BrowserEngine,
+    /// the account's usage limits, as the agent last said.
+    Usage,
     /// download one (Chrome for Testing) into tessel's own folder.
     BrowserInstall,
     /// write a repository's scripts. `local`: in the main checkout's
@@ -588,6 +590,9 @@ pub enum Response {
     BrowserEngine {
         engine: crate::BrowserEngine,
     },
+    Usage {
+        windows: Vec<crate::UsageWindow>,
+    },
     Followed {
         /// the sessions newly followed, as they are now.
         snapshots: Vec<SessionSnapshot>,
@@ -791,6 +796,10 @@ pub enum Event {
         x: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         y: Option<f64>,
+    },
+    /// the account's usage changed (to everyone).
+    Usage {
+        windows: Vec<crate::UsageWindow>,
     },
     /// the engine changed: found, installing, installed (to everyone).
     BrowserEngine {

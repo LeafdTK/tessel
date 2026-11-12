@@ -2,7 +2,7 @@
 {"mode":"plan","type":"mode_changed"}
 {"phase":"running","type":"phase"}
 {"agent_session_id":"6717688c-f5cb-48f5-bcb5-d254dc61ec7b","agent_version":"2.1.319","cwd":"/private/tmp/photon-probe/repo","model":"claude-haiku-5-5","permission_mode":"plan","type":"init"}
-{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1}
+{"resets_at":1800000000,"status":"allowed","type":"rate_limit","utilization":0.1,"windows":[{"name":"seven_day","resets_at":1800000000,"status":"allowed","used":0.1}]}
 {"item_id":"36b64263-42c3-4651-a075-7c903ecfb6fe","text":"Plan how to create a file hello.txt containing the word hi. The plan must be two short lines. Then finish planning.","type":"user_message"}
 {"block":{"kind":"thinking"},"item_id":"msg_011CguwnJtc15z2axa2bd5vH/0","parent":null,"type":"block_started"}
 {"item_id":"msg_011CguwnJtc15z2axa2bd5vH/0","text":"I","type":"delta"}
