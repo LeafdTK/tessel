@@ -359,9 +359,21 @@ impl Shell {
             return;
         }
         let now = std::time::Instant::now();
-        let (mut gone, mut spent, last) = self.swipe;
-        // a new touch, or a pause long enough to be one: start counting again.
-        if ev.touch_phase == TouchPhase::Started || last.is_none_or(|t| now.duration_since(t).as_millis() > 300) {
+        let (mut gone, mut spent, last, mut touching) = self.swipe;
+        // a trackpad says where a gesture starts and ends, however slow it is;
+        // a wheel doesn't, so for it a pause is what ends one.
+        let fresh = match ev.touch_phase {
+            TouchPhase::Started => {
+                touching = true;
+                true
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                touching = false;
+                false
+            }
+            TouchPhase::Moved => !touching && last.is_none_or(|t| now.duration_since(t).as_millis() > 300),
+        };
+        if fresh {
             (gone, spent) = (0.0, false);
         }
         let d = match ev.delta {
@@ -376,7 +388,7 @@ impl Shell {
                 self.run_key(next, json!({}), window, cx);
             }
         }
-        self.swipe = (gone, spent, Some(now));
+        self.swipe = (gone, spent, Some(now), touching);
     }
 
     /// ⌘1…⌘9: that desktop, when there is one.

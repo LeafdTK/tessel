@@ -226,8 +226,9 @@ pub struct Shell {
     /// a desktop's panes arriving: 1 just switched, fading to 0.
     pub(crate) desktop_slide: Spring,
     /// a two-finger swipe across the sidebar: how far it has gone, whether it
-    /// has already switched desktops, and when it last moved.
-    pub(crate) swipe: (f32, bool, Option<Instant>),
+    /// has already switched desktops, when it last moved, and whether the
+    /// trackpad is in the middle of one.
+    pub(crate) swipe: (f32, bool, Option<Instant>, bool),
     /// the pane maximized over the others, if one is.
     pub(crate) pane_zoom: Option<String>,
     /// a pane being carried by its grip.
@@ -663,7 +664,7 @@ impl Shell {
             shipped: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
-            swipe: (0.0, false, None),
+            swipe: (0.0, false, None, false),
             pane_zoom: None,
             pane_move: None,
             root_focus: cx.focus_handle(),

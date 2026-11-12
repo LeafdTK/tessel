@@ -2253,6 +2253,8 @@ fn the_sidebar_stays_while_desktops_change_their_panes_and_a_swipe_switches(cx: 
         rig.settle(cx);
     };
     swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    // a slow hand: inside one gesture, how long it takes doesn't matter.
+    std::thread::sleep(std::time::Duration::from_millis(350));
     swipe(&mut rig, cx, TouchPhase::Moved, -50.);
     assert_eq!(showing(&rig, cx), 1);
     swipe(&mut rig, cx, TouchPhase::Moved, -90.);
