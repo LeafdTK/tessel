@@ -527,6 +527,8 @@ impl Shell {
             let p = this.palette.get();
             let session = this.open_session();
             let servers = this.model.open_summary().map(|s| s.mcp.clone()).unwrap_or_default();
+            // with no agent running, what it had last time: they connect again when it starts.
+            let running = this.model.open_summary().is_some_and(|s| s.warm);
             let refresh = me.clone();
             let mut list = theme::float_list(&p).w(px(300.)).max_h(px(420.));
             list = list.child(
@@ -543,12 +545,17 @@ impl Shell {
                         }
                     })),
             );
-            if servers.is_empty() {
-                list = list.child(div().px(px(10.)).py_2().set(Type::Callout).text_color(p.secondary).child("This session has no tool servers."));
+            let say = |t: &'static str| div().px(px(10.)).py_2().set(Type::Callout).text_color(p.secondary).child(t);
+            match (servers.is_empty(), running) {
+                (true, true) => list = list.child(say("This session has no tool servers.")),
+                (true, false) => list = list.child(say("They show up once the agent starts. Send a message to start it.")),
+                (false, false) => list = list.child(say("From the last time the agent ran. They connect again when it starts.")),
+                (false, true) => {}
             }
             let mut rows = v_flex().id("mcp-list").overflow_y_scroll().max_h(px(360.));
             for (i, m) in servers.iter().enumerate() {
                 let (word, icon, tint) = match m.status.as_str() {
+                    _ if !running => ("Not running", "circle-minus", p.tertiary),
                     "connected" => ("Connected", "check", p.finished),
                     "needs-auth" => ("Needs sign-in", "circle-alert", p.blocked),
                     "failed" => ("Failed", "x", p.failed),

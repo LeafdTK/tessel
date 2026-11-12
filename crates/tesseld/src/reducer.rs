@@ -162,6 +162,8 @@ pub struct Persisted {
     /// even if nothing visible was in flight (the agent was between steps).
     pub turn_open: bool,
     pub updated_ms: Millis,
+    /// the tool servers the agent last had: still shown while it isn't running.
+    pub mcp: Vec<McpServer>,
 }
 
 impl SessionState {
@@ -218,6 +220,7 @@ impl SessionState {
         s.turn_open = p.turn_open;
         s.updated_ms = p.updated_ms;
         s.last_output_ms = p.updated_ms;
+        s.mcp = p.mcp;
         for (i, item) in items.iter().enumerate() {
             s.index.insert(item.id.clone(), i);
             if is_open(&item.body) {
@@ -243,6 +246,7 @@ impl SessionState {
             cost_usd: self.cost_usd(),
             turn_open: self.turn_open,
             updated_ms: self.updated_ms,
+            mcp: self.mcp.clone(),
         }
     }
 

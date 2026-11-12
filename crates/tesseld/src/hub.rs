@@ -77,6 +77,8 @@ pub enum HubMsg {
     TermDump { term: TermId, client: ClientId, id: u64, bytes: Vec<u8> },
     /// what the browser has to say: a frame, a page moving on, a pick.
     Browser(Event),
+    /// ask an agent again how its tool servers are: they report "pending" as it starts.
+    RecheckMcp { session: SessionId, generation: u64 },
     Stop,
 }
 
@@ -345,6 +347,14 @@ impl Hub {
                 return stop && self.clients.get(&client).is_some_and(|c| c.ready);
             }
             HubMsg::Agent { session, generation, output } => self.agent_output(session, generation, output),
+            HubMsg::RecheckMcp { session, generation } => {
+                if let Some(live) = self.sessions.get(&session).filter(|l| l.generation == generation)
+                    && let Some(agent) = &live.agent
+                    && live.state.summary(now_ms()).mcp.iter().any(|m| m.status == "pending")
+                {
+                    agent.mcp_status();
+                }
+            }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::WorktreeReady { client, id, create, result, setup } => {
                 let result = result.and_then(|made| {
@@ -1432,6 +1442,20 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                             let _ = std::fs::write(self.cfg.paths.home.join("usage.json"), text);
                         }
                         self.tell_everyone(Event::Usage { windows: self.usage.clone() });
+                    }
+                    // its tool servers are still connecting as it starts: ask again in a bit.
+                    if let AgentEvent::Init { mcp_servers, .. } = &ev
+                        && mcp_servers.iter().any(|m| m.status == "pending")
+                    {
+                        let tx = self.tx.clone();
+                        tokio::spawn(async move {
+                            for wait in [3, 9] {
+                                tokio::time::sleep(Duration::from_secs(wait)).await;
+                                if tx.send(HubMsg::RecheckMcp { session, generation }).is_err() {
+                                    return;
+                                }
+                            }
+                        });
                     }
                     let _ = self.apply(session, Input::Agent(ev));
                 }
