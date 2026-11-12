@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "assets/**", ".release-please-manifest.json"]
   pull_request:
+    paths-ignore: ["**.md", "assets/**", ".release-please-manifest.json"]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -11,6 +13,9 @@ concurrency:
 
 jobs:
   test:
+    # only the public repository (elsewhere a macOS runner costs minutes), and
+    # not release pull requests: they only change the version and the changelog.
+    if: github.repository == 'LeafdTK/tessel' && !startsWith(github.head_ref, 'release-please--')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4

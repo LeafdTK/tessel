@@ -12,6 +12,7 @@ jobs:
   # keeps a release pull request open from the commits since the last release
   # (feat: bumps the minor version, fix: the patch); merging it tags a release.
   release-please:
+    if: github.repository == 'LeafdTK/tessel'
     runs-on: ubuntu-latest
     outputs:
       created: ${{ steps.release.outputs.release_created }}
