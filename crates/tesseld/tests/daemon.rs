@@ -717,6 +717,23 @@ async fn a_new_session_starts_on_tessels_default_model_not_the_agents() {
 }
 
 #[tokio::test]
+async fn visual_mode_is_kept_with_the_session_and_reaches_the_agent() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    assert!(!s.visual && !s.visual_bash);
+    c.request(Request::SessionSetVisual { session: s.id, visual: Some(true), bash: None }).await.unwrap();
+    let on = until(&c, s.id, "visual mode on", |s| s.visual).await;
+    assert!(!on.visual_bash, "Bash stays off unless allowed");
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "go".into(), attachments: vec![] }).await.unwrap();
+    let opts = d.backend.spawned.lock().unwrap()[0].clone();
+    assert!(opts.visual && !opts.visual_bash, "the agent starts knowing it's watched");
+    c.request(Request::SessionSetVisual { session: s.id, visual: None, bash: Some(true) }).await.unwrap();
+    let both = until(&c, s.id, "bash allowed", |s| s.visual_bash).await;
+    assert!(both.visual, "what wasn't given stays");
+}
+
+#[tokio::test]
 async fn a_screenshot_goes_to_the_agent_with_the_message_and_other_files_are_refused_up_front() {
     let d = Daemon::start(&["plain"]).await;
     let (c, _ev) = d.client().await;
@@ -1005,7 +1022,7 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
     let mut d = Daemon::start(&["plain"]).await;
     let (c, mut ev) = d.client().await;
     let script = "printf 'ready\\n'; read a; printf 'got:%s\\n' \"$a\"; read b; printf 'then:%s\\n' \"$b\"; exit 3";
-    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec![script.into()], cols: 40, rows: 10 }).await.unwrap() {
+    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec![script.into()], cols: 40, rows: 10, agent: false }).await.unwrap() {
         Response::Term { info } => info,
         other => panic!("{other:?}"),
     };
@@ -1084,7 +1101,7 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
 async fn closing_a_running_terminal_hangs_it_up() {
     let mut d = Daemon::start(&["plain"]).await;
     let (c, mut ev) = d.client().await;
-    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec!["sleep 600".into()], cols: 40, rows: 10 }).await.unwrap() {
+    let info = match c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec!["sleep 600".into()], cols: 40, rows: 10, agent: false }).await.unwrap() {
         Response::Term { info } => info,
         other => panic!("{other:?}"),
     };

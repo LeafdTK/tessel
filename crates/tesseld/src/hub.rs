@@ -522,7 +522,7 @@ impl Hub {
                 // the new workspace's setup runs where you can watch it: a terminal of its own.
                 if let (Ok(Response::Session { summary }), Some(cmd)) = (&result, setup) {
                     let (session, cwd) = (summary.id, summary.cwd.clone());
-                    if let Err(e) = self.open_term(Some(session), cwd, vec![cmd], 120, 32) {
+                    if let Err(e) = self.open_term(Some(session), cwd, vec![cmd], 120, 32, false) {
                         eprintln!("tesseld: couldn't start the setup script: {}", e.message);
                     }
                 }
@@ -725,6 +725,8 @@ impl Hub {
                     Ok(Response::Ack)
                 }
             },
+            // the agent learns its tools when it starts: a running one restarts once idle.
+            Request::SessionSetVisual { session, visual, bash } => self.relink(session, Input::SetVisual { visual, bash }),
             Request::SessionLinkDir { session, path, .. } => {
                 let path = path.trim().to_owned();
                 if !self.sessions.contains_key(&session) {
@@ -1016,7 +1018,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 self.send(client, Envelope::Ev { ev: Event::UiWatched { watched } });
                 Ok(Response::Ack)
             }
-            Request::TermOpen { session, cwd, command, cols, rows } => {
+            Request::TermOpen { session, cwd, command, cols, rows, agent } => {
                 let session_cwd = session.and_then(|s| self.sessions.get(&s)).map(|l| l.state.meta.cwd.clone());
                 if let Some(s) = session
                     && session_cwd.is_none()
@@ -1024,7 +1026,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     return Some(Err(not_found(s)));
                 }
                 let cwd = cwd.or(session_cwd).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/".into()));
-                self.open_term(session, cwd, command, cols, rows).map(|info| Response::Term { info })
+                self.open_term(session, cwd, command, cols, rows, agent).map(|info| Response::Term { info })
             }
             Request::Scripts { session } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
@@ -1419,13 +1421,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
     }
 
     /// a terminal: a shell, or `command` in one. a session's terminal knows its workspace.
-    fn open_term(&mut self, session: Option<SessionId>, cwd: String, command: Vec<String>, cols: u16, rows: u16) -> Result<tessel_proto::term::TermInfo, RpcError> {
+    fn open_term(&mut self, session: Option<SessionId>, cwd: String, command: Vec<String>, cols: u16, rows: u16, agent: bool) -> Result<tessel_proto::term::TermInfo, RpcError> {
         if !std::path::Path::new(&cwd).is_dir() {
             return Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory")));
         }
         let id = self.next_term;
         self.next_term += 1;
-        let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None, keep_open: true };
+        let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None, keep_open: true, agent };
         let mut env = vec![("TESSEL_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
         if let Some(s) = session {
             env.push(("TESSEL_SESSION".into(), s.to_string()));
@@ -1615,6 +1617,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             permission_mode: live.state.permission_mode.clone(),
             effort: live.state.effort.clone(),
             fast: live.state.fast,
+            visual: live.state.visual,
+            visual_bash: live.state.visual_bash,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             env: workspace_env,
             raw_log: Some(self.cfg.paths.raw_log(&session)),

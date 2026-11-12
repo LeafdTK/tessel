@@ -307,9 +307,11 @@ impl Shell {
             self.browser_show_next = true;
             cx.notify();
         }
+        // visual mode: the agent's steps are paced so they can be watched.
+        let visual = call.agent && self.model.sessions.iter().any(|s| s.id == call.session && s.visual);
         cx.spawn(async move |this, cx| {
             let _awake = webview::Awake::new("doing what the agent asked in a page");
-            let done = page_act(&this, &page, &native, call.act, call.agent, cx).await;
+            let done = page_act(&this, &page, &native, call.act, call.agent, visual, cx).await;
             let state = state_of(&native, &page.borrow().state);
             let _ = this.update(cx, |this, cx| {
                 this.page_state(call.session, state.clone());
@@ -744,6 +746,7 @@ async fn page_act(
     n: &Native,
     act: BrowserAct,
     agent: bool,
+    visual: bool,
     cx: &mut AsyncApp,
 ) -> Result<(Option<String>, Option<String>), String> {
     // what the agent does is said over the page, and where, with a ring.
@@ -753,7 +756,13 @@ async fn page_act(
             let _ = this.update(cx, |_, cx| cx.notify());
         }
     };
+    // where it acts: in visual mode the cursor glides there first and what's there is
+    // outlined; either way, a ring.
     let ring = async |bg: &BackgroundExecutor, at: (f64, f64)| {
+        if visual {
+            let _ = eval(bg, n, &webview::point_at(at.0, at.1)).await;
+            bg.timer(Duration::from_millis(380)).await;
+        }
         if agent {
             let _ = eval(bg, n, &webview::ring(at.0, at.1)).await;
         }
@@ -804,10 +813,26 @@ async fn page_act(
                 }
                 None => tell("typed".into(), None, cx),
             }
-            run(&bg, n, &webview::type_text(&t)).await?;
+            if visual {
+                // a letter at a time, as far as is worth watching; then the rest.
+                let chars: Vec<char> = t.chars().collect();
+                let (shown, rest) = chars.split_at(chars.len().min(120));
+                for c in shown {
+                    run(&bg, n, &webview::type_text(&c.to_string())).await?;
+                    bg.timer(Duration::from_millis(28)).await;
+                }
+                if !rest.is_empty() {
+                    run(&bg, n, &webview::type_text(&rest.iter().collect::<String>())).await?;
+                }
+            } else {
+                run(&bg, n, &webview::type_text(&t)).await?;
+            }
         }
         BrowserAct::Select { value, r#ref, selector } => {
             let js = tessel_proto::select_script(r#ref.as_deref(), selector.as_deref(), &value).ok_or("select needs a ref or a selector")?;
+            if visual && let Ok(Some((x, y, _))) = locate(&bg, n, r#ref.as_deref(), selector.as_deref()).await {
+                ring(&bg, (x, y)).await;
+            }
             run(&bg, n, &js).await?;
             tell(format!("chose {value}"), None, cx);
         }
@@ -822,8 +847,11 @@ async fn page_act(
             settle(n, cx).await;
         }
         BrowserAct::Scroll { dx, dy, x, y } => {
-            run(&bg, n, &webview::scroll(x, y, dx, dy)).await?;
+            run(&bg, n, &webview::scroll_as(x, y, dx, dy, visual)).await?;
             tell("scrolled".into(), None, cx);
+            if visual {
+                bg.timer(Duration::from_millis(450)).await;
+            }
         }
         BrowserAct::Read => {
             tell("read the page".into(), None, cx);

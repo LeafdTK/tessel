@@ -460,6 +460,33 @@ pub fn ring(x: f64, y: f64) -> String {
     )
 }
 
+/// visual mode: the agent's cursor glides to a point, and what's there is
+/// outlined, so the eye can follow it before it acts. the cursor fades once
+/// the agent has been still for a while.
+pub fn point_at(x: f64, y: f64) -> String {
+    format!(
+        "(() => {{ const x = {x}, y = {y}; let c = document.querySelector('[data-tessel-cursor]');
+  if (!c) {{
+    c = document.createElement('div'); c.dataset.tesselCursor = '';
+    c.innerHTML = '<svg width=\"22\" height=\"22\" viewBox=\"0 0 24 24\"><path d=\"M4 2l15 11-6.5 1.2L16 21l-3 1.3-3.4-6.7L4 20z\" fill=\"#1f6feb\" stroke=\"white\" stroke-width=\"1.6\" stroke-linejoin=\"round\"/></svg>';
+    c.style.cssText = 'position:fixed;left:0;top:0;width:22px;height:22px;pointer-events:none;z-index:2147483647;filter:drop-shadow(0 1px 2px rgba(0,0,0,.35));transition:transform .32s cubic-bezier(.3,.7,.2,1),opacity .4s;transform:translate(' + (innerWidth / 2) + 'px,' + (innerHeight / 2) + 'px)';
+    document.documentElement.appendChild(c);
+  }}
+  c.style.opacity = '1';
+  requestAnimationFrame(() => {{ c.style.transform = 'translate(' + (x - 4) + 'px,' + (y - 2) + 'px)'; }});
+  clearTimeout(window.__tesselCursorFade); window.__tesselCursorFade = setTimeout(() => {{ c.style.opacity = '0'; }}, 4000);
+  for (const o of document.querySelectorAll('[data-tessel-outline]')) o.remove();
+  const el = document.elementFromPoint(x, y);
+  if (el && el !== document.body && el !== document.documentElement) {{
+    const r = el.getBoundingClientRect(), o = document.createElement('div'); o.dataset.tesselOutline = '';
+    o.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483646;border:2px solid rgba(31,111,235,.9);background:rgba(31,111,235,.08);border-radius:4px;transition:opacity .3s;left:' + (r.x - 3) + 'px;top:' + (r.y - 3) + 'px;width:' + (r.width + 6) + 'px;height:' + (r.height + 6) + 'px';
+    document.documentElement.appendChild(o);
+    setTimeout(() => {{ o.style.opacity = '0'; setTimeout(() => o.remove(), 350); }}, 1100);
+  }}
+  return true; }})()"
+    )
+}
+
 /// a person's click at a point: the pointer and mouse events a click makes,
 /// focus where it lands, and the click itself (which follows links, ticks
 /// boxes and submits forms like any click).
@@ -526,6 +553,11 @@ pub fn key(name: &str) -> String {
 
 /// scroll whatever scrolls under a point (the page itself, when nothing does).
 pub fn scroll(x: Option<f64>, y: Option<f64>, dx: f64, dy: f64) -> String {
+    scroll_as(x, y, dx, dy, false)
+}
+
+/// the same, gliding (visual mode) or at once.
+pub fn scroll_as(x: Option<f64>, y: Option<f64>, dx: f64, dy: f64, smooth: bool) -> String {
     let (x, y) = (x.map_or("innerWidth / 2".to_owned(), |v| v.to_string()), y.map_or("innerHeight / 2".to_owned(), |v| v.to_string()));
     format!(
         "(() => {{ let el = document.elementFromPoint({x}, {y});
@@ -535,7 +567,8 @@ pub fn scroll(x: Option<f64>, y: Option<f64>, dx: f64, dy: f64) -> String {
     el = el.parentElement;
   }}
   const t = el && el !== document.body && el !== document.documentElement ? el : (document.scrollingElement || document.documentElement);
-  t.scrollBy({{left: {dx}, top: {dy}, behavior: 'instant'}}); return true; }})()"
+  t.scrollBy({{left: {dx}, top: {dy}, behavior: '{how}'}}); return true; }})()",
+        how = if smooth { "smooth" } else { "instant" }
     )
 }
 

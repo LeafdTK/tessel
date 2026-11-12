@@ -31,6 +31,9 @@ pub struct TermInfo {
     /// stays once its program exits, showing how it ended (else it goes).
     #[serde(default = "yes", skip_serializing_if = "is_yes")]
     pub keep_open: bool,
+    /// a command the agent ran for the person to watch (visual mode).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 fn yes() -> bool {

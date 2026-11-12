@@ -29,6 +29,7 @@ mod projects;
 mod settings;
 mod scripts;
 mod ship;
+mod visual;
 mod sidebar;
 mod tour;
 mod surface;
@@ -197,6 +198,8 @@ pub struct Shell {
     pub(crate) browser_url_next: Option<String>,
     pub(crate) browser_focus: FocusHandle,
     pub(crate) browser_show_next: bool,
+    /// lay out the panes visual mode is watched in, at the next frame.
+    pub(crate) visual_panes_next: bool,
     /// a file to put the caret in when it opens: the session, its path, line and column (from 1).
     pub(crate) file_caret: Option<(SessionId, String, u32, u32)>,
     /// the window's own view, when pages are shown natively in it (see `webview`).
@@ -652,6 +655,7 @@ impl Shell {
             browser_url_next: None,
             browser_focus: cx.focus_handle(),
             browser_show_next: false,
+            visual_panes_next: false,
             file_caret: None,
             native_view: browser::native_host(window),
             main_view: browser::view_of(window),
@@ -870,6 +874,10 @@ impl Shell {
                 let is_open = self.model.open.as_ref().is_some_and(|o| o.id == summary.id);
                 // a turn ending is when its changes are worth another look.
                 let was_busy = self.model.summary(summary.id).is_some_and(|s| s.run_state.is_busy());
+                // visual mode just came on, however it was asked for: its panes too.
+                if is_open && summary.visual && !self.model.summary(summary.id).is_some_and(|s| s.visual) {
+                    self.visual_panes_next = true;
+                }
                 if is_open && was_busy && !summary.run_state.is_busy() {
                     self.workspace_touched();
                 }
@@ -2391,6 +2399,9 @@ impl Render for Shell {
         // which pane shows which chat, now that the layout may have changed.
         self.sync_views(cx);
         self.ensure_scripts_form(window, cx);
+        if std::mem::take(&mut self.visual_panes_next) {
+            self.show_visual_panes(window, cx);
+        }
         self.sync_browser(window, cx);
         if let Some(more) = self.draft_append.take() {
             let next = format!("{}{more}", self.composer.read(cx).value().trim_end());

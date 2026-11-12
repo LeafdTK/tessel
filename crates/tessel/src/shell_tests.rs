@@ -50,7 +50,7 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
         fast: false,
         context_used: None,
         context_window: None,
-        tasks: vec![], mcp: vec![], linked_dirs: vec![],
+        tasks: vec![], mcp: vec![], linked_dirs: vec![], visual: false, visual_bash: false,
         cost_usd: 0.0,
         trace: vec![],
         asking: None,
@@ -981,6 +981,28 @@ fn what_a_command_printed_is_folded_even_when_it_failed_and_opens_on_a_click(cx:
 }
 
 #[gpui_kit::test]
+fn visual_mode_opens_a_terminal_and_the_browser_and_the_terminal_follows_the_agent(cx: &mut TestAppContext) {
+    let dir = layout_dir("visual");
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    rig.asked();
+    rig.click(cx, "visual");
+    rig.click(cx, "visual-toggle");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetVisual { session, visual: Some(true), bash: None } if *session == a.id)));
+    let modules = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.ui.panes().iter().filter_map(|p| p.module).collect::<Vec<_>>());
+    let shown = modules(&rig, cx);
+    assert!(shown.contains(&crate::ui::Module::Terminal) && shown.contains(&crate::ui::Module::Browser), "{shown:?}");
+
+    // the daemon says it's on; then the agent runs a command, and the terminal pane shows it.
+    rig.feed(cx, vec![UiEvent::Session(SessionSummary { visual: true, ..a.clone() })]);
+    let ran = tessel_proto::term::TermInfo { agent: true, command: vec!["npm test".into()], ..term_info(9, Some(a.id)) };
+    rig.feed(cx, vec![UiEvent::TermUpdated(ran)]);
+    let pane = rig.shell.read_with(cx, |s, _| s.ui.panes().into_iter().find(|p| p.module == Some(crate::ui::Module::Terminal)).map(|p| p.id.clone())).unwrap();
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.pane_term_for_test(&pane)), Some(9), "the agent's command, in the terminal pane");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
 fn a_thought_being_written_is_folded_too_and_opens_on_a_click(cx: &mut TestAppContext) {
     let busy = session(1, "Fix login", RunState::Working, None);
     let mut rig = Rig::with_sessions(cx, busy.clone(), vec![]);
@@ -1900,7 +1922,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
 // ---- terminals --------------------------------------------------------------------
 
 fn term_info(id: u64, session: Option<SessionId>) -> tessel_proto::term::TermInfo {
-    tessel_proto::term::TermInfo { id, title: String::new(), cwd: "/tmp".into(), cols: 80, rows: 24, session, command: vec![], exited: None, keep_open: true }
+    tessel_proto::term::TermInfo { id, title: String::new(), cwd: "/tmp".into(), cols: 80, rows: 24, session, command: vec![], exited: None, keep_open: true, agent: false }
 }
 
 #[gpui_kit::test]
@@ -2324,7 +2346,7 @@ fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
     assert!(rig.shell.read_with(cx, |s, _| s.ui.panes().iter().any(|p| p.id == pane && p.module == Some(crate::ui::Module::Terminal))), "a terminal pane to watch it in");
 
     // running: the same button stops it.
-    let info = tessel_proto::term::TermInfo { id: 7, title: String::new(), cwd: a.cwd.clone(), cols: 100, rows: 30, session: Some(a.id), command: vec!["npm run dev".into()], exited: None, keep_open: true };
+    let info = tessel_proto::term::TermInfo { id: 7, title: String::new(), cwd: a.cwd.clone(), cols: 100, rows: 30, session: Some(a.id), command: vec!["npm run dev".into()], exited: None, keep_open: true, agent: false };
     rig.feed(cx, vec![UiEvent::TermOpened { pane, session: Some(a.id), info }]);
     rig.click(cx, "run-default");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::TermClose(7))));

@@ -647,6 +647,7 @@ impl Shell {
                 }
                 // the workspace's scripts: the dev server a click away.
                 if !self.views.contains_key(pane_id) {
+                    out.extend(self.visual_button(cx));
                     out.extend(self.run_button(cx));
                     out.extend(self.ship_button(cx));
                 }

@@ -11,7 +11,7 @@ fn fixture(name: &str) -> Vec<recording::RecLine> {
 }
 
 fn opts(raw_log: Option<PathBuf>) -> SpawnOpts {
-    SpawnOpts { cwd: "/tmp".into(), agent_session_id: "s".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, add_dirs: vec![], raw_log, tools: None, env: vec![] }
+    SpawnOpts { cwd: "/tmp".into(), agent_session_id: "s".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, visual_bash: false, add_dirs: vec![], raw_log, tools: None, env: vec![] }
 }
 
 async fn next(spawned: &mut tessel_agent::Spawned) -> AgentOutput {

@@ -73,18 +73,19 @@ The reference for the format is ui/README.md in tessel's home.",
             "name": "tessel_terminal",
             "description": "Terminals tessel runs, in this session's folder, that the person can watch in a pane. Use Bash for one-off commands; \
 use this for things that keep running or that the person should see: dev servers, watchers, REPLs, interactive programs. \
-ops: open (command: what to run, or leave out for a shell; show: put it in a pane, default true) -> its id; \
+ops: exec (command, timeout?: seconds, default 120) -> runs it in a terminal of its own the person sees, waits, and gives its exit code and output, as Bash does; \
+open (command: what to run, or leave out for a shell; show: put it in a pane, default true) -> its id; \
 run (term, command: typed, then return); send (term, text: typed as is; \\u0003 is ctrl-c); \
 read (term, history: also what scrolled away) -> its text; wait (term, text: until the screen shows it, or leave out to wait for it to exit; timeout seconds, default 30); \
 list; close (term).",
             "inputSchema": {"type": "object", "properties": {
-                "op": {"type": "string", "enum": ["open", "run", "send", "read", "wait", "list", "close"]},
+                "op": {"type": "string", "enum": ["exec", "open", "run", "send", "read", "wait", "list", "close"]},
                 "term": {"type": "integer", "description": "which terminal (from open or list)"},
                 "command": {"type": "string"},
                 "text": {"type": "string"},
                 "show": {"type": "boolean"},
                 "history": {"type": "boolean"},
-                "timeout": {"type": "number", "description": "wait: seconds"}
+                "timeout": {"type": "number", "description": "exec and wait: seconds"}
             }, "required": ["op"]}
         },
         {
@@ -163,10 +164,50 @@ impl Server {
             other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
         };
         Ok(match op {
+            // a command, run where the person sees it: its own terminal, which the
+            // window shows in the session's terminal pane (visual mode follows it).
+            "exec" => {
+                let command = args.get("command").and_then(Value::as_str).map(str::trim).filter(|c| !c.is_empty()).ok_or_else(|| anyhow::anyhow!("exec needs \"command\""))?.to_owned();
+                let secs = args.get("timeout").and_then(Value::as_f64).unwrap_or(120.0).clamp(1.0, 1800.0);
+                let session = self.session;
+                let c = self.client().await?;
+                // the command first, dimmed, as a prompt would show it: the person sees what's running.
+                let quoted = format!("'{}'", command.replace('\'', "'\\''"));
+                let shown = format!("printf '\\033[2m$ %s\\033[0m\\n' {quoted}; {command}");
+                let Response::Term { info } = c.request(Request::TermOpen { session, cwd: None, command: vec![shown], cols: 120, rows: 32, agent: true }).await? else {
+                    anyhow::bail!("unexpected reply")
+                };
+                let id = info.id;
+                let ended = c.request(Request::TermWait { term: id, text: None, timeout_ms: (secs * 1000.0) as u64 }).await;
+                let text = text_of(c.request(Request::TermCapture { term: id, history: true, format: None }).await?)?;
+                // as much as Bash would give back: the end of it, when it's long.
+                const KEEP: usize = 30_000;
+                let out = if text.len() > KEEP {
+                    let cut = text.char_indices().map(|(i, _)| i).find(|i| *i >= text.len() - KEEP).unwrap_or(0);
+                    format!("(the first {} characters are left out)\n{}", cut, &text[cut..])
+                } else {
+                    text
+                };
+                let said = match ended {
+                    Ok(Response::Term { info }) => format!("exit code {}\n{out}", info.exited.unwrap_or(-1)),
+                    _ => format!(
+                        "still running after {secs:.0}s, in terminal {id}, where the person can see it. wait for it (op wait, term {id}), read it (op read), or stop it (op send, text \\u0003).\n{out}"
+                    ),
+                };
+                // the finished ones pile up: a session keeps its last few.
+                if let Ok(Response::Terms { terms }) = c.request(Request::TermList).await {
+                    let mut done: Vec<_> = terms.iter().filter(|t| t.agent && t.session == session && t.exited.is_some()).map(|t| t.id).collect();
+                    done.sort_unstable();
+                    for old in done.iter().rev().skip(5) {
+                        let _ = c.request(Request::TermClose { term: *old }).await;
+                    }
+                }
+                said
+            }
             "open" => {
                 let command: Vec<String> = args.get("command").and_then(Value::as_str).filter(|c| !c.trim().is_empty()).map(|c| vec![c.to_owned()]).unwrap_or_default();
                 let session = self.session;
-                let reply = self.client().await?.request(Request::TermOpen { session, cwd: None, command, cols: 120, rows: 32 }).await?;
+                let reply = self.client().await?.request(Request::TermOpen { session, cwd: None, command, cols: 120, rows: 32, agent: false }).await?;
                 let Response::Term { info } = reply else { anyhow::bail!("unexpected reply") };
                 // a pane for it: a new terminal pane shows a running one of this session that no pane shows.
                 let shown = if args.get("show").and_then(Value::as_bool).unwrap_or(true) {

@@ -366,6 +366,11 @@ impl Shell {
         self.terms.insert(id, view);
     }
 
+    #[cfg(test)]
+    pub(crate) fn pane_term_for_test(&self, pane: &str) -> Option<TermId> {
+        self.pane_term(pane)
+    }
+
     /// the terminal a pane shows for the open session, if it has one yet.
     fn pane_term(&self, pane: &str) -> Option<TermId> {
         let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
@@ -378,6 +383,12 @@ impl Shell {
     pub(crate) fn sync_terminals(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
         let panes: Vec<String> = self.ui.panes().into_iter().filter(|p| p.module == Some(Module::Terminal) && self.pane_open(p)).map(|p| p.id.clone()).collect();
+        // visual mode: the first terminal pane shows the command the agent ran last.
+        let visual = self.model.open_summary().filter(|_| !self.show_new).is_some_and(|s| s.visual);
+        let latest = visual.then(|| self.terms.iter().filter(|(_, v)| v.borrow().info.agent && v.borrow().info.session == session).map(|(id, _)| *id).max()).flatten();
+        if let (Some(latest), Some(first)) = (latest, panes.first()) {
+            self.pane_terms.insert((first.clone(), session), latest);
+        }
         for pane in panes {
             let key = (pane.clone(), session);
             let bound = self.pane_terms.get(&key).copied().filter(|id| self.terms.contains_key(id));
@@ -886,7 +897,7 @@ impl Shell {
             b.started = Some(now);
             let layout = r#"{"root": {"type": "panes", "w": "full", "h": "full", "p": 8, "layout": {"split": "row", "children": [{"module": "conversation", "size": 1}, {"id": "bench", "module": "terminal", "size": 2}]}}}"#;
             let _ = self.use_ui_text(layout, window, cx);
-            let info = TermInfo { id: BENCH_ID, title: "bench".into(), cwd: "/".into(), cols: 120, rows: 40, session: None, command: vec![], exited: None, keep_open: true };
+            let info = TermInfo { id: BENCH_ID, title: "bench".into(), cwd: "/".into(), cols: 120, rows: 40, session: None, command: vec![], exited: None, keep_open: true, agent: false };
             self.add_term(info, cx);
             if let Some(v) = self.terms.get(&BENCH_ID) {
                 v.borrow_mut().attached = true;

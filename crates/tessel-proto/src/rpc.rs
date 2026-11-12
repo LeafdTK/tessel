@@ -115,6 +115,15 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    /// visual mode on or off, and whether its agent may still use Bash. what
+    /// isn't given stays. a running agent takes it up once it's idle.
+    SessionSetVisual {
+        session: SessionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        visual: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bash: Option<bool>,
+    },
     SessionUnlinkDir {
         cmd_id: Uuid,
         session: SessionId,
@@ -408,6 +417,9 @@ pub enum Request {
         command: Vec<String>,
         cols: u16,
         rows: u16,
+        /// run by the agent for the person to watch (visual mode).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        agent: bool,
     },
     TermList,
     /// send me this terminal's bytes: first everything on it (as a binary

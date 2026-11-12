@@ -35,6 +35,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl effort SESSION LEVEL            low, medium, high, xhigh, max or default
   tesselctl fast SESSION on|off             fast mode, where the model has it
   tesselctl link SESSION DIR                let the agent work in another folder too
+  tesselctl visual SESSION on|off           watch the agent work: commands in a terminal, browser steps paced
+  tesselctl visual SESSION bash on|off      in visual mode, let it use Bash too (off by default)
   tesselctl models                          the models the agent offers
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
@@ -443,6 +445,17 @@ async fn run() -> anyhow::Result<()> {
             };
             client.request(Request::SessionSetFast { cmd_id: Uuid::new_v4(), session, fast }).await?;
         }
+        "visual" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let on = |w: &str| match w {
+                "on" => Ok(true),
+                "off" => Ok(false),
+                other => Err(anyhow::anyhow!("on or off, not {other}")),
+            };
+            let first = args.next("on, off or bash")?;
+            let (visual, bash) = if first == "bash" { (None, Some(on(&args.next("on or off")?)?)) } else { (Some(on(&first)?), None) };
+            client.request(Request::SessionSetVisual { session, visual, bash }).await?;
+        }
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionLinkDir { cmd_id: Uuid::new_v4(), session, path: args.next("a folder")? }).await?;
@@ -760,7 +773,7 @@ async fn term(client: &Client, events: &mut Events, args: &mut Args, json: bool)
                 args.rest.remove(0);
             }
             let command = std::mem::take(&mut args.rest);
-            let Response::Term { info } = client.request(Request::TermOpen { session, cwd, command, cols, rows }).await? else { bail!("unexpected reply") };
+            let Response::Term { info } = client.request(Request::TermOpen { session, cwd, command, cols, rows, agent: false }).await? else { bail!("unexpected reply") };
             if json {
                 println!("{}", serde_json::to_string(&info)?);
             } else {
