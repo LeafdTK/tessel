@@ -791,12 +791,12 @@ impl Shell {
     /// places are made to start from where they were. while the pointer rests
     /// on the list, nothing changes places at all.
     fn reflow_sidebar(&mut self) {
-        self.reflow_sidebar_as(self.sidebar_hovered);
+        self.reflow_sidebar_as(self.sidebar_hovered, true);
     }
 
     /// `hold` keeps rows where they are under the pointer: for what the
     /// daemon changes, never for what you just did yourself.
-    pub(crate) fn reflow_sidebar_as(&mut self, hold: bool) {
+    pub(crate) fn reflow_sidebar_as(&mut self, hold: bool, glide: bool) {
         let real = SidebarLayout::build(&self.model);
         let next = if hold { self.shown.held(&real) } else { real };
         if next == self.shown {
@@ -804,7 +804,7 @@ impl Shell {
         }
         // the first fill, and anything that happens while the window is in
         // the background, just appears: there is nobody to show the change to.
-        if !self.shown.entries.is_empty() && self.window_active {
+        if glide && !self.shown.entries.is_empty() && self.window_active {
             for (id, dy) in self.shown.moves_to(&next) {
                 self.row_fx.shift(id, dy, PANEL);
             }

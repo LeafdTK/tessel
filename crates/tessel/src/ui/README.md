@@ -410,6 +410,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
 | `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
+| `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |

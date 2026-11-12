@@ -408,6 +408,10 @@ pub struct ThemeSpec {
     pub felt: Option<bool>,
     /// what's behind the panes: nothing unless asked for.
     pub backdrop: Option<Backdrop>,
+    /// the terminal's text size, in points (it uses the code font).
+    pub term_size: Option<f32>,
+    /// the terminal's colours: theme (the window's), ink, paper or midnight.
+    pub term_colors: Option<String>,
 }
 
 impl ThemeSpec {
@@ -419,8 +423,9 @@ impl ThemeSpec {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop", "terminal"])?;
         let mut t = Self::default();
+        let (mut t_size, mut t_colors) = (None, None);
         if let Some(b) = obj.get("base") {
             t.base = Some(one_of(b, "theme.base", &bases)?);
         }
@@ -453,9 +458,25 @@ impl ThemeSpec {
             t.glass = Some(glass);
             t.felt = Some(felt);
         }
+        if let Some(t) = obj.get("terminal") {
+            let o = t.as_object().ok_or("theme.terminal: expected an object, like {\"size\": 13, \"colors\": \"ink\"}")?;
+            keys(o, "theme.terminal", &["size", "colors"])?;
+            if let Some(v) = o.get("size") {
+                let n = num(v, "theme.terminal.size")?;
+                if !(9.0..=24.0).contains(&n) {
+                    return Err(format!("theme.terminal.size: {n} is out of range: 9 to 24"));
+                }
+                t_size = Some(n);
+            }
+            if let Some(v) = o.get("colors") {
+                t_colors = Some(one_of(v, "theme.terminal.colors", &[("theme", "theme"), ("ink", "ink"), ("paper", "paper"), ("midnight", "midnight")])?.to_owned());
+            }
+        }
         if let Some(b) = obj.get("backdrop") {
             t.backdrop = Some(one_of(b, "theme.backdrop", &[("none", Backdrop::None), ("dither", Backdrop::Dither), ("space", Backdrop::Space)])?);
         }
+        t.term_size = t_size;
+        t.term_colors = t_colors;
         for (key, out) in [("light", &mut t.light), ("dark", &mut t.dark_tokens)] {
             let Some(m) = obj.get(key) else { continue };
             let m = m.as_object().ok_or_else(|| format!("theme.{key}: expected an object of colour roles, like {{\"accent\": \"#df3047\"}}"))?;
@@ -481,6 +502,8 @@ impl ThemeSpec {
         self.glass = over.glass.or(self.glass);
         self.felt = over.felt.or(self.felt);
         self.backdrop = over.backdrop.or(self.backdrop);
+        self.term_size = over.term_size.or(self.term_size);
+        self.term_colors = over.term_colors.or(self.term_colors.take());
         self.light.extend(over.light);
         self.dark_tokens.extend(over.dark_tokens);
     }
@@ -1484,6 +1507,14 @@ mod tests {
         assert_eq!(paint("transparent").a, 0.0);
         assert!(hex("#12345").is_none() && hex("123456").is_none() && hex("#ggg").is_none());
         assert!((hex("#00000080").unwrap().a - 128.0 / 255.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_terminal_has_its_own_size_and_colours() {
+        let t = parse(r#"{"theme": {"terminal": {"size": 15, "colors": "midnight"}}}"#).unwrap().theme;
+        assert_eq!((t.term_size, t.term_colors.as_deref()), (Some(15.0), Some("midnight")));
+        assert!(parse(r#"{"theme": {"terminal": {"size": 40}}}"#).unwrap_err().contains("terminal.size"));
+        assert!(parse(r#"{"theme": {"terminal": {"colors": "neon"}}}"#).unwrap_err().contains("terminal.colors"));
     }
 
     #[test]

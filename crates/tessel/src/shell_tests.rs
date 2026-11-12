@@ -1278,6 +1278,24 @@ fn a_new_session_gets_a_worktree_unless_its_folder_isnt_a_repository(cx: &mut Te
 }
 
 #[gpui_kit::test]
+fn the_terminal_look_is_set_from_a_command_and_kept_in_the_file(cx: &mut TestAppContext) {
+    let dir = layout_dir("terminal-look");
+    let file = dir.join("ui.json");
+    let mut rig = Rig::launched(cx, Launch { ui: Some(file.clone()), ..Launch::default() });
+    let mut exec = |rig: &mut Rig, cx: &mut TestAppContext, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("terminal.look", &args, window, cx))).unwrap();
+    exec(&mut rig, cx, serde_json::json!({"size": 15, "colors": "ink"})).unwrap();
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!((f["theme"]["terminal"]["size"].as_f64(), f["theme"]["terminal"]["colors"].as_str()), (Some(15.0), Some("ink")));
+    rig.settle(cx);
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.theme.term_colors.clone()).as_deref(), Some("ink"), "the window follows the file");
+    exec(&mut rig, cx, serde_json::json!({"colors": "theme"})).unwrap();
+    let f: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert!(f["theme"]["terminal"].get("colors").is_none(), "theme is the default, so it isn't written");
+    assert!(exec(&mut rig, cx, serde_json::json!({"size": 3})).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.

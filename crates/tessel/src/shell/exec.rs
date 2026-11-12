@@ -198,6 +198,43 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "backdrop", v), window, cx);
                 done
             }
+            "terminal.look" => {
+                let size = args.get("size").and_then(Value::as_f64);
+                if let Some(n) = size
+                    && !(9.0..=24.0).contains(&n)
+                {
+                    return Err(format!("{n} is out of range: a size from 9 to 24"));
+                }
+                let colors = arg(args, "colors").map(str::to_owned);
+                if let Some(c) = &colors
+                    && !["theme", "ink", "paper", "midnight"].contains(&c.as_str())
+                {
+                    return Err(format!("\"{c}\" isn't a colour scheme. use theme, ink, paper or midnight"));
+                }
+                if size.is_none() && colors.is_none() {
+                    return Err("say what to change: size, colors, or both".into());
+                }
+                self.edit_ui(
+                    |f| {
+                        let theme = f.entry("theme").or_insert_with(|| json!({}));
+                        if theme.is_string() {
+                            *theme = json!({"base": theme.clone()});
+                        }
+                        let term = theme.as_object_mut().map(|o| o.entry("terminal").or_insert_with(|| json!({})));
+                        if let Some(Value::Object(o)) = term {
+                            if let Some(n) = size {
+                                o.insert("size".into(), json!(n));
+                            }
+                            if let Some(c) = colors {
+                                if c == "theme" { o.remove("colors"); } else { o.insert("colors".into(), json!(c)); }
+                            }
+                        }
+                    },
+                    window,
+                    cx,
+                );
+                done
+            }
             "backdrop.next" => {
                 self.next_space_photo(cx);
                 done

@@ -168,6 +168,20 @@ fn rgb(c: Rgb) -> Hsla {
 /// the 16 colours programs name, for a terminal drawn on `bg`: the usual
 /// hues, each made readable on that background (yellow on white, blue on
 /// black). black and white stay what they are: programs use them as grounds.
+/// a terminal's ink, ground and accent: the window's, or one of tessel's schemes.
+pub(crate) fn term_scheme(name: Option<&str>, p: &theme::Palette) -> (Hsla, Hsla, Hsla) {
+    let c = |hex: u32| -> Hsla { gpui_kit::rgb(hex).into() };
+    match name {
+        // near-black, crisp: for long sessions in a light window.
+        Some("ink") => (c(0xe7e5e4), c(0x0e0e10), c(0x8fc1ec)),
+        // warm white, dark ink: a terminal that reads like a page.
+        Some("paper") => (c(0x2a2622), c(0xfbf8f3), c(0x2d5f9a)),
+        // deep blue, cool ink.
+        Some("midnight") => (c(0xd8e2f0), c(0x0d1420), c(0x7aa2f7)),
+        _ => (p.label, p.window, p.accent),
+    }
+}
+
 fn ansi_for(bg: Hsla, accent: Hsla) -> [Rgb; 16] {
     let hue = |h: f32, s: f32, l: f32| gpui_kit::hsla(h / 360.0, s, l, 1.0);
     let dark = theme::luminance(bg, bg) < 0.2;
@@ -620,16 +634,22 @@ impl Shell {
         let view = self.terms[&id].clone();
         let focus = view.borrow().focus.clone();
         let exited = view.borrow().info.exited;
-        let colors = (to_rgb(p.label), to_rgb(p.window), to_rgb(p.accent));
-        let ansi = ansi_for(p.window, p.accent);
-        let font_size = theme::z(13.0);
-        let line_h = theme::z(18.0);
+        let (fg, bg, accent) = term_scheme(self.ui.theme.term_colors.as_deref(), &p);
+        let colors = (to_rgb(fg), to_rgb(bg), to_rgb(accent));
+        let ansi = ansi_for(bg, accent);
+        let size = self.ui.theme.term_size.unwrap_or(13.0);
+        let font_size = theme::z(size);
+        let line_h = theme::z((size * 1.38).round());
         let mono = theme::mono();
         let mono_paint = mono.clone();
         let paint_view = view.clone();
         let bridge = self.bridge.cmds.clone();
         let focus_for_paint = focus.clone();
         let ime = view.borrow().ime.clone();
+        // while the panes glide to new sizes, the terminal keeps its grid and the
+        // pane crops it: a resize every frame makes the shell redraw every frame,
+        // which flickers. it takes its new size once, when the panes settle.
+        let gliding = self.panes_moving();
         let surface = canvas(
             move |bounds, window, _cx| {
                 let mut v = paint_view.borrow_mut();
@@ -648,7 +668,7 @@ impl Shell {
                 v.bounds = bounds;
                 let cols = (((bounds.size.width - px(2.0 * PAD)) / cw).floor() as i32).clamp(2, 1000) as u16;
                 let rows = (((bounds.size.height - px(2.0 * PAD)) / line_h).floor() as i32).clamp(1, 500) as u16;
-                if (cols, rows) != v.size {
+                if (cols, rows) != v.size && !(gliding && v.size != (0, 0)) {
                     v.size = (cols, rows);
                     let _ = v.term.resize(cols, rows, f32::from(cw) as u32, f32::from(line_h) as u32);
                     let _ = bridge.send(Cmd::TermResize(id, cols, rows));
@@ -752,6 +772,7 @@ impl Shell {
             .test_support()
             .aria_label("Terminal")
             .size_full()
+            .bg(bg)
             .relative()
             .track_focus(&focus)
             .key_context("Terminal")

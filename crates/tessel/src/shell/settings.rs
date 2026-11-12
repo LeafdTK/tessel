@@ -22,11 +22,12 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 6] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 7] = [
     ("appearance", "Appearance", "icons/sun-moon.svg"),
     ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
     ("models", "Models", "icons/box.svg"),
+    ("terminal", "Terminal", "icons/square-terminal.svg"),
     ("agents", "Agents", "icons/bot.svg"),
     ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
@@ -431,6 +432,7 @@ impl Shell {
             "agents" => ("Agents", agents_rows),
             "themes" => ("Themes", themes_rows),
             "models" => ("Models", v_flex().child(self.models_settings(cx))),
+            "terminal" => ("Terminal", self.terminal_settings(cx)),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };
@@ -520,6 +522,46 @@ impl Shell {
     }
 
     /// one setting: what it is (and, quietly, what it does) on the left, the control on the right.
+    /// the terminal's look: its font (the code font), size and colours.
+    fn terminal_settings(&self, cx: &mut Context<Self>) -> Div {
+        let t = &self.ui.theme;
+        let size = t.term_size.unwrap_or(13.0);
+        let size_name = match size as i32 {
+            11 => "11",
+            12 => "12",
+            14 => "14",
+            16 => "16",
+            _ => "13",
+        };
+        let colors = t.term_colors.clone().unwrap_or_else(|| "theme".into());
+        let colors: &'static str = match colors.as_str() {
+            "ink" => "ink",
+            "paper" => "paper",
+            "midnight" => "midnight",
+            _ => "theme",
+        };
+        v_flex()
+            .child(self.setting_row(
+                "Font",
+                "The code font, shared with code everywhere. Return applies it; empty is the default.",
+                div().w(px(180.)).child(Input::new(&self.mono_input).id("terminal-font-input").small()),
+            ))
+            .child(self.setting_row(
+                "Size",
+                "In points.",
+                self.segmented("terminal-size", &[("11", "11"), ("12", "12"), ("13", "13"), ("14", "14"), ("16", "16")], size_name, cx, |this, v, w, cx| {
+                    let _ = this.exec("terminal.look", &json!({"size": v.parse::<f64>().unwrap_or(13.0)}), w, cx);
+                }),
+            ))
+            .child(self.setting_row(
+                "Colours",
+                "Theme follows the window. The others keep their look whatever the theme.",
+                self.segmented("terminal-colors", &[("theme", "Theme"), ("ink", "Ink"), ("paper", "Paper"), ("midnight", "Midnight")], colors, cx, |this, v, w, cx| {
+                    let _ = this.exec("terminal.look", &json!({"colors": v}), w, cx);
+                }),
+            ))
+    }
+
     fn setting_row(&self, label: &'static str, hint: &'static str, control: impl IntoElement) -> Div {
         let p = self.palette.get();
         h_flex()

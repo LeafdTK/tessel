@@ -15,8 +15,9 @@ impl Shell {
         if !self.model.collapsed.remove(project) {
             self.model.collapsed.insert(project.to_owned());
         }
-        // a fold is yours: it happens now, even with the pointer over the list.
-        self.reflow_sidebar_as(false);
+        // a fold is yours: it happens now, even with the pointer over the list,
+        // and its rows are simply there, with no slide to bounce.
+        self.reflow_sidebar_as(false, false);
         cx.notify();
     }
 
