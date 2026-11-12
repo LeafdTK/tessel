@@ -209,9 +209,11 @@ impl Shell {
                     }
                 }
                 if let Some((img, w, h)) = v.frame.clone() {
-                    // drawn at the screen's own pixels, from the top left, as the page lays out.
-                    let scale = window.scale_factor();
-                    let at = Bounds::new(bounds.origin, size(px(w as f32 / scale), px(h as f32 / scale)));
+                    // the page is as wide as the pane was when it was told its size; its
+                    // frames come at any pixel density, and are drawn at that width, from
+                    // the top left, so a pane mid-resize doesn't stretch them.
+                    let wide = v.told.map_or(f32::from(bounds.size.width), |t| t.0 as f32);
+                    let at = Bounds::new(bounds.origin, size(px(wide), px(wide * h as f32 / w.max(1) as f32)));
                     let _ = window.paint_image(bounds, at, Corners::default(), img, 0, false);
                 }
                 // where the agent just clicked: a ring that fades.

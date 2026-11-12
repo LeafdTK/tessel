@@ -325,6 +325,7 @@ impl Browser {
             "--no-default-browser-check",
             "--disable-background-networking",
             "--window-size=1280,800",
+            "--force-device-scale-factor=2",
             "about:blank",
         ])
         .stdin(std::process::Stdio::null())
@@ -747,6 +748,22 @@ mod tests {
         b.act(s, BrowserAct::Watch { on: true }, false, "").await.unwrap();
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(seen.lock().unwrap().iter().any(|e| matches!(e, Event::BrowserFrame { .. })), "frames arrive");
+        // a retina pane gets retina frames: twice the page's size in pixels.
+        b.act(s, BrowserAct::Resize { width: 640, height: 400, scale: 2.0 }, false, "").await.unwrap();
+        chrome.cdp.eval(&page_id, "document.body.style.background='rgb(200,10,10)'").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let last = seen.lock().unwrap().iter().rev().find_map(|e| match e {
+            Event::BrowserFrame { jpeg, width, .. } => Some((jpeg.clone(), *width)),
+            _ => None,
+        });
+        let (jpeg, css) = last.expect("a frame after resizing");
+        use base64::Engine as _;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(jpeg).unwrap();
+        // the size, from the JPEG's start-of-frame marker.
+        let sof = bytes.windows(2).position(|w| w[0] == 0xFF && (w[1] == 0xC0 || w[1] == 0xC2)).unwrap();
+        let (h, w) = (u16::from_be_bytes([bytes[sof + 5], bytes[sof + 6]]), u16::from_be_bytes([bytes[sof + 7], bytes[sof + 8]]));
+        eprintln!("frame {w}x{h} for a page {css} wide");
+        assert_eq!((w, h, css), (1280, 800, 640));
         // pointing at the button picks it.
         b.act(s, BrowserAct::Pick { on: true }, false, "").await.unwrap();
         let at = chrome.cdp.eval(&page_id, &locate_script("#go")).await.unwrap();
