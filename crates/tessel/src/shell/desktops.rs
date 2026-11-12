@@ -118,6 +118,85 @@ impl Shell {
         out
     }
 
+    /// does something on a desktop you aren't looking at want you: a chat it
+    /// shows, or on a desktop that lists some projects, anything in them.
+    fn desktop_wants(&self, at: usize) -> bool {
+        let Some(d) = self.ui.desktops.get(at) else { return false };
+        let shown: Vec<SessionId> = match self.stashed.get(&d.id) {
+            Some(st) => st.open.into_iter().chain(st.views.values().map(|v| v.session)).collect(),
+            None => d.open.as_deref().and_then(|s| s.parse::<uuid::Uuid>().ok()).map(SessionId).into_iter().collect(),
+        };
+        self.model.sessions.iter().filter(|s| s.attention.is_some()).any(|s| {
+            shown.contains(&s.id) || (!d.scope.is_empty() && d.scope.contains(&crate::model::project_name(s)))
+        })
+    }
+
+    /// the desktops by name, the one showing filled; + makes another.
+    pub(crate) fn desktops_el(&self, cx: &mut Context<Self>) -> AnyElement {
+        use crate::theme::{self, Type, Typeset as _};
+        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        use gpui_kit::component::{Icon, Sizable as _, h_flex};
+        use gpui_kit::prelude::FluentBuilder as _;
+        let p = self.palette.get();
+        let add = Button::new("desktop-new")
+            .ghost()
+            .small()
+            .icon(Icon::empty().path("icons/plus.svg"))
+            .tooltip("New desktop")
+            .on_click(cx.listener(|this, _, window, cx| this.run_key("desktop.new", json!({}), window, cx)));
+        // one desktop: nothing to switch between, just the way to make another.
+        if self.ui.desktops.len() < 2 {
+            return h_flex().id("desktops").test_support().justify_end().child(add).into_any_element();
+        }
+        let mut row = h_flex().id("desktops").test_support().gap(theme::z(2.)).items_center().overflow_x_scroll();
+        for (i, d) in self.ui.desktops.iter().enumerate() {
+            let on = i == self.ui.desktop;
+            if self.renaming_desktop == Some(i) {
+                row = row.child(div().w(theme::z(120.)).child(gpui_kit::component::input::Input::new(&self.desktop_rename).small()));
+                continue;
+            }
+            let wants = !on && self.desktop_wants(i);
+            let tip = if i < 9 { format!("{}   ⌘{}", d.name, i + 1) } else { d.name.clone() };
+            row = row.child(
+                h_flex()
+                    .id(SharedString::from(format!("desktop-{}", i + 1)))
+                    .test_support()
+                    .aria_label(SharedString::from(format!("{}{}", d.name, if on { ", showing" } else { "" })))
+                    .flex_shrink_0()
+                    .h(theme::z(24.))
+                    .px(theme::z(9.))
+                    .gap(theme::z(5.))
+                    .items_center()
+                    .rounded(theme::z(theme::R_CONTROL))
+                    .cursor_pointer()
+                    .set(Type::Callout)
+                    .when(on, |d| d.bg(p.selection).text_color(p.label))
+                    .when(!on, |d| d.text_color(p.secondary).hover(|d| d.bg(p.hover).text_color(p.label)))
+                    .child(div().max_w(theme::z(96.)).truncate().child(d.name.clone()))
+                    // something on it wants you: the blue every "waiting" in tessel is.
+                    .when(wants, |d| d.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(theme::info(&p))))
+                    .tooltip({
+                        let tip = tip.clone();
+                        move |w, cx| gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(w, cx)
+                    })
+                    .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                        if ev.click_count() >= 2 {
+                            let name = this.ui.desktops.get(i).map(|d| d.name.clone()).unwrap_or_default();
+                            this.desktop_rename.update(cx, |s, cx| {
+                                s.set_value(name, window, cx);
+                                s.focus(window, cx);
+                            });
+                            this.renaming_desktop = Some(i);
+                            cx.notify();
+                        } else if i != this.ui.desktop {
+                            this.use_desktop(i, window, cx);
+                        }
+                    })),
+            );
+        }
+        h_flex().gap(theme::z(4.)).items_center().child(div().flex_1().min_w_0().child(row)).child(add).into_any_element()
+    }
+
     /// ⌘1…⌘9: that desktop, when there is one.
     pub(crate) fn go_desktop(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
         if n >= 1 && n <= self.ui.desktops.len() && n - 1 != self.ui.desktop {

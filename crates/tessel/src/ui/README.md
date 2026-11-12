@@ -139,6 +139,7 @@ as long as its `id` stays the same. ⌥⌘S toggles the drawer called `sidebar` 
 | `connection` | a line saying the daemon can't be reached; nothing while all is well                |                                                       |
 | `error`      | the last thing that went wrong (a file too big to attach, say); nothing otherwise   |                                                       |
 | `add`        | the + menu: open a project folder, open a GitHub project, quick start a new project from a template, or a recent folder |              |
+| `desktops`   | the desktops by name: click to go there, double-click to rename, + for another. a layout without one gets one beside its `settings` button |              |
 
 Buttons: `icon` is any [lucide](https://lucide.dev/icons) icon name in kebab case
 (`panel-left`, `arrow-up`, `paperclip`, `sparkles`, `square`, `layout-grid`, `git-branch`,

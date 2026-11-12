@@ -256,10 +256,33 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
         }
     }
     let notch = notch.or(base_notch.flatten());
+    if depth == 0 {
+        place_desktops(&mut root);
+    }
     let mut ui = Ui { root, theme, freestyle, notch, desktops: Vec::new(), desktop: 0, report: harmony::Report::default() };
     check(&ui)?;
     ui.report = harmony::harmonize(&mut ui);
     Ok(ui)
+}
+
+/// a layout that doesn't say where the desktops go gets them beside its
+/// settings button, so a layout made before desktops existed shows them too.
+fn place_desktops(root: &mut Node) {
+    fn has(n: &Node) -> bool {
+        n.kind == Kind::Desktops || n.children.iter().any(has)
+    }
+    fn place(n: &mut Node) -> bool {
+        if let Some(i) = n.children.iter().position(|c| c.id.as_deref() == Some("settings")) {
+            if let Ok(d) = Node::parse(&serde_json::json!({"type": "desktops"}), &format!("{}.desktops", n.path)) {
+                n.children.insert(i + 1, d);
+            }
+            return true;
+        }
+        n.children.iter_mut().any(place)
+    }
+    if !has(root) {
+        place(root);
+    }
 }
 
 fn preset_names() -> String {
@@ -656,9 +679,11 @@ pub enum Kind {
     Panes,
     /// the + menu: open a folder, clone a repository, start a project, or a recent folder.
     Add,
+    /// the desktops, by name: click one to go there, + for another.
+    Desktops,
 }
 
-pub const KINDS: [(&str, Kind); 23] = [
+pub const KINDS: [(&str, Kind); 24] = [
     ("row", Kind::Row),
     ("column", Kind::Column),
     ("drawer", Kind::Drawer),
@@ -682,6 +707,7 @@ pub const KINDS: [(&str, Kind); 23] = [
     ("panel", Kind::Panel),
     ("panes", Kind::Panes),
     ("add", Kind::Add),
+    ("desktops", Kind::Desktops),
 ];
 
 impl Kind {
@@ -1634,6 +1660,16 @@ mod tests {
         assert!(parse(r#"{"desktops": [{"id": "x"}, {"id": "x"}]}"#).unwrap_err().contains("used twice"));
         assert!(parse(r#"{"desktops": [{"name": "A", "scope": "orchard"}]}"#).unwrap_err().contains("scope"));
         assert!(parse(r#"{}"#).unwrap().desktops.is_empty(), "no list: one desktop, as before");
+    }
+
+    #[test]
+    fn a_layout_made_before_desktops_gets_them_beside_settings() {
+        let old = parse(r#"{"root": {"type": "row", "children": [{"type": "row", "children": [{"type": "button", "id": "settings", "action": "settings", "icon": "settings"}]}]}}"#).unwrap();
+        let row = &old.root.children[0];
+        assert_eq!(row.children.iter().map(|c| c.kind).collect::<Vec<_>>(), [Kind::Button, Kind::Desktops]);
+        let placed = parse(r#"{"root": {"type": "row", "children": [{"type": "desktops"}, {"type": "button", "id": "settings", "action": "settings", "icon": "settings"}]}}"#).unwrap();
+        assert_eq!(placed.nodes().iter().filter(|n| n.kind == Kind::Desktops).count(), 1, "one placed by hand stays where it is, alone");
+        assert_eq!(Ui::default_layout().nodes().iter().filter(|n| n.kind == Kind::Desktops).count(), 1);
     }
 
     #[test]

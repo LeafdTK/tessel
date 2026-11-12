@@ -392,6 +392,7 @@ impl Shell {
                 self.styled(div().relative().child(self.panes_el(n, now, cx)).children(strip), s).into_any_element()
             }
             Kind::Add => self.styled(div().flex_shrink_0().child(self.add_menu("sidebar-add", cx)), s).into_any_element(),
+            Kind::Desktops => self.styled(div().flex_1().min_w_0().child(self.desktops_el(cx)), s).into_any_element(),
             Kind::Panel => self.styled(div().size_full().child(self.panel(cx)), s).into_any_element(),
         })
     }

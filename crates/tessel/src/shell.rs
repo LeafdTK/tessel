@@ -225,6 +225,9 @@ pub struct Shell {
     /// what a session is being renamed to, and which one.
     rename_input: Entity<InputState>,
     pub(crate) renaming: Option<SessionId>,
+    /// the name of a desktop being renamed, in place.
+    pub(crate) desktop_rename: Entity<InputState>,
+    pub(crate) renaming_desktop: Option<usize>,
 
     // the workspace panel, for the open session. what it showed for other
     // sessions is parked, so coming back finds the same file and any edits.
@@ -355,6 +358,7 @@ impl Shell {
         let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models"));
         let project_name = cx.new(|cx| InputState::new(window, cx).placeholder("my-project"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
+        let desktop_rename = cx.new(|cx| InputState::new(window, cx));
         let palette_ui = palette::PaletteState::new(window, cx);
         let palette_input = palette_ui.input.clone();
         let changes_search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
@@ -401,6 +405,23 @@ impl Shell {
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.palette_confirm(window, cx),
+                _ => {}
+            }),
+            // a desktop's new name goes in with return; clicking away leaves it as it was.
+            cx.subscribe_in(&desktop_rename, window, |this, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    if let Some(at) = this.renaming_desktop.take() {
+                        let name = input.read(cx).value().trim().to_owned();
+                        if !name.is_empty() {
+                            this.run_key("desktop.rename", serde_json::json!({"name": name, "desktop": at + 1}), window, cx);
+                        }
+                        window.focus(&this.root_focus, cx);
+                    }
+                }
+                InputEvent::Blur => {
+                    this.renaming_desktop = None;
+                    cx.notify();
+                }
                 _ => {}
             }),
             cx.subscribe_in(&rename_input, window, |this, _, ev: &InputEvent, window, cx| {
@@ -582,6 +603,8 @@ impl Shell {
             github_private: false,
             rename_input: rename_input.clone(),
             renaming: None,
+            desktop_rename: desktop_rename.clone(),
+            renaming_desktop: None,
             ws: Workspace::default(),
             ws_session: None,
             ws_parked: HashMap::new(),

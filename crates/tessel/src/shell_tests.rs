@@ -2089,8 +2089,9 @@ fn desktops_keep_their_own_chats_and_projects(cx: &mut TestAppContext) {
     assert!(asked.iter().any(|c| matches!(c, Cmd::Follow(extra) if extra.contains(&a.id))), "Main's chat stays followed: {asked:?}");
     rig.feed(cx, vec![snapshot(web.clone(), vec![])]);
 
-    // back to Main: its chat, from what was already loaded, and every project.
-    exec(&mut rig, cx, "desktop.use", serde_json::json!({"desktop": "Main"})).unwrap();
+    // back to Main, by its name in the sidebar: its chat, from what was already loaded, and every project.
+    assert!(rig.exists(cx, "desktop-1") && rig.exists(cx, "desktop-2"));
+    rig.click(cx, "desktop-1");
     assert_eq!(rig.shell.read_with(cx, |s, _| s.ui.desktop), 0);
     assert_eq!(rig.shell.read_with(cx, |s, _| s.model.open.as_ref().map(|o| o.id)), Some(a.id), "no waiting: it was still on hand");
     assert!(rig.exists(cx, a.id.0) && rig.exists(cx, web.id.0));
