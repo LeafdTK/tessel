@@ -395,22 +395,52 @@ impl SidebarLayout {
     pub fn held(&self, next: &SidebarLayout) -> SidebarLayout {
         let alive: std::collections::HashSet<SessionId> = next.rows().collect();
         let here: std::collections::HashSet<SessionId> = self.rows().collect();
+        // which headers there are now, and which of them have rows under them
+        // (a collapsed project's header has none, and stays).
+        let mut rows_under: HashMap<&String, bool> = HashMap::new();
+        let mut under: Option<&String> = None;
+        for e in &next.entries {
+            match e {
+                Entry::Header(h) => {
+                    rows_under.entry(h).or_insert(false);
+                    under = Some(h);
+                }
+                Entry::Row(_) => {
+                    if let Some(h) = under {
+                        rows_under.insert(h, true);
+                    }
+                }
+                Entry::Sub(..) => {}
+            }
+        }
         let mut entries: Vec<Entry> = Vec::new();
+        // a header kept here that is waiting to see whether any of its rows stayed.
+        let mut pending: Option<Entry> = None;
         for e in &self.entries {
             match e {
-                Entry::Row(id) | Entry::Sub(id, _) if alive.contains(id) => entries.push(e.clone()),
-                Entry::Row(_) | Entry::Sub(..) => {}
-                Entry::Header(_) => {
-                    // a header whose rows have all gone goes with them.
-                    if matches!(entries.last(), Some(Entry::Header(_))) {
-                        entries.pop();
-                    }
+                Entry::Row(id) | Entry::Sub(id, _) if alive.contains(id) => {
+                    entries.extend(pending.take());
                     entries.push(e.clone());
+                }
+                Entry::Row(_) | Entry::Sub(..) => {}
+                Entry::Header(h) => {
+                    // the one before had no rows: kept only if that's how it is
+                    // now too (collapsed), else its rows have all gone.
+                    if let Some(Entry::Header(prev)) = pending.take()
+                        && rows_under.get(&prev) == Some(&false)
+                    {
+                        entries.push(Entry::Header(prev));
+                    }
+                    if rows_under.contains_key(h) {
+                        pending = Some(e.clone());
+                    }
                 }
             }
         }
-        if matches!(entries.last(), Some(Entry::Header(_))) {
-            entries.pop();
+        if let Some(Entry::Header(prev)) = pending.take()
+            && rows_under.get(&prev) == Some(&false)
+        {
+            entries.push(Entry::Header(prev));
         }
         // newcomers keep the header they have in `next`, at the end.
         let mut header: Option<&String> = None;
@@ -777,6 +807,25 @@ mod tests {
         assert_eq!(moves[&id(3)], ENTER_FROM);
         assert_eq!(moves[&id(2)], -ROW_H);
         assert!(before.moves_to(&before).is_empty());
+    }
+
+    #[test]
+    fn under_a_resting_pointer_a_collapsed_project_keeps_its_header() {
+        let collapsed = |sessions: Vec<SessionSummary>, folded: &[&str]| {
+            let mut m = Model::default();
+            m.set_sessions(sessions);
+            m.collapsed = folded.iter().map(|s| (*s).to_owned()).collect();
+            SidebarLayout::build(&m)
+        };
+        let sessions = || vec![in_project(1, "/w/api", None), in_project(2, "/w/web", None)];
+        // every project folded: only their headers, which must not vanish while held.
+        let shown = collapsed(sessions(), &["api", "web"]);
+        assert_eq!(shape(&shown), ["[api]", "[web]"]);
+        let real = collapsed(sessions(), &["api", "web"]);
+        assert_eq!(shape(&shown.held(&real)), ["[api]", "[web]"], "the list doesn't empty under the pointer");
+        // one folded among open ones keeps its place too.
+        let shown = collapsed(sessions(), &["api"]);
+        assert_eq!(shape(&shown.held(&shown)), ["[api]", "[web]", "2"]);
     }
 
     #[test]
