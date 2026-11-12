@@ -43,7 +43,7 @@ Use a diagram or a formula when it explains something better than prose, not for
 pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Reach for them on your own, without being asked and without announcing them:\n\
 - When something reads better seen than read (numbers to compare, a result summary, a checklist, progress that moves while you work, options for the person to pick), draw it with tessel_surface instead of a markdown table, ASCII art or a status paragraph, and update it in place with set as the work goes on.\n\
 - Builds, test suites, dev servers and anything else the person should watch go in a terminal with tessel_terminal (Bash stays for quick one-off commands).\n\
-- When you build or change anything with a UI, look at it with tessel_browser: open it, use it, screenshot it. The person watches that page in the Browser pane and may point at parts of it to show you what they mean (those arrive as a message with the element's selector, HTML and a picture).\n\
+- When you build or change anything with a UI, look at it with tessel_browser: open it, use it, screenshot it. The person watches that page in the Browser pane and may point at parts of it to show you what they mean (each arrives as a picked_element note, with its selector and, in a development build, the source file and components it came from, then its picture: go to that source first).\n\
 - This workspace has ten ports of its own, $TESSEL_PORT to $TESSEL_PORT+9: start servers on those, never on a fixed port another workspace may be using. Its setup script, run buttons and the files each new workspace gets are in .tessel/settings.toml; change that file when asked to change any of them.\n\
 - Arrange the window when it helps them follow along with tessel_window: show the changes after editing files, the git pane after a commit.\n\
 Keep to what genuinely reads better that way: a one-line answer stays a line.";
@@ -60,6 +60,13 @@ pub fn user_message(text: &str, attachments: &[Attachment]) -> Value {
         blocks.push(json!({"type": "text", "text": text}));
     }
     for a in attachments {
+        // a picked element: what it is and where, then its picture.
+        if let Some(note) = &a.element {
+            blocks.push(json!({"type": "text", "text": note}));
+            if a.data.is_empty() || !a.media_type.starts_with("image/") {
+                continue;
+            }
+        }
         let kind = if a.media_type.starts_with("image/") { "image" } else { "document" };
         blocks.push(json!({"type": kind, "source": {"type": "base64", "media_type": a.media_type, "data": a.data}}));
     }
@@ -150,8 +157,8 @@ mod tests {
     fn a_message_with_attachments_becomes_blocks_and_one_without_stays_plain() {
         assert_eq!(user_message("hi", &[])["message"]["content"], "hi");
         let files = [
-            Attachment { name: "shot.png".into(), media_type: "image/png".into(), data: "AAAA".into() },
-            Attachment { name: "spec.pdf".into(), media_type: "application/pdf".into(), data: "BBBB".into() },
+            Attachment { name: "shot.png".into(), media_type: "image/png".into(), data: "AAAA".into(), element: None },
+            Attachment { name: "spec.pdf".into(), media_type: "application/pdf".into(), data: "BBBB".into(), element: None },
         ];
         let v = user_message("look", &files);
         let blocks = v["message"]["content"].as_array().unwrap();
@@ -162,7 +169,14 @@ mod tests {
         let alone = user_message("  ", &files[..1]);
         assert_eq!(alone["message"]["content"].as_array().unwrap().len(), 1, "no empty text block: the api refuses those");
         assert!(files.iter().all(Attachment::is_supported));
-        assert!(!Attachment { name: "a.zip".into(), media_type: "application/zip".into(), data: String::new() }.is_supported());
+        // a picked element: its note, then its picture.
+        let el = Attachment { name: "button \"Go\"".into(), media_type: "image/png".into(), data: "CCCC".into(), element: Some("<picked_element>…</picked_element>".into()) };
+        assert!(el.is_supported());
+        let msg = user_message("make this bigger", &[el]);
+        let blocks = msg["message"]["content"].as_array().unwrap();
+        assert_eq!((blocks[1]["type"].as_str(), blocks[1]["text"].as_str()), (Some("text"), Some("<picked_element>…</picked_element>")));
+        assert_eq!(blocks[2]["source"]["data"], "CCCC");
+        assert!(!Attachment { name: "a.zip".into(), media_type: "application/zip".into(), data: String::new(), element: None }.is_supported());
     }
 
     #[test]

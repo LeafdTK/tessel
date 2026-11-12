@@ -709,13 +709,13 @@ async fn a_screenshot_goes_to_the_agent_with_the_message_and_other_files_are_ref
     let d = Daemon::start(&["plain"]).await;
     let (c, _ev) = d.client().await;
     let s = create(&c, &d.cwd(), None).await;
-    let zip = Attachment { name: "logs.zip".into(), media_type: "application/zip".into(), data: "AAAA".into() };
+    let zip = Attachment { name: "logs.zip".into(), media_type: "application/zip".into(), data: "AAAA".into(), element: None };
     let refused = c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "see".into(), attachments: vec![zip] }).await;
     let err = refused.unwrap_err();
     assert!(err.to_string().contains("logs.zip"), "{err}");
     assert!(d.written().is_empty() && snapshot(&c, s.id).await.items.is_empty(), "a refused message leaves no trace");
 
-    let shot = Attachment { name: "shot.png".into(), media_type: "image/png".into(), data: "AAAA".into() };
+    let shot = Attachment { name: "shot.png".into(), media_type: "image/png".into(), data: "AAAA".into(), element: None };
     c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "what is this?".into(), attachments: vec![shot] }).await.unwrap();
     let sent = &d.written()[0]["message"]["content"];
     assert_eq!(sent[0], serde_json::json!({"type": "text", "text": "what is this?"}));

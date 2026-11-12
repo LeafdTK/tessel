@@ -113,15 +113,14 @@ impl Shell {
         cx.notify();
     }
 
-    /// what you pointed at, into the message you're writing: its picture as an
-    /// attachment, where it is in words.
+    /// what you pointed at goes with the message you're writing, as one
+    /// attachment like any other: its picture, carrying a few lines on what
+    /// and where it is (in the page, and in the source) for the agent. what
+    /// you type stays yours.
     fn add_pick(&mut self, p: Picked) {
-        let html: String = p.html.chars().take(800).collect();
-        let note = format!("\n\nIn the browser, on {}: `{}`\n```html\n{}\n```\n", p.url, p.selector, html.trim());
-        self.draft_append = Some(note);
-        if !p.image.is_empty() {
-            self.attachments.push(tessel_proto::Attachment { name: format!("{}.png", p.selector.chars().filter(|c| c.is_alphanumeric()).take(24).collect::<String>()), media_type: "image/png".into(), data: p.image });
-        }
+        let note = p.note();
+        let media_type = if p.image.is_empty() { "application/vnd.tessel.element".into() } else { "image/png".into() };
+        self.attachments.push(tessel_proto::Attachment { name: p.label(), media_type, data: p.image, element: Some(note) });
         self.focus_composer_next = true;
     }
 
@@ -366,8 +365,7 @@ impl Shell {
                 let pad = 6.0;
                 let (x, y) = ((num("vx") - pad).max(0.0), (num("vy") - pad).max(0.0));
                 let image = snapshot(&bg, &n, Some((x, y, num("width") + pad * 2.0, num("height") + pad * 2.0))).await.map(|png| base64::engine::general_purpose::STANDARD.encode(png)).unwrap_or_default();
-                let text = |k: &str| p[k].as_str().unwrap_or_default().to_owned();
-                Some(Picked { url: text("url"), selector: text("selector"), html: text("html"), text: text("text"), x: num("x"), y: num("y"), width: num("width"), height: num("height"), image })
+                Some(Picked::from_described(p, image))
             } else {
                 None
             };

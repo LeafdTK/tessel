@@ -522,7 +522,7 @@ pub fn scroll(x: Option<f64>, y: Option<f64>, dx: f64, dy: f64) -> String {
 /// (or Escape) is kept for `picked` instead of reaching the page.
 pub fn pick_on() -> String {
     format!(
-        "(() => {{ if (window.__tesselPick) return true; {css}
+        "(() => {{ if (window.__tesselPick) return true; {css} {describe}
   const box = document.createElement('div');
   box.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;border:2px solid rgba(80,140,255,.9);background:rgba(80,140,255,.14);border-radius:3px;display:none';
   document.documentElement.appendChild(box);
@@ -532,14 +532,13 @@ pub fn pick_on() -> String {
   const kinds = ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'dblclick', 'auxclick', 'contextmenu'];
   const off = () => {{ removeEventListener('mouseover', over, true); for (const k of kinds) removeEventListener(k, stop, true);
     removeEventListener('click', click, true); removeEventListener('keydown', key, true); box.remove(); window.__tesselPick = null; }};
-  const click = e => {{ stop(e); const el = e.target.nodeType === 1 ? e.target : e.target.parentElement; const r = el.getBoundingClientRect(); off();
-    window.__tesselPicked = {{selector: cssPath(el), html: el.outerHTML.slice(0, 2000), text: (el.innerText || '').trim().slice(0, 500),
-      x: r.x + scrollX, y: r.y + scrollY, vx: r.x, vy: r.y, width: r.width, height: r.height, url: location.href}}; }};
+  const click = e => {{ stop(e); const el = e.target.nodeType === 1 ? e.target : e.target.parentElement; off(); window.__tesselPicked = describeEl(el); }};
   const key = e => {{ if (e.key === 'Escape') {{ stop(e); off(); window.__tesselPicked = {{cancelled: true}}; }} }};
   addEventListener('mouseover', over, true); for (const k of kinds) addEventListener(k, stop, true);
   addEventListener('click', click, true); addEventListener('keydown', key, true);
   window.__tesselPick = off; return true; }})()",
-        css = tessel_proto::CSS_PATH
+        css = tessel_proto::CSS_PATH,
+        describe = tessel_proto::DESCRIBE
     )
 }
 

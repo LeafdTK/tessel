@@ -79,7 +79,7 @@ pub(crate) fn load_attachment(path: &Path) -> Result<Attachment, String> {
         return Err(format!("{name} is {} MB. The most that can be attached is {} MB.", size.div_ceil(1024 * 1024), limit / 1024 / 1024));
     }
     let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {name}: {e}."))?;
-    Ok(Attachment { name, media_type: media.to_owned(), data: base64::engine::general_purpose::STANDARD.encode(bytes) })
+    Ok(Attachment { name, media_type: media.to_owned(), data: base64::engine::general_purpose::STANDARD.encode(bytes), element: None })
 }
 
 /// how full the context is, as a whole percentage. a non-empty context never reads as 0.
@@ -165,6 +165,7 @@ impl Shell {
                         name: format!("Pasted image {}.{ext}", self.pasted),
                         media_type: media.to_owned(),
                         data: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+                        element: None,
                     });
                     took = true;
                 }
@@ -249,14 +250,37 @@ impl Shell {
                 .hover(|d| d.bg(p.hover))
                 .on_click(cx.listener(move |this, _, _, cx| this.detach(ix, cx)))
                 .child(Icon::empty().path("icons/x.svg").size(theme::z(10.)).text_color(p.secondary));
+            // a part of a page you picked: its picture, marked as picked.
+            let picked = a.element.is_some();
+            let badge = || {
+                div()
+                    .absolute()
+                    .left(theme::z(4.))
+                    .bottom(theme::z(4.))
+                    .size(theme::z(18.))
+                    .rounded(theme::z(5.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(p.raised.opacity(0.92))
+                    .border_1()
+                    .border_color(p.separator)
+                    .child(Icon::empty().path("icons/mouse-pointer-click.svg").size(theme::z(11.)).text_color(p.secondary))
+            };
             let chip = match self.thumb(a) {
                 Some(image) => div()
-                    .size(theme::z(56.))
+                    .relative()
+                    // elements run wide (buttons, headings, rows): their tile does too.
+                    .w(theme::z(if picked { 96. } else { 56. }))
+                    .h(theme::z(56.))
                     .rounded(theme::z(theme::R_TILE))
                     .border_1()
                     .border_color(p.separator)
                     .overflow_hidden()
-                    .child(img(image).size_full().object_fit(ObjectFit::Cover)),
+                    .bg(gpui_kit::white())
+                    // a picked element shows whole; a screenshot fills its tile.
+                    .child(img(image).size_full().object_fit(if picked { ObjectFit::Contain } else { ObjectFit::Cover }))
+                    .when(picked, |d| d.child(badge())),
                 None => h_flex()
                     .h(theme::z(40.))
                     .pl(theme::z(8.))
@@ -274,12 +298,12 @@ impl Shell {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .child(Icon::empty().path("icons/file.svg").size(theme::z(14.)).text_color(p.secondary)),
+                            .child(Icon::empty().path(if picked { "icons/mouse-pointer-click.svg" } else { "icons/file.svg" }).size(theme::z(14.)).text_color(p.secondary)),
                     )
                     .child(
                         v_flex()
                             .child(div().max_w(theme::z(180.)).truncate().set(Type::Callout).text_color(p.label).child(a.name.clone()))
-                            .child(div().set(Type::Subheadline).text_color(p.tertiary).child(kind_of(&a.media_type, &a.name))),
+                            .child(div().set(Type::Subheadline).text_color(p.tertiary).child(if picked { "Picked element".into() } else { kind_of(&a.media_type, &a.name) })),
                     ),
             };
             chips = chips.child(div().relative().child(chip).child(remove));

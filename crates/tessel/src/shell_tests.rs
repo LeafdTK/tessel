@@ -2313,12 +2313,20 @@ fn the_browser_pane_shows_the_chats_page_and_a_pick_goes_in_your_message(cx: &mu
     rig.click(cx, "browser-pick");
     assert!(rig.asked().iter().filter_map(browser).any(|a| a == BrowserAct::Pick { on: true }));
 
-    // what you point at goes in your next message: its picture, and where it is.
-    let picked = tessel_proto::Picked { url: "http://localhost:41000/".into(), selector: "#signin".into(), html: "<button id=\"signin\">Sign in</button>".into(), text: "Sign in".into(), x: 0.0, y: 0.0, width: 80.0, height: 30.0, image: "iVBORw0KGgo=".into() };
+    // what you point at goes with your next message as one attachment: its
+    // picture, carrying what and where it is for the agent. the draft is untouched.
+    let picked = tessel_proto::Picked {
+        url: "http://localhost:41000/".into(), selector: "#signin".into(), html: "<button id=\"signin\" class=\"btn\">".into(), text: "Sign in".into(),
+        width: 80.0, height: 30.0, image: "iVBORw0KGgo=".into(), tag: "button".into(), name: "Sign in".into(),
+        source: "src/Login.tsx:42".into(), components: "Button > LoginForm".into(), ..Default::default()
+    };
     rig.feed(cx, vec![UiEvent::BrowserPicked { session: a.id, picked }]);
-    let (draft, attached) = rig.shell.read_with(cx, |s, cx| (s.composer.read(cx).value().to_string(), s.attachments.iter().map(|a| a.media_type.clone()).collect::<Vec<_>>()));
-    assert!(draft.contains("#signin") && draft.contains("<button"), "{draft}");
-    assert_eq!(attached, ["image/png"]);
+    let (draft, attached) = rig.shell.read_with(cx, |s, cx| (s.composer.read(cx).value().to_string(), s.attachments.clone()));
+    assert!(draft.trim().is_empty(), "nothing pasted into what you're writing: {draft}");
+    assert_eq!(attached.len(), 1);
+    let (chip, note) = (&attached[0], attached[0].element.clone().unwrap_or_default());
+    assert_eq!((chip.name.as_str(), chip.media_type.as_str()), ("button \"Sign in\"", "image/png"));
+    assert!(note.contains("selector: #signin") && note.contains("source: src/Login.tsx:42 (in Button > LoginForm)"), "{note}");
 
     // no browser to drive: a way to get one.
     rig.feed(cx, vec![UiEvent::BrowserEngine(tessel_proto::BrowserEngine::default())]);

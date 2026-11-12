@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tessel_proto::{BrowserAct, BrowserEngine, BrowserState, CSS_PATH, Event, MouseKind, Picked, SessionId, key_codes, locate_script, read_script, url_of};
+use tessel_proto::{BrowserAct, BrowserEngine, BrowserState, CSS_PATH, DESCRIBE, Event, MouseKind, Picked, SessionId, key_codes, locate_script, read_script, url_of};
 use tokio::sync::oneshot;
 
 /// how the browser reaches the hub with what happened: frames, a page moving on, a pick.
@@ -618,27 +618,14 @@ async fn on_event(chrome: &Arc<Chrome>, emit: &Emit, msg: Value) {
 async fn pick(cdp: &Cdp, page: &str, node: Value) -> Result<Picked, String> {
     let object = cdp.call("DOM.resolveNode", json!({"backendNodeId": node}), Some(page)).await?;
     let id = object["object"]["objectId"].as_str().ok_or("that isn't an element")?;
-    let describe = format!(
-        "function() {{ {CSS_PATH} const el = this.nodeType === 1 ? this : this.parentElement; const r = el.getBoundingClientRect();
-  return {{selector: cssPath(el), html: el.outerHTML.slice(0, 2000), text: (el.innerText || '').trim().slice(0, 500), x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height, url: location.href}}; }}"
-    );
+    let describe = format!("function() {{ {CSS_PATH} {DESCRIBE} return describeEl(this.nodeType === 1 ? this : this.parentElement); }}");
     let r = cdp.call("Runtime.callFunctionOn", json!({"objectId": id, "functionDeclaration": describe, "returnByValue": true}), Some(page)).await?;
     let v = &r["result"]["value"];
     let num = |k: &str| v[k].as_f64().unwrap_or(0.0);
     let pad = 6.0;
     let clip = json!({"x": (num("x") - pad).max(0.0), "y": (num("y") - pad).max(0.0), "width": num("width") + pad * 2.0, "height": num("height") + pad * 2.0, "scale": 1});
     let shot = cdp.call("Page.captureScreenshot", json!({"format": "png", "clip": clip, "captureBeyondViewport": true}), Some(page)).await?;
-    Ok(Picked {
-        url: v["url"].as_str().unwrap_or_default().to_owned(),
-        selector: v["selector"].as_str().unwrap_or_default().to_owned(),
-        html: v["html"].as_str().unwrap_or_default().to_owned(),
-        text: v["text"].as_str().unwrap_or_default().to_owned(),
-        x: num("x"),
-        y: num("y"),
-        width: num("width"),
-        height: num("height"),
-        image: shot["data"].as_str().unwrap_or_default().to_owned(),
-    })
+    Ok(Picked::from_described(v, shot["data"].as_str().unwrap_or_default().to_owned()))
 }
 
 #[cfg(test)]
@@ -698,6 +685,10 @@ mod tests {
         let (h, w) = (u16::from_be_bytes([bytes[sof + 5], bytes[sof + 6]]), u16::from_be_bytes([bytes[sof + 7], bytes[sof + 8]]));
         eprintln!("frame {w}x{h} for a page {css} wide");
         assert_eq!((w, h, css), (1280, 800, 640));
+        // as React's development build leaves it on an element.
+        let fiber = "(() => { const b = document.querySelector('#go'); function Button() {} function LoginForm() {}
+          b.__reactFiber$x = {type: 'button', return: {type: Button, _debugSource: {fileName: 'webpack://app/src/Button.tsx', lineNumber: 7}, return: {type: LoginForm}}}; return true; })()";
+        chrome.cdp.eval(&page_id, fiber).await.unwrap();
         // pointing at the button picks it.
         b.act(s, BrowserAct::Pick { on: true }, false, "").await.unwrap();
         let at = chrome.cdp.eval(&page_id, &locate_script("#go")).await.unwrap();
@@ -712,7 +703,11 @@ mod tests {
         });
         let picked = picked.expect("picked");
         assert_eq!(picked.selector, "#go");
-        assert!(picked.html.contains("button") && !picked.image.is_empty());
+        assert!(picked.html.starts_with("<button") && !picked.image.is_empty());
+        assert_eq!((picked.tag.as_str(), picked.name.as_str()), ("button", "Go"));
+        // a development build says where the element was made, and in what.
+        assert_eq!((picked.source.as_str(), picked.components.as_str()), ("src/Button.tsx:7", "Button > LoginForm"));
+        assert!(picked.note().contains("source: src/Button.tsx:7 (in Button > LoginForm)"), "{}", picked.note());
         assert!(seen.lock().unwrap().iter().any(|e| matches!(e, Event::BrowserActivity { what, .. } if what.starts_with("clicked"))), "watchers see the agent's clicks");
         drop(chrome);
         drop(b);

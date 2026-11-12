@@ -93,11 +93,11 @@ pub struct BrowserState {
 }
 
 /// an element the person pointed at, for the agent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Picked {
     pub url: String,
     pub selector: String,
-    /// its HTML, cut short when long.
+    /// its opening tag (attributes and all), cut short when long.
     pub html: String,
     /// its text, cut short when long.
     pub text: String,
@@ -107,6 +107,81 @@ pub struct Picked {
     pub height: f64,
     /// a PNG of it, base64.
     pub image: String,
+    /// its tag: `button`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
+    /// what it's called: its label, alt text, placeholder or text, short.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// where in the source it was made, when the page says (a development
+    /// build of React, Vue or Svelte does): `src/Login.tsx:42`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// the components it's in, innermost first: `Button > LoginForm`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub components: String,
+    /// the styles that make how it looks.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub styles: String,
+    /// what it's inside, a few levels up.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub inside: String,
+}
+
+impl Picked {
+    /// from what `DESCRIBE`'s `describeEl` answered, and a picture of it.
+    pub fn from_described(v: &serde_json::Value, image: String) -> Picked {
+        let s = |k: &str| v[k].as_str().unwrap_or_default().to_owned();
+        let n = |k: &str| v[k].as_f64().unwrap_or(0.0);
+        Picked {
+            url: s("url"),
+            selector: s("selector"),
+            html: s("html"),
+            text: s("text"),
+            x: n("x"),
+            y: n("y"),
+            width: n("width"),
+            height: n("height"),
+            image,
+            tag: s("tag"),
+            name: s("name"),
+            source: s("source"),
+            components: s("components"),
+            styles: s("styles"),
+            inside: s("inside"),
+        }
+    }
+
+    /// what it's called on its chip: `button "Sign in"`.
+    pub fn label(&self) -> String {
+        let tag = if self.tag.is_empty() { "element" } else { self.tag.as_str() };
+        let name: String = self.name.chars().take(32).collect();
+        if name.is_empty() { tag.to_owned() } else { format!("{tag} \"{name}\"") }
+    }
+
+    /// what the agent reads about it, beside its picture: enough to find it
+    /// in the page and in the code, in a few lines.
+    pub fn note(&self) -> String {
+        let mut lines = vec![format!("page: {}", self.url), format!("element: {}", self.html)];
+        if !self.name.is_empty() {
+            lines.push(format!("called: {}", self.name));
+        }
+        lines.push(format!("selector: {}", self.selector));
+        match (self.source.is_empty(), self.components.is_empty()) {
+            (false, false) => lines.push(format!("source: {} (in {})", self.source, self.components)),
+            (false, true) => lines.push(format!("source: {}", self.source)),
+            (true, false) => lines.push(format!("components: {}", self.components)),
+            (true, true) => {}
+        }
+        if !self.inside.is_empty() {
+            lines.push(format!("inside: {}", self.inside));
+        }
+        lines.push(format!("box: {:.0}x{:.0} at {:.0},{:.0}", self.width, self.height, self.x, self.y));
+        if !self.styles.is_empty() {
+            lines.push(format!("style: {}", self.styles));
+        }
+        format!("<picked_element>\nThe person pointed at this in the browser; its picture comes next.\n{}\n</picked_element>", lines.join("\n"))
+    }
 }
 
 /// the browser engine the daemon drives.
@@ -192,3 +267,52 @@ pub fn key_codes(key: &str) -> (&'static str, &'static str, u32, Option<&'static
         _ => ("", "", 0, None),
     }
 }
+
+/// `describeEl(el)`: what an element is, where (on the page and, in a
+/// development build, in the source) and how it looks, in a few short fields.
+/// needs `CSS_PATH` beside it.
+pub const DESCRIBE: &str = r#"function describeEl(el) {
+  const r = el.getBoundingClientRect();
+  const short = (s, n) => String(s || '').trim().replace(/\s+/g, ' ').slice(0, n);
+  const html = el.outerHTML.slice(0, el.outerHTML.indexOf('>') + 1).slice(0, 300);
+  const name = short(el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('title') || el.getAttribute('placeholder') || el.innerText || el.value, 80);
+  const inside = [];
+  for (let p = el.parentElement; p && p !== document.body && p !== document.documentElement && inside.length < 4; p = p.parentElement) {
+    const cls = typeof p.className === 'string' && p.className.trim() ? '.' + p.className.trim().split(/\s+/).slice(0, 2).join('.') : '';
+    inside.unshift(p.tagName.toLowerCase() + (p.id ? '#' + p.id : '') + cls);
+  }
+  const s = getComputedStyle(el), st = [];
+  st.push('font ' + s.fontSize + ' ' + s.fontWeight + ' ' + s.fontFamily.split(',')[0].replace(/["']/g, ''));
+  st.push('color ' + s.color + (s.backgroundColor !== 'rgba(0, 0, 0, 0)' ? ' on ' + s.backgroundColor : ''));
+  if (s.padding && s.padding !== '0px') st.push('padding ' + s.padding);
+  if (s.margin && s.margin !== '0px') st.push('margin ' + s.margin);
+  if (s.borderRadius && s.borderRadius !== '0px') st.push('radius ' + s.borderRadius);
+  if (s.borderStyle && s.borderStyle !== 'none' && s.borderWidth !== '0px') st.push('border ' + s.borderWidth + ' ' + s.borderStyle + ' ' + s.borderColor);
+  st.push('display ' + s.display + (s.gap && s.gap !== 'normal' ? ', gap ' + s.gap : ''));
+  const clean = f => String(f || '').replace(/^webpack:\/\/[^/]*\//, '').replace(/^\/@fs/, '').replace(location.origin, '').replace(/\?.*$/, '');
+  let source = '';
+  const comps = [];
+  const fiber = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+  for (let f = fiber && el[fiber]; f && comps.length < 4; f = f.return) {
+    const t = f.type;
+    const nm = t && typeof t !== 'string' && (t.displayName || t.name || (t.render && (t.render.displayName || t.render.name)));
+    if (nm && !comps.includes(nm)) comps.push(nm);
+    if (!source && f._debugSource) source = clean(f._debugSource.fileName) + ':' + f._debugSource.lineNumber;
+  }
+  for (let v = el.__vueParentComponent; v && comps.length < 4; v = v.parent) {
+    const t = v.type || {};
+    const nm = t.name || t.__name;
+    if (nm && !comps.includes(nm)) comps.push(nm);
+    if (!source && t.__file) source = clean(t.__file);
+  }
+  const sv = el.__svelte_meta && el.__svelte_meta.loc;
+  if (!source && sv) source = clean(sv.file) + ':' + sv.line;
+  const tagged = el.closest('[data-source],[data-loc],[data-source-file],[data-inspector-relative-path]');
+  if (!source && tagged) {
+    const a = k => tagged.getAttribute(k);
+    source = a('data-source') || a('data-loc') || a('data-source-file') || (a('data-inspector-relative-path') + (a('data-inspector-line') ? ':' + a('data-inspector-line') : ''));
+  }
+  return {selector: cssPath(el), tag: el.tagName.toLowerCase(), name, text: short(el.innerText, 300), html,
+    x: r.x + scrollX, y: r.y + scrollY, vx: r.x, vy: r.y, width: r.width, height: r.height, url: location.href,
+    source, components: comps.join(' > '), styles: st.join('; '), inside: inside.join(' > ')};
+}"#;

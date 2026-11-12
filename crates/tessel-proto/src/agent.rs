@@ -238,13 +238,17 @@ pub struct Attachment {
     pub media_type: String,
     /// the file's bytes, base64 encoded.
     pub data: String,
+    /// an element picked in the browser: what the agent reads about it (see
+    /// `Picked::note`), sent with its picture, the attachment's bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<String>,
 }
 
 impl Attachment {
     /// what agents accept as an attachment today. anything else should be
     /// referred to by its path instead.
     pub fn is_supported(&self) -> bool {
-        self.media_type.starts_with("image/") || self.media_type == "application/pdf"
+        self.media_type.starts_with("image/") || self.media_type == "application/pdf" || self.element.is_some()
     }
 }
 
