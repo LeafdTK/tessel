@@ -315,6 +315,7 @@ and never the only way a state is shown. Everything else is neutral, with one ac
 - `appearance`: `system` (default) follows macOS, or always `light` or `dark`.
 - `size`: how big the interface is drawn: `compact`, `default` or `large`, or a number
   from 0.75 to 1.5. Text, menus and controls scale with it.
+- `message_size`: the message box's text size, in points, 12 to 24 (default 16).
 - `font`: the interface font, by family name. `mono`: the font for code and commands.
   Use fonts that are installed; an unknown family falls back to the system font.
 - `light`, `dark`: any of the colour roles above, set for that appearance.

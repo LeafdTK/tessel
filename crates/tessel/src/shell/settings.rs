@@ -294,7 +294,23 @@ impl Shell {
                     .child(div().w(px(150.)).child(Input::new(&self.mono_input).id("mono-input").small())),
             ));
 
+        let message = self.ui.theme.message_size.unwrap_or(crate::ui::MESSAGE_SIZE);
+        let message_name: &'static str = match message as i32 {
+            14 => "14",
+            15 => "15",
+            18 => "18",
+            20 => "20",
+            _ => "16",
+        };
         let conversation_rows = v_flex()
+            .child(self.setting_row(
+                "Message text",
+                "How big what you type is, in points.",
+                self.segmented("message-size", &[("14", "14"), ("15", "15"), ("16", "16"), ("18", "18"), ("20", "20")], message_name, cx, |this, v, w, cx| {
+                    let n: f64 = v.parse().unwrap_or(16.0);
+                    this.edit_ui(|f| Self::set_in(f, "theme", "message_size", Some(json!(n))), w, cx)
+                }),
+            ))
             .child(self.setting_row(
                 "Your messages",
                 "",

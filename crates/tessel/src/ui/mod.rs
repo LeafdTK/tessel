@@ -19,6 +19,9 @@ pub mod themes;
 
 pub const REFERENCE: &str = include_str!("README.md");
 
+/// the message box's text size when the theme doesn't say, in points.
+pub const MESSAGE_SIZE: f32 = 16.0;
+
 /// the layouts tessel ships with. a `ui.json` can start from one and change parts.
 pub const PRESETS: [(&str, &str); 4] = [
     ("default", include_str!("presets/default.json")),
@@ -549,6 +552,8 @@ pub struct ThemeSpec {
     pub backdrop: Option<Backdrop>,
     /// the terminal's text size, in points (it uses the code font).
     pub term_size: Option<f32>,
+    /// the message box's text size, in points.
+    pub message_size: Option<f32>,
     /// the terminal's colours: theme (the window's), ink, paper or midnight.
     pub term_colors: Option<String>,
 }
@@ -562,7 +567,7 @@ impl ThemeSpec {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop", "terminal"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop", "terminal", "message_size"])?;
         let mut t = Self::default();
         let (mut t_size, mut t_colors) = (None, None);
         if let Some(b) = obj.get("base") {
@@ -611,6 +616,13 @@ impl ThemeSpec {
                 t_colors = Some(one_of(v, "theme.terminal.colors", &[("theme", "theme"), ("ink", "ink"), ("paper", "paper"), ("midnight", "midnight")])?.to_owned());
             }
         }
+        if let Some(v) = obj.get("message_size") {
+            let n = num(v, "theme.message_size")?;
+            if !(12.0..=24.0).contains(&n) {
+                return Err(format!("theme.message_size: {n} is out of range: 12 to 24"));
+            }
+            t.message_size = Some(n);
+        }
         if let Some(b) = obj.get("backdrop") {
             t.backdrop = Some(one_of(b, "theme.backdrop", &[("none", Backdrop::None), ("dither", Backdrop::Dither), ("space", Backdrop::Space)])?);
         }
@@ -638,6 +650,7 @@ impl ThemeSpec {
         self.scale = over.scale.or(self.scale);
         self.mono = over.mono.or(self.mono.take());
         self.compact = over.compact.or(self.compact);
+        self.message_size = over.message_size.or(self.message_size);
         self.glass = over.glass.or(self.glass);
         self.felt = over.felt.or(self.felt);
         self.backdrop = over.backdrop.or(self.backdrop);

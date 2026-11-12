@@ -315,11 +315,14 @@ impl Shell {
     /// for when what is around it is the box.
     pub(crate) fn input_el(&self, bare: bool, cx: &mut Context<Self>) -> AnyElement {
         let paste = cx.entity().downgrade();
+        // what you type is the thing you read most closely here: it can be bigger than the rest.
+        let size = self.ui.theme.message_size.unwrap_or(crate::ui::MESSAGE_SIZE);
         div()
             .id("composer")
             .test_support()
             .aria_label("Message")
             .w_full()
+            .text_size(theme::z(size))
             .child(
                 gpui_kit::component::input::Textarea::new(&self.composer)
                     .when(bare, |i| i.appearance(false))
