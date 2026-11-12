@@ -633,8 +633,51 @@ impl Shell {
         if git.files.is_empty() {
             return col.child(header).child(self.quiet("Nothing has changed yet."));
         }
+        // which of them: everything uncommitted, what this session's turns touched, or the last turn's.
+        let touched = self.turn_paths(self.changes_scope == "turn");
+        let query = self.changes_search.read(cx).value().trim().to_lowercase();
+        let shown: Vec<&tessel_proto::FileChange> = git
+            .files
+            .iter()
+            .filter(|f| self.changes_scope == "all" || touched.contains(&f.path))
+            .filter(|f| query.is_empty() || f.path.to_lowercase().contains(&query))
+            .collect();
+        let scope = |id: &'static str, label: &'static str| {
+            theme::segment(&p, SharedString::from(format!("changes-scope-{id}")), label, self.changes_scope == id).test_support().on_click(cx.listener(move |this, _, _, cx| {
+                this.changes_scope = id;
+                cx.notify();
+            }))
+        };
+        let filters = h_flex()
+            .px_3()
+            .py(px(6.))
+            .gap_2()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(p.separator)
+            .child(theme::tray(&p).child(scope("all", "Uncommitted")).child(scope("session", "This session")).child(scope("turn", "Last turn")))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w(px(80.))
+                    .h(theme::z(theme::CONTROL_H))
+                    .px_2()
+                    .gap_1()
+                    .rounded(theme::z(theme::R_CONTROL))
+                    .bg(p.fill)
+                    .child(gpui_kit::component::Icon::empty().path("icons/search.svg").size(px(13.)).text_color(p.tertiary))
+                    .child(div().flex_1().child(Input::new(&self.changes_search).id("changes-search").appearance(false).small())),
+            );
+        let col = col.child(filters);
+        if shown.is_empty() {
+            return col.child(header).child(self.quiet(match self.changes_scope {
+                "turn" => "The last turn didn't change any of these files.",
+                "session" => "This session hasn't changed any of these files.",
+                _ => "Nothing matches.",
+            }));
+        }
         let mut list = v_flex().id("changes-list").flex_shrink_0().max_h(relative(0.45)).overflow_y_scroll();
-        for f in &git.files {
+        for f in shown {
             let selected = self.ws.selected.as_deref() == Some(f.path.as_str());
             let (name, dir) = split_path(&f.path);
             let (letter, glyph, tint) = match f.status {
@@ -1078,5 +1121,25 @@ mod tests {
         assert_eq!(short_ref("origin/main"), "origin/main");
         assert_eq!(split_path("src/auth/login.rs"), ("login.rs", "src/auth"));
         assert_eq!(split_path("README.md"), ("README.md", ""));
+    }
+}
+
+impl Shell {
+    /// the files the open session's turns changed, as the changes list names
+    /// them: every turn's, or only the last one's.
+    pub(crate) fn turn_paths(&self, last_only: bool) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        let Some(open) = self.model.open.as_ref() else { return out };
+        let turns = open.items().iter().rev().filter_map(|i| match &i.body {
+            ItemBody::Turn { files, .. } => Some(files),
+            _ => None,
+        });
+        for files in turns {
+            out.extend(files.iter().map(|f| f.path.clone()));
+            if last_only {
+                break;
+            }
+        }
+        out
     }
 }

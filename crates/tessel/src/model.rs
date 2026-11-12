@@ -69,6 +69,11 @@ impl Open {
     }
 
     /// the item on a row, and how deeply it is nested.
+    /// every item, in the order they arrived.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
     pub fn row(&self, row: usize) -> Option<(&Item, u8)> {
         self.rows.get(row).map(|&(i, depth)| (&self.items[i], depth))
     }

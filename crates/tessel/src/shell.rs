@@ -213,6 +213,10 @@ pub struct Shell {
 
     /// files that will go with the next message.
     pub(crate) attachments: Vec<Attachment>,
+    /// which changes the changes list shows: "all" uncommitted, this "session"'s, or the last "turn"'s.
+    pub(crate) changes_scope: &'static str,
+    /// narrows the changes list by path.
+    pub(crate) changes_search: Entity<InputState>,
     /// the dithered backdrop behind the panes, once drawn.
     pub(crate) backdrop: backdrop::Shared,
     /// the felt under the window, once drawn.
@@ -332,6 +336,7 @@ impl Shell {
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let palette_ui = palette::PaletteState::new(window, cx);
         let palette_input = palette_ui.input.clone();
+        let changes_search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
         let projects_home = std::env::var("TESSEL_PROJECTS").unwrap_or_else(|_| "~/tessel/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
@@ -352,6 +357,12 @@ impl Shell {
         };
         let subscriptions = vec![
             menu_keys,
+            // the changes list narrows as you type.
+            cx.subscribe_in(&changes_search, window, |_, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&composer, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = ev {
                     this.send(window, cx);
@@ -545,6 +556,8 @@ impl Shell {
             ws_session: None,
             ws_parked: HashMap::new(),
             attachments: Vec::new(),
+            changes_scope: "all",
+            changes_search,
             backdrop: Default::default(),
             felt: Default::default(),
             space: Default::default(),

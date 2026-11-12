@@ -1355,6 +1355,31 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
 }
 
 #[gpui_kit::test]
+fn the_changes_list_shows_all_uncommitted_this_session_s_or_the_last_turn_s(cx: &mut TestAppContext) {
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle.clone(), vec![]);
+    let it = |id: &str, seq: u64, body: ItemBody| Item { id: ItemId::from(id), parent: None, seq, order: seq, created_ms: 0, body };
+    let turn = |files: Vec<&str>| ItemBody::Turn {
+        started_ms: 0, finished_ms: 1, duration_ms: None, cost_usd: None, model: None, fast: false, usage: None,
+        files: files.into_iter().map(|p| tessel_proto::TurnFile { path: p.into(), added: 1, removed: 0 }).collect(),
+    };
+    rig.feed(cx, vec![snapshot_of(idle.clone(), vec![it("turn/1", 1, turn(vec!["a.rs"])), it("turn/2", 2, turn(vec!["b.rs"]))], vec![])]);
+    rig.press(cx, "alt-cmd-i");
+    let files = vec![change("a.rs", ChangeStatus::Modified, 1, 0), change("b.rs", ChangeStatus::Modified, 1, 0), change("c.rs", ChangeStatus::Modified, 1, 0)];
+    rig.feed(cx, vec![UiEvent::Git { session: idle.id, summary: git(files) }]);
+    let shown = |rig: &mut Rig, cx: &mut TestAppContext| ["a.rs", "b.rs", "c.rs"].map(|f| rig.exists(cx, eid(&format!("change-{f}"))));
+    assert_eq!(shown(&mut rig, cx), [true, true, true], "everything uncommitted");
+    rig.click(cx, "changes-scope-session");
+    assert_eq!(shown(&mut rig, cx), [true, true, false], "what this session's turns changed");
+    rig.click(cx, "changes-scope-turn");
+    assert_eq!(shown(&mut rig, cx), [false, true, false], "the last turn's");
+    rig.click(cx, "changes-scope-all");
+    rig.click(cx, "changes-search");
+    rig.typed(cx, "c.r");
+    assert_eq!(shown(&mut rig, cx), [false, false, true], "and narrowed by name");
+}
+
+#[gpui_kit::test]
 fn every_shortcut_the_window_shows_is_bound(cx: &mut TestAppContext) {
     let _rig = Rig::new(cx);
     // "⇧ ⌘ D" as modifiers and a key, the way the keymap holds it.
