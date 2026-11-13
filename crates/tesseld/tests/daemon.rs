@@ -544,6 +544,10 @@ async fn a_session_can_be_given_its_own_worktree_and_is_otherwise_the_same_thing
     assert!(Path::new(&s.cwd).starts_with(&d.cfg.paths.workspaces));
     assert_eq!(git(Path::new(&s.cwd), &["rev-parse", "--abbrev-ref", "HEAD"]), "tessel/feature-x");
     assert_eq!(git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]), "main", "the original checkout is untouched");
+    // a new tab in that worktree is in that worktree: same repository, same branch.
+    let tab = create(&c, &s.cwd, None).await;
+    assert_eq!(tab.worktree.as_ref(), Some(&wt), "a tab is told whose worktree it's in");
+    c.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session: tab.id, remove_worktree: false }).await.unwrap();
 
     // the agent runs in the worktree, and the session behaves like any other.
     until(&c, s.id, "finished", |s| wants(s) == Some(AttentionReason::Finished)).await;

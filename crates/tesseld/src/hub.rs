@@ -1625,6 +1625,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             .filter(|g| !g.trim().is_empty())
             .or_else(|| c.prompt.as_deref().map(crate::activity::truncate).filter(|g| !g.is_empty()))
             .unwrap_or_else(|| "untitled".to_owned());
+        // a new tab in a worktree another chat made is in that worktree too: same branch, same repository.
+        let wt = wt.or_else(|| self.sessions.values().find(|l| l.state.meta.cwd == cwd).and_then(|l| l.state.meta.worktree.clone()));
         let meta = Meta { id, goal, cwd, worktree: wt, parent: c.parent, created_ms: now, linked_dirs: Vec::new() };
         let mut state = SessionState::new(meta);
         state.model = c.model;

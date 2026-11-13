@@ -294,6 +294,13 @@ impl SidebarLayout {
     /// session under its project, newest first. a session is in one place only.
     pub fn build(model: &Model) -> Self {
         let mut entries = Vec::new();
+        // a workspace's project is its worktree's repository, whichever of its tabs knows it
+        // (a tab opened in a worktree may not, and is still the same workspace).
+        let repo_of: HashMap<&str, &SessionSummary> = model.sessions.iter().filter(|s| s.worktree.is_some()).map(|s| (s.cwd.as_str(), s)).collect();
+        let project_name = |s: &SessionSummary| match (&s.worktree, repo_of.get(s.cwd.as_str())) {
+            (None, Some(other)) => project_name(other),
+            _ => project_name(s),
+        };
         // a workspace is a folder, and its sessions are its tabs: one row each,
         // standing for the tab that wants you, else the one busy most recently.
         let mut stand_in: HashMap<&str, &SessionSummary> = HashMap::new();
@@ -886,6 +893,17 @@ mod tests {
         let real = layout(vec![in_project(1, "/w/api", None), in_project(3, "/w/web", None), in_project(6, "/w/api", None), in_project(7, "/w/api", None)]);
         assert_eq!(shape(&real), ["[api]", "7", "6", "1", "[web]", "3"]);
         assert_eq!(shape(&shown.held(&real)), ["[api]", "7", "6", "1", "[web]", "3"], "one api, the new ones first in it, as they'll stay");
+    }
+
+    #[test]
+    fn a_tab_opened_in_a_worktree_stays_with_its_project() {
+        let wt = Some(tessel_proto::WorktreeInfo { repo: "/w/orchard".into(), branch: "tessel/fix-it".into() });
+        let first = SessionSummary { cwd: "/w/workspaces/orchard/fix-it".into(), worktree: wt, ..session(1, None) };
+        // a tab opened in that worktree, before tabs were told whose worktree they're in.
+        let tab = SessionSummary { cwd: "/w/workspaces/orchard/fix-it".into(), worktree: None, updated_ms: 99, ..session(2, None) };
+        let other = SessionSummary { cwd: "/w/orchard".into(), worktree: None, ..session(3, None) };
+        let shown = layout(vec![first, tab, other]);
+        assert_eq!(shape(&shown).iter().filter(|e| e.starts_with('[')).count(), 1, "one orchard, not a group for the worktree's folder: {:?}", shape(&shown));
     }
 
     #[test]
