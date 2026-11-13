@@ -2526,3 +2526,68 @@ fn the_tour_shows_once_and_can_be_taken_again(cx: &mut TestAppContext) {
     assert!(rig.exists(cx, "tour-card"), "and taken again when asked");
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[gpui_kit::test]
+fn the_kubernetes_pane_lists_a_cluster_and_opens_logs_and_deletes_only_when_sure(cx: &mut TestAppContext) {
+    use tessel_proto::kube::{KubeAct, KubeHealth, KubeKind, KubeObject};
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    // a layout file: logs open in a pane split off the kubernetes one, which edits it.
+    let dir = layout_dir("kube");
+    let mut rig = Rig::with_sessions_launched(cx, idle, vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    std::fs::write(dir.join("ui.json"), r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "kubernetes"}
+    ]}}}"#).unwrap();
+    rig.settle(cx);
+    // the clock's tick asks, now that a pane shows it.
+    let asked = rig.asked();
+    let ask = |asked: &[Cmd], want: fn(&Request) -> bool| asked.iter().any(|c| matches!(c, Cmd::Ask { req, .. } if want(req)));
+    assert!(ask(&asked, |r| matches!(r, Request::KubeContexts)), "{asked:?}");
+    assert!(ask(&asked, |r| matches!(r, Request::KubeList { kind: KubeKind::Pods, namespace: None, .. })), "every namespace's pods to start");
+    // asked once at a time: another tick before the answer asks nothing new.
+    rig.shell.update(cx, |s, _| s.kube_tick());
+    assert!(!ask(&rig.asked(), |r| matches!(r, Request::KubeList { .. })));
+
+    let pod = |name: &str, status: &str, health: KubeHealth| KubeObject {
+        name: name.into(),
+        namespace: Some("orchard".into()),
+        status: status.into(),
+        health,
+        ready: Some("1/1".into()),
+        restarts: Some(0),
+        ..Default::default()
+    };
+    let objects = vec![pod("server-1", "Running", KubeHealth::Ok), pod("server-2", "CrashLoopBackOff", KubeHealth::Bad)];
+    rig.feed(cx, vec![
+        UiEvent::Answer { tag: "kube.contexts", result: Ok(Response::KubeContexts { current: Some("prod".into()), contexts: vec!["prod".into(), "staging".into()] }) },
+        UiEvent::Answer { tag: "kube.list", result: Ok(Response::KubeObjects { of: KubeKind::Pods, objects, metrics: false }) },
+    ]);
+    assert!(rig.exists(cx, "kube-row-orchard-server-1") && rig.exists(cx, "kube-row-orchard-server-2"));
+
+    // opened, it says what can be done. delete asks to be sure first.
+    rig.click(cx, "kube-row-orchard-server-2");
+    assert!(rig.exists(cx, "kube-logs"), "opened, it says what can be done");
+    rig.click(cx, "kube-delete");
+    assert!(!ask(&rig.asked(), |r| matches!(r, Request::KubeAct { .. })));
+    rig.click(cx, "kube-delete");
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::KubeAct { act: KubeAct::Delete, name, namespace, .. } if name == "server-2" && namespace == "orchard")));
+
+    // its logs, in a terminal under the pane, with kubectl's own words.
+    rig.asked();
+    rig.click(cx, "kube-logs");
+    let opened = rig.asked();
+    assert!(
+        opened.iter().any(|c| matches!(c, Cmd::TermOpen { command, .. } if command.len() == 1 && command[0].starts_with("kubectl logs -f") && command[0].ends_with("-n orchard server-2"))),
+        "{opened:?}"
+    );
+    let terminal = rig.shell.read_with(cx, |s, _| s.ui.panes().iter().any(|p| p.module == Some(crate::ui::Module::Terminal)));
+    assert!(terminal, "in a terminal pane");
+    let kube = rig.shell.read_with(cx, |s, _| s.ui.panes().iter().any(|p| p.module == Some(crate::ui::Module::Kube)));
+    assert!(kube, "beside the kubernetes pane, not instead of it");
+
+    // another kind is another list.
+    rig.click(cx, "kube-kind-deployments");
+    rig.shell.update(cx, |s, _| s.kube_tick());
+    rig.feed(cx, vec![UiEvent::Answer { tag: "kube.list", result: Ok(Response::KubeObjects { of: KubeKind::Pods, objects: vec![], metrics: false }) }]);
+    assert!(ask(&rig.asked(), |r| matches!(r, Request::KubeList { kind: KubeKind::Deployments, .. })), "the pods' answer came late: deployments are asked for");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

@@ -928,6 +928,18 @@ impl Hub {
                     Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
                 });
             }
+            Request::KubeContexts => {
+                return self.later(client, id, async { crate::kube::contexts().await.map(|(current, contexts)| Response::KubeContexts { current, contexts }) });
+            }
+            Request::KubeNamespaces { context } => {
+                return self.later(client, id, async move { crate::kube::namespaces(context).await.map(|namespaces| Response::KubeNamespaces { namespaces }) });
+            }
+            Request::KubeList { context, namespace, kind } => {
+                return self.later(client, id, async move { crate::kube::list(context, namespace, kind).await.map(|(objects, metrics)| Response::KubeObjects { of: kind, objects, metrics }) });
+            }
+            Request::KubeAct { context, namespace, kind, name, act } => {
+                return self.later(client, id, async move { crate::kube::act(context, namespace, kind, name, act).await.map(|said| Response::Shipped { said, url: None }) });
+            }
             Request::GitLog { session, skip, limit } => {
                 return self.in_workdir(client, id, session, move |dir| async move { workspace::git_log(&dir, skip, limit).await.map(|log| Response::GitLog { log }) });
             }
@@ -1488,6 +1500,20 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
             Err(e) => Err(RpcError::new(ErrorCode::Internal, format!("couldn't start a terminal: {e}"))),
         }
+    }
+
+    /// answer with `work`'s result once it's done, off the main loop. its
+    /// error is said as it is (it's for the person).
+    fn later<Fut>(&self, client: ClientId, id: u64, work: Fut) -> Option<Result<Response, RpcError>>
+    where
+        Fut: std::future::Future<Output = Result<Response, String>> + Send + 'static,
+    {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let result = work.await.map_err(|e| RpcError::new(ErrorCode::Conflict, e));
+            let _ = tx.send(HubMsg::Reply { client, id, result });
+        });
+        None
     }
 
     fn in_workdir<F, Fut>(&self, client: ClientId, id: u64, session: SessionId, work: F) -> Option<Result<Response, RpcError>>

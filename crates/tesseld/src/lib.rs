@@ -7,6 +7,7 @@ pub mod browser;
 pub mod checkpoint;
 pub mod handoff;
 pub mod hub;
+pub mod kube;
 pub mod orphans;
 pub mod paths;
 pub mod reducer;

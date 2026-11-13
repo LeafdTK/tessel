@@ -99,6 +99,7 @@ Modules:
 | `info`         | the session: model, cost, tool servers, linked folders                |
 | `terminal`     | a shell in the session's folder, run by the daemon on Ghostty's core: it outlives the window, and scripts can read and drive it (`tesselctl term`) |
 | `browser`      | the open chat's page, in a browser the daemon runs: the agent drives it with its tools while you watch, you can click, scroll and type in it too, and Pick puts a part of the page in your next message |
+| `kubernetes`   | a cluster at a glance, through your own kubectl: pick a context and namespace, see pods, deployments, services or nodes with how each is doing (ready, restarts, cpu, memory, age), open one for its facts and containers, and get its logs or a shell in a terminal, restart a deployment, or delete a pod. it asks again every few seconds while it is on screen |
 | `git`          | every branch's history as a graph; stage and unstage files (or lines, from a diff), commit with a message you write or one written for you, undo what tessel did |
 | `surfaces`     | live views the agent drew for a pane (`tessel_surface`, region `pane`). while one is open those leave the chat |
 

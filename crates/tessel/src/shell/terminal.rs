@@ -433,6 +433,32 @@ impl Shell {
         }
     }
 
+    /// `line` run in a terminal of the open chat, shown in a terminal pane (the
+    /// first on screen, else a new one under the pane showing `from`), and given the keys.
+    pub(crate) fn run_in_terminal(&mut self, line: String, from: Module, window: &mut Window, cx: &mut Context<Self>) {
+        let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
+        let existing = self.ui.panes().into_iter().find(|p| p.module == Some(Module::Terminal) && self.pane_open(p)).map(|p| p.id.clone());
+        let under = || {
+            let trail = self.ui.panes().into_iter().find(|p| p.module == Some(from) && self.pane_open(p)).map(|p| p.trail.clone());
+            trail.or_else(|| self.focused_pane().map(|p| p.trail))
+        };
+        let pane = match existing {
+            Some(pane) => Some(pane),
+            None => under().and_then(|at| {
+                let pane = self.split_pane(at, crate::ui::Axis::Column, window, cx)?;
+                let trail = self.ui.panes().into_iter().find(|p| p.id == pane)?.trail.clone();
+                self.set_pane_module(trail, Module::Terminal, window, cx);
+                Some(pane)
+            }),
+        };
+        let Some(pane) = pane else { return };
+        // the pane waits for this one rather than starting a shell of its own.
+        self.term_opening.insert((pane.clone(), session));
+        self.term_focus = Some(pane.clone());
+        self.cmd(Cmd::TermOpen { pane, session, cwd: None, command: vec![line], cols: 100, rows: 30 });
+        cx.notify();
+    }
+
     /// a terminal in a new pane below the focused one.
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<String> {
         let at = self.focused_pane()?;

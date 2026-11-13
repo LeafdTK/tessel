@@ -279,6 +279,31 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    // ---- kubernetes (through the person's kubectl) ----------------------------
+    /// the kubeconfig's contexts, and which one is current.
+    KubeContexts,
+    /// a context's namespaces. none: the current context.
+    KubeNamespaces {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+    },
+    /// a kind's objects. no namespace: every namespace (nodes have none).
+    KubeList {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        namespace: Option<String>,
+        kind: crate::kube::KubeKind,
+    },
+    /// do something to one object (see `KubeAct`). answers with what kubectl said.
+    KubeAct {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        namespace: String,
+        kind: crate::kube::KubeKind,
+        name: String,
+        act: crate::kube::KubeAct,
+    },
     /// a page of history, newest first.
     GitLog {
         session: SessionId,
@@ -676,6 +701,22 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    KubeContexts {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<String>,
+        contexts: Vec<String>,
+    },
+    KubeNamespaces {
+        namespaces: Vec<String>,
+    },
+    KubeObjects {
+        /// the kind listed (not `kind`: that's this enum's tag).
+        of: crate::kube::KubeKind,
+        objects: Vec<crate::kube::KubeObject>,
+        /// whether cpu and memory are known (the cluster has a metrics server).
+        #[serde(default)]
+        metrics: bool,
     },
     FolderInfo {
         /// the repository's top folder, when the folder is inside one.

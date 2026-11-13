@@ -38,6 +38,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl link SESSION DIR                let the agent work in another folder too
   tesselctl visual SESSION on|off           watch the agent work: its Bash commands live in a terminal, browser steps paced
   tesselctl models                          the models the agent offers
+  tesselctl kube [pods|deployments|services|nodes] [-n NS] [--context C] [--json]
+  tesselctl kube contexts|namespaces        what the kubernetes module shows, through your kubectl
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
                                             --wait returns once each is closed (0 saved or
@@ -464,6 +466,47 @@ async fn run() -> anyhow::Result<()> {
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionLinkDir { cmd_id: Uuid::new_v4(), session, path: args.next("a folder")? }).await?;
+        }
+        "kube" => {
+            let context = args.opt("--context")?;
+            let namespace = args.opt("-n")?.or(args.opt("--namespace")?);
+            let json = args.flag("--json");
+            let what = args.rest.first().cloned().unwrap_or_else(|| "pods".into());
+            match what.as_str() {
+                "contexts" => match client.request(Request::KubeContexts).await? {
+                    Response::KubeContexts { current, contexts } => {
+                        for c in contexts {
+                            println!("{} {c}", if current.as_deref() == Some(c.as_str()) { "*" } else { " " });
+                        }
+                    }
+                    other => bail!("unexpected reply: {other:?}"),
+                },
+                "namespaces" | "ns" => match client.request(Request::KubeNamespaces { context }).await? {
+                    Response::KubeNamespaces { namespaces } => namespaces.iter().for_each(|n| println!("{n}")),
+                    other => bail!("unexpected reply: {other:?}"),
+                },
+                kind => {
+                    let kind: kube::KubeKind = serde_json::from_value(serde_json::Value::String(kind.to_owned()))?;
+                    if kind == kube::KubeKind::Unknown {
+                        bail!("pods, deployments, services, nodes, contexts or namespaces, not {what}");
+                    }
+                    match client.request(Request::KubeList { context, namespace, kind }).await? {
+                        Response::KubeObjects { objects, .. } if json => println!("{}", serde_json::to_string_pretty(&objects)?),
+                        Response::KubeObjects { objects, metrics, .. } => {
+                            for o in objects {
+                                let ns = o.namespace.map(|n| format!("{n}/")).unwrap_or_default();
+                                let usage = if metrics {
+                                    format!("{:>6} {:>8}", o.cpu_milli.map(|c| format!("{c}m")).unwrap_or_default(), o.mem_bytes.map(|b| format!("{}Mi", b / 1048576)).unwrap_or_default())
+                                } else {
+                                    String::new()
+                                };
+                                println!("{:<48} {:<22} {:>6} {:>3} {usage}", format!("{ns}{}", o.name), o.status, o.ready.unwrap_or_default(), o.restarts.map(|r| r.to_string()).unwrap_or_default());
+                            }
+                        }
+                        other => bail!("unexpected reply: {other:?}"),
+                    }
+                }
+            }
         }
         "models" => match client.request(Request::ModelList).await? {
             Response::Models { models, .. } => {

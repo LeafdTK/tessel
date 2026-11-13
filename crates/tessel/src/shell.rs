@@ -22,6 +22,7 @@ mod models;
 mod looks;
 mod files;
 mod git;
+mod kube;
 mod palette;
 mod panel;
 mod panes;
@@ -255,6 +256,7 @@ pub struct Shell {
     /// a terminal pane that takes the keys as soon as its shell is up.
     term_focus: Option<String>,
     git: git::GitView,
+    kube: kube::KubeView,
     bench_term: Option<terminal::BenchTerm>,
     /// a theme being tried on: drawn, not written.
     theme_preview: Option<String>,
@@ -421,6 +423,7 @@ impl Shell {
         let palette_ui = palette::PaletteState::new(window, cx);
         let palette_input = palette_ui.input.clone();
         let changes_search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let kube_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter"));
         let projects_home = std::env::var("TESSEL_PROJECTS").unwrap_or_else(|_| "~/tessel/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
@@ -443,6 +446,11 @@ impl Shell {
             menu_keys,
             // the changes list narrows as you type.
             cx.subscribe_in(&changes_search, window, |_, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&kube_filter, window, |_, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
                     cx.notify();
                 }
@@ -585,6 +593,7 @@ impl Shell {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let alive = this.update_in(cx, |this, window, cx| {
                     this.workspace_tick();
+                    this.kube_tick();
                     this.poll_ui(window, cx);
                     cx.notify();
                 });
@@ -683,6 +692,7 @@ impl Shell {
             term_opening: Default::default(),
             term_focus: None,
             git: git::GitView::new(window, cx),
+            kube: kube::KubeView::new(kube_filter),
             bench_term: launch.bench_term.then(terminal::BenchTerm::default),
             theme_preview: None,
             theme_preview_by_palette: false,
@@ -995,6 +1005,7 @@ impl Shell {
             UiEvent::Watched(w) => self.ui_watched = w,
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
+            UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
             UiEvent::Answer { tag: "folder.info", result } => {

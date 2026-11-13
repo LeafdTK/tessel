@@ -691,6 +691,8 @@ impl Shell {
             Module::Workspace => v_flex().size_full().child(self.panel_body(cx)).into_any_element(),
             // a terminal needs no session: without one it's a shell in your home folder.
             Module::Terminal => self.terminal_el(pane.map_or("", |p| p.id.as_str()), cx),
+            // nor does a cluster.
+            Module::Kube => self.kube_el(cx),
             _ if session.is_none() => quiet("Open a session to see this."),
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),
             Module::Files => div().size_full().child(self.files_tab(cx)).into_any_element(),
