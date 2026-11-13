@@ -2298,27 +2298,52 @@ fn the_sidebar_stays_while_desktops_change_their_panes_and_a_swipe_switches(cx: 
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
     assert!(saved["desktops"][1]["layout"].is_object() && saved["desktops"][1].get("root").is_none(), "a desktop keeps panes, not a whole window");
 
-    // two fingers to the left: the next desktop, once, however far the swipe coasts.
+    // two fingers to the left: the panes follow them, and the next desktop comes in beside.
     let swipe = |rig: &mut Rig, cx: &mut TestAppContext, phase: TouchPhase, dx: f32| {
         let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(dx), px(1.))), touch_phase: phase, ..ScrollEvent::default() };
         cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
         rig.settle(cx);
     };
+    let moved = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| (s.desk.x.value(), s.desk.peek.as_ref().map(|p| p.0)));
+    let width = rig.shell.read_with(cx, |s, _| s.pane_area.get().map(|b| f32::from(b.size.width))).unwrap();
     swipe(&mut rig, cx, TouchPhase::Started, -20.);
     // a slow hand: inside one gesture, how long it takes doesn't matter.
     std::thread::sleep(std::time::Duration::from_millis(350));
     swipe(&mut rig, cx, TouchPhase::Moved, -50.);
+    let (x, peek) = moved(&rig, cx);
+    assert!((x + 70.).abs() < 1.0 && peek == Some(1), "the panes are where the fingers took them, the next desktop beside: {x} {peek:?}");
+    assert_eq!(showing(&rig, cx), 0, "nothing switches while the fingers are down");
+    // let go short of a third, and slowly: back it goes.
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    swipe(&mut rig, cx, TouchPhase::Ended, 0.);
+    assert_eq!((showing(&rig, cx), moved(&rig, cx)), (0, (0.0, None)), "springs back");
+    // most of the way, then let go: on to the next desktop, once.
+    swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    swipe(&mut rig, cx, TouchPhase::Moved, -(width * 0.5));
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    swipe(&mut rig, cx, TouchPhase::Ended, 0.);
     assert_eq!(showing(&rig, cx), 1);
+    assert_eq!(moved(&rig, cx), (0.0, None), "and the panes are home");
+    // the trackpad coasting afterwards switches nothing more.
     swipe(&mut rig, cx, TouchPhase::Moved, -90.);
     assert_eq!(showing(&rig, cx), 1, "one swipe, one desktop");
+    // past the last desktop it only gives a little.
+    std::thread::sleep(std::time::Duration::from_millis(950));
+    swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    swipe(&mut rig, cx, TouchPhase::Moved, -400.);
+    assert!(moved(&rig, cx).0.abs() <= 60.0 && moved(&rig, cx).1.is_none(), "{:?}", moved(&rig, cx));
+    swipe(&mut rig, cx, TouchPhase::Ended, 0.);
+    assert_eq!(showing(&rig, cx), 1);
     // up and down is the list's, not a switch.
     swipe(&mut rig, cx, TouchPhase::Started, 0.);
     let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(30.), px(120.))), touch_phase: TouchPhase::Moved, ..ScrollEvent::default() };
     cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
+    swipe(&mut rig, cx, TouchPhase::Ended, 0.);
     assert_eq!(showing(&rig, cx), 1);
-    // and back to the right.
-    swipe(&mut rig, cx, TouchPhase::Started, 30.);
-    swipe(&mut rig, cx, TouchPhase::Moved, 40.);
+    // a quick flick to the right goes back, however short.
+    swipe(&mut rig, cx, TouchPhase::Started, 10.);
+    swipe(&mut rig, cx, TouchPhase::Moved, 30.);
+    swipe(&mut rig, cx, TouchPhase::Ended, 30.);
     assert_eq!(showing(&rig, cx), 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }

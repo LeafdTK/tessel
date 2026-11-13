@@ -164,7 +164,7 @@ pub struct Shell {
     // the gaps between them and the one being dragged.
     pub(crate) pane_folded: HashMap<String, bool>,
     pane_fx: HashMap<String, panes::PaneFx>,
-    pane_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    pub(crate) pane_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pane_gaps: Vec<(Vec<usize>, usize, crate::ui::Axis, Rect, (f32, f32), f32)>,
     pane_drag: Option<panes::PaneDrag>,
     /// the pane last clicked in: the one keys act on.
@@ -231,6 +231,7 @@ pub struct Shell {
     pub(crate) stashed: HashMap<String, desktops::Stashed>,
     /// a desktop's panes arriving: 1 just switched, fading to 0.
     pub(crate) desktop_slide: Spring,
+    pub(crate) desk: desktops::DeskDrag,
     /// a two-finger swipe across the sidebar: how far it has gone, whether it
     /// has already switched desktops, when it last moved, and whether the
     /// trackpad is in the middle of one.
@@ -684,6 +685,7 @@ impl Shell {
             shipped: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
+            desk: desktops::DeskDrag::new(),
             swipe: (0.0, false, None, false),
             pane_zoom: None,
             pane_move: None,
@@ -2414,7 +2416,7 @@ impl Shell {
     fn animate(&mut self, cx: &App) -> bool {
         let cards_moving = self.overview_fade.is_moving() || self.cards.values().any(|c| c.iter().any(Spring::is_moving));
         let drawers_moving = self.drawers.iter().any(|d| d.w.is_moving()) || self.panes_moving();
-        let moving = drawers_moving || self.row_fx.is_moving() || self.prompt_open.is_moving() || cards_moving || self.desktop_slide.is_moving();
+        let moving = drawers_moving || self.row_fx.is_moving() || self.prompt_open.is_moving() || cards_moving || self.desktop_slide.is_moving() || self.desk.x.is_moving();
         if !moving {
             self.ticker.rest();
             return false;
@@ -2430,6 +2432,7 @@ impl Shell {
         still |= self.prompt_open.step(dt, reduced);
         still |= self.overview_fade.step(dt, reduced);
         still |= self.desktop_slide.step(dt, reduced);
+        still |= self.desk.x.step(dt, reduced);
         for card in self.cards.values_mut() {
             for spring in card.iter_mut() {
                 still |= spring.step(dt, reduced);
@@ -2494,6 +2497,7 @@ impl Render for Shell {
         self.sync_terminals(window, cx);
         self.step_bench_term(window, cx);
         self.sync_git_message(window, cx);
+        self.sync_desk(window, cx);
         if std::mem::take(&mut self.clear_new_prompt) {
             self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
         }

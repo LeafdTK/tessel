@@ -70,7 +70,7 @@ fn fit(shares: Vec<f32>, room: f32, least: f32) -> Vec<f32> {
     }
     lens
 }
-const HEADER_H: f32 = 36.0;
+pub(crate) const HEADER_H: f32 = 36.0;
 
 /// a pane's place, as it is drawn now and where it is heading.
 pub(crate) struct PaneFx {
@@ -152,6 +152,13 @@ impl Shell {
     // ---- laying out ----------------------------------------------------------------
 
     /// each open pane's rectangle in `area`, and the gaps between neighbours.
+    /// where each open pane of `tree` goes in `area`.
+    pub(crate) fn pane_rects(&self, tree: &PaneTree, area: Rect) -> Vec<(String, Rect)> {
+        let (mut out, mut gaps) = (Vec::new(), Vec::new());
+        self.layout(tree, area, &mut out, &mut gaps);
+        out
+    }
+
     fn layout(&self, tree: &PaneTree, area: Rect, out: &mut Vec<(String, Rect)>, gaps: &mut Vec<Gap>) {
         match tree {
             // a picture in picture has no place in its split: it floats (see `pip_rect`).
@@ -393,9 +400,13 @@ impl Shell {
         let tree = n.props.layout.as_deref().cloned();
         let me = cx.entity();
         let area_cell = self.pane_area.clone();
+        let shift = self.desk.shift.clone();
         // measure the room the panes have, and lay them out in it on the next frame.
         let measure = canvas(
             move |bounds, window, cx| {
+                // mid-swipe the panes are drawn moved aside; the room they have hasn't.
+                let mut bounds = bounds;
+                bounds.origin.x -= px(shift.get());
                 let old = area_cell.replace(Some(bounds));
                 if old != Some(bounds) {
                     // the room changed (the window was resized, a drawer moved):

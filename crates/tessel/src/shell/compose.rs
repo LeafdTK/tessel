@@ -390,7 +390,22 @@ impl Shell {
                 });
                 // a desktop arriving: its panes come up quickly from a little faint. the sidebar stays as it is.
                 let arriving = self.desktop_slide.value().clamp(0.0, 1.0);
-                self.styled(div().relative().opacity(1.0 - arriving * 0.2).child(self.panes_el(n, now, cx)).children(strip), s).into_any_element()
+                // a swipe between desktops: the panes follow the fingers, the next desktop beside them.
+                let dx = self.desk.x.value();
+                let room = self.pane_area.get().map(|b| (f32::from(b.size.width), f32::from(b.size.height)));
+                // the panes sit inside the area's padding; the desktop coming in does too.
+                let left = s.pl.or(s.px).or(s.p).unwrap_or(0.0);
+                let peek = room.and_then(|(w, h)| self.desk_peek_el(left, top, w, h));
+                self.styled(
+                    div()
+                        .relative()
+                        .overflow_hidden()
+                        .opacity(1.0 - arriving * 0.2)
+                        .child(div().relative().size_full().left(px(dx)).child(self.panes_el(n, now, cx)).children(strip))
+                        .children(peek),
+                    s,
+                )
+                .into_any_element()
             }
             Kind::Add => self.styled(div().flex_shrink_0().child(self.add_menu("sidebar-add", cx)), s).into_any_element(),
             Kind::Desktops => self.styled(div().flex_1().min_w_0().child(self.desktops_el(cx)), s).into_any_element(),

@@ -289,7 +289,8 @@ impl Shell {
 
     /// what covers the whole window now: a page steps aside for it.
     pub(crate) fn page_covered(&self) -> bool {
-        self.tour.is_some() || self.palette_ui.open || self.sheet.is_some() || self.settings_open || self.overview_shown()
+        // a native page can't be clipped or moved with the panes mid-swipe: it waits.
+        self.tour.is_some() || self.palette_ui.open || self.sheet.is_some() || self.settings_open || self.overview_shown() || self.desk.active()
     }
 
     fn make_page(&mut self, session: SessionId, start: Option<String>) -> Result<(), String> {

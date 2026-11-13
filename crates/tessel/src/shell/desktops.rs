@@ -14,6 +14,7 @@
 use super::chats::ChatView;
 use super::Shell;
 use crate::motion::Spring;
+use crate::theme::Typeset as _;
 use gpui_kit::component::message_scroller::MessageScrollerState;
 use gpui_kit::*;
 use serde_json::{Map, Value, json};
@@ -31,6 +32,45 @@ pub(crate) struct Stashed {
     /// its chat was changed while it was away: start at that chat's end.
     pub(crate) fresh: bool,
 }
+
+/// a desktop being swiped to: the panes follow the fingers, the next desktop
+/// (its panes' outlines) comes in beside them, and letting go either carries
+/// on to it or springs back, as spaces do on the mac.
+pub(crate) struct DeskDrag {
+    /// how far the panes are moved sideways, in points. 0: at rest.
+    pub(crate) x: Spring,
+    /// the same, for the panes' own measuring, which must not see the move.
+    pub(crate) shift: std::rc::Rc<std::cell::Cell<f32>>,
+    /// the desktop coming in beside, and its panes.
+    pub(crate) peek: Option<(usize, Option<crate::ui::PaneTree>)>,
+    /// let go far enough: once the move ends, this desktop is the one showing.
+    pub(crate) commit: Option<usize>,
+    /// a gesture underway: how far the fingers have gone, and whether sideways (decided after a few points).
+    gone: (f32, f32),
+    sideways: Option<bool>,
+    touching: bool,
+    /// how fast the fingers were going, in points per second, and when they last moved.
+    speed: f32,
+    last: Option<std::time::Instant>,
+    /// when the fingers last lifted: the coasting that follows is the trackpad's, not a new swipe.
+    lifted: Option<std::time::Instant>,
+}
+
+impl DeskDrag {
+    pub(crate) fn new() -> Self {
+        Self { x: Spring::points(0.0), shift: Default::default(), peek: None, commit: None, gone: (0.0, 0.0), sideways: None, touching: false, speed: 0.0, last: None, lifted: None }
+    }
+
+    /// something to draw: the panes are off their place, or a desktop is coming in.
+    pub(crate) fn active(&self) -> bool {
+        self.peek.is_some() || self.x.value().abs() > 0.25 || self.x.is_moving()
+    }
+}
+
+/// past this share of the width, letting go carries on to the next desktop.
+const FAR_ENOUGH: f32 = 0.3;
+/// a flick this fast carries on however short it was.
+const FLICK: f32 = 500.0;
 
 /// a chat being carried, from the overview to a desktop.
 #[derive(Clone)]
@@ -351,44 +391,215 @@ impl Shell {
     }
 
     /// two fingers sideways on the sidebar change desktop, as they change
-    /// spaces on the mac: towards the left for the next one. one switch per
-    /// swipe, however long it coasts; up and down is left to the list.
+    /// spaces on the mac: towards the left for the next one. on a trackpad the
+    /// panes follow the fingers and the next desktop comes in beside them;
+    /// stop halfway and hold, go back, or let go past a third (or with a
+    /// flick) to carry on. a wheel, which can't say where a swipe starts or
+    /// ends, switches once it has gone far enough. up and down is the list's.
     pub(crate) fn sidebar_swipe(&mut self, ev: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         const ENOUGH: f32 = 60.0;
         if self.ui.desktops.len() < 2 {
             return;
         }
         let now = std::time::Instant::now();
-        let (mut gone, mut spent, last, mut touching) = self.swipe;
-        // a trackpad says where a gesture starts and ends, however slow it is;
-        // a wheel doesn't, so for it a pause is what ends one.
-        let fresh = match ev.touch_phase {
-            TouchPhase::Started => {
-                touching = true;
-                true
-            }
-            TouchPhase::Ended | TouchPhase::Cancelled => {
-                touching = false;
-                false
-            }
-            TouchPhase::Moved => !touching && last.is_none_or(|t| now.duration_since(t).as_millis() > 300),
-        };
-        if fresh {
-            (gone, spent) = (0.0, false);
-        }
         let d = match ev.delta {
             ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
             ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
         };
-        if !spent && d.0.abs() > d.1.abs() {
-            gone += d.0;
-            if gone.abs() >= ENOUGH {
-                spent = true;
-                let next = if gone < 0.0 { "desktop.next" } else { "desktop.prev" };
-                self.run_key(next, json!({}), window, cx);
+        match ev.touch_phase {
+            TouchPhase::Started => {
+                let g = &mut self.desk;
+                g.touching = true;
+                g.gone = (0.0, 0.0);
+                g.sideways = None;
+                g.speed = 0.0;
+                g.last = Some(now);
+                // caught mid-flight: carry on from where it is, toward neither end yet.
+                g.commit = None;
+                let at = g.x.value();
+                g.x.snap(at);
+                self.desk_follow(d, now, cx);
+            }
+            TouchPhase::Moved if self.desk.touching => self.desk_follow(d, now, cx),
+            TouchPhase::Ended | TouchPhase::Cancelled => {
+                self.desk_follow(d, now, cx);
+                self.desk_let_go(now);
+                cx.notify();
+            }
+            // the trackpad coasting after a swipe: it's already decided.
+            TouchPhase::Moved if self.desk.lifted.is_some_and(|t| now.duration_since(t).as_millis() < 900) => {
+                self.desk.lifted = Some(now);
+            }
+            // a wheel: no start or end, so a pause is what ends a swipe.
+            TouchPhase::Moved => {
+                let (mut gone, mut spent, last, _) = self.swipe;
+                if last.is_none_or(|t| now.duration_since(t).as_millis() > 300) {
+                    (gone, spent) = (0.0, false);
+                }
+                if !spent && d.0.abs() > d.1.abs() {
+                    gone += d.0;
+                    if gone.abs() >= ENOUGH {
+                        spent = true;
+                        let next = if gone < 0.0 { "desktop.next" } else { "desktop.prev" };
+                        self.run_key(next, json!({}), window, cx);
+                    }
+                }
+                self.swipe = (gone, spent, Some(now), false);
             }
         }
-        self.swipe = (gone, spent, Some(now), touching);
+    }
+
+    /// the fingers moved by `d`: the panes go with them, sideways swipes only.
+    fn desk_follow(&mut self, d: (f32, f32), now: std::time::Instant, cx: &mut Context<Self>) {
+        let width = self.pane_area.get().map_or(800.0, |b| f32::from(b.size.width)).max(1.0);
+        let g = &mut self.desk;
+        g.gone.0 += d.0;
+        g.gone.1 += d.1;
+        if g.sideways.is_none() && g.gone.0.abs() + g.gone.1.abs() > 6.0 {
+            g.sideways = Some(g.gone.0.abs() > g.gone.1.abs());
+        }
+        if g.sideways != Some(true) {
+            return;
+        }
+        if let Some(last) = g.last {
+            let dt = now.duration_since(last).as_secs_f32();
+            if dt > 0.0 && d.0 != 0.0 {
+                // smoothed, so one odd event doesn't decide a flick.
+                g.speed = g.speed * 0.4 + (d.0 / dt.max(0.004)) * 0.6;
+            }
+        }
+        g.last = Some(now);
+        // where the panes would be, then held back where there's nothing to go to.
+        let want = g.x.value() + d.0;
+        let at = self.ui.desktop;
+        let toward = if want < 0.0 { at.checked_add(1).filter(|n| *n < self.ui.desktops.len()) } else { at.checked_sub(1) };
+        let x = match toward {
+            Some(_) => want.clamp(-width, width),
+            // past the end: it gives a little, and less the further it goes.
+            None => {
+                let pull = want.signum() * (want.abs() * 0.25).min(60.0);
+                if (g.x.value() - pull).abs() > 0.1 { pull } else { g.x.value() }
+            }
+        };
+        self.desk.x.snap(x);
+        self.desk.shift.set(x);
+        let wanted = toward.filter(|_| x.abs() > 0.5);
+        if self.desk.peek.as_ref().map(|p| p.0) != wanted {
+            self.desk.peek = wanted.map(|n| (n, self.desk_panes(n)));
+        }
+        cx.notify();
+    }
+
+    /// the fingers lifted: on to the desktop coming in, or back.
+    fn desk_let_go(&mut self, now: std::time::Instant) {
+        let width = self.pane_area.get().map_or(800.0, |b| f32::from(b.size.width)).max(1.0);
+        let g = &mut self.desk;
+        g.touching = false;
+        g.lifted = Some(now);
+        let x = g.x.value();
+        // a flick only counts if the fingers were still moving when they lifted.
+        let speed = if g.last.is_some_and(|t| now.duration_since(t).as_millis() < 80) { g.speed } else { 0.0 };
+        let flicked = speed.abs() > FLICK;
+        let going = g.peek.as_ref().map(|p| p.0).filter(|_| {
+            // past a third carries on, unless flicked back; a flick onward carries on however short.
+            let far = x.abs() > width * FAR_ENOUGH && !(flicked && speed.signum() != x.signum());
+            far || (flicked && speed.signum() == x.signum())
+        });
+        match going {
+            Some(n) => {
+                g.commit = Some(n);
+                g.x.fling(x.signum() * width, speed);
+            }
+            None => {
+                g.commit = None;
+                g.x.fling(0.0, speed);
+            }
+        }
+    }
+
+    /// the panes of desktop `n`, as its layout lays them out.
+    fn desk_panes(&self, n: usize) -> Option<crate::ui::PaneTree> {
+        let mut file = self.ui_file();
+        let id = self.ui.desktops.get(n)?.id.clone();
+        file.insert("desktop".into(), json!(id));
+        let ui = crate::ui::parse(&Value::Object(file).to_string()).ok()?;
+        ui.root_panes().cloned()
+    }
+
+    /// once a frame: a swipe that carried on, landed, shows its desktop.
+    pub(crate) fn sync_desk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let g = &mut self.desk;
+        g.shift.set(g.x.value());
+        if g.touching || g.x.is_moving() {
+            return;
+        }
+        match g.commit.take() {
+            Some(n) => {
+                g.x.snap(0.0);
+                g.shift.set(0.0);
+                g.peek = None;
+                self.use_desktop(n, window, cx);
+            }
+            None if g.x.value() == 0.0 && g.peek.is_some() => g.peek = None,
+            None => {}
+        }
+    }
+
+    /// the desktop coming in: its panes as outlines, each with what it shows.
+    pub(crate) fn desk_peek_el(&self, pad_left: f32, pad_top: f32, w: f32, h: f32) -> Option<AnyElement> {
+        let (n, tree) = self.desk.peek.as_ref()?;
+        let p = self.palette.get();
+        let x = self.desk.x.value();
+        // beside the panes, on the side they're leaving from.
+        let left = pad_left + if x < 0.0 { x + w } else { x - w };
+        let rects = tree.as_ref().map(|t| self.pane_rects(t, crate::model::Rect { x: 0.0, y: 0.0, w, h })).unwrap_or_default();
+        let leaves: Vec<crate::ui::Pane> = tree.as_ref().map(|t| {
+            let mut out = Vec::new();
+            t.leaves(&mut out);
+            out.into_iter().cloned().collect()
+        }).unwrap_or_default();
+        let name = self.ui.desktops.get(*n).map(|d| d.name.clone()).unwrap_or_default();
+        let mut layer = div().absolute().top(px(pad_top)).left(px(left)).w(px(w)).h(px(h));
+        if rects.is_empty() {
+            layer = layer.child(div().size_full().flex().items_center().justify_center().set(crate::theme::Type::Title).text_color(p.secondary).child(name));
+        }
+        for (id, r) in rects {
+            let module = leaves.iter().find(|l| l.id == id).and_then(|l| l.module);
+            let (title, icon) = module.map_or(("".to_owned(), "square"), |m| (m.title().to_owned(), m.icon()));
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .rounded(px(crate::theme::R_PANEL))
+                    .border_1()
+                    .border_color(p.separator)
+                    .bg(p.window)
+                    .overflow_hidden()
+                    .child(
+                        gpui_kit::component::h_flex()
+                            .h(px(super::panes::HEADER_H))
+                            .px(px(12.))
+                            .gap(px(8.))
+                            .border_b_1()
+                            .border_color(p.separator)
+                            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(14.)).text_color(p.tertiary))
+                            .child(div().set(crate::theme::Type::Headline).text_color(p.secondary).child(title)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .h(px((r.h - super::panes::HEADER_H).max(0.0)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(px(28.)).text_color(p.quaternary)),
+                    ),
+            );
+        }
+        Some(layer.into_any_element())
     }
 
     /// ⌘1…⌘9: that desktop, when there is one.
