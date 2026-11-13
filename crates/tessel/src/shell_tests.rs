@@ -2649,3 +2649,63 @@ fn a_new_session_can_start_with_a_picture_and_says_its_starting_until_it_has(cx:
     rig.feed(cx, vec![UiEvent::Created]);
     assert!(!label(&rig, cx) && rig.shell.read_with(cx, |s, _| s.attachments.is_empty()), "made: the box is emptied");
 }
+
+#[gpui_kit::test]
+fn talking_puts_words_in_the_box_by_mic_or_by_holding_option(cx: &mut TestAppContext) {
+    use crate::shell::dictate::Heard;
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, idle, vec![]);
+    let told = |rig: &Rig, cx: &mut TestAppContext| rig.shell.update(cx, |s, _| std::mem::take(&mut s.dictation.told));
+    let hear = |rig: &mut Rig, cx: &mut TestAppContext, h: Heard| {
+        let shell = rig.shell.clone();
+        cx.update_window(rig.window, |_, window, cx| shell.update(cx, |s, cx| s.voice_heard(h, window, cx))).unwrap();
+        rig.settle(cx);
+    };
+    rig.click(cx, "composer");
+    rig.typed(cx, "please");
+
+    // the mic: listening, the words as they come, then in the box beside what was typed.
+    rig.click(cx, "mic");
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"start\"")));
+    hear(&mut rig, cx, Heard::Listening);
+    hear(&mut rig, cx, Heard::Level(0.6));
+    hear(&mut rig, cx, Heard::Partial("fix the flaky".into()));
+    assert!(rig.exists(cx, "dictation"), "what's heard shows while talking");
+    rig.click(cx, "mic");
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")));
+    hear(&mut rig, cx, Heard::Final("fix the flaky test".into()));
+    assert!(!rig.exists(cx, "dictation"));
+    assert_eq!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)), "please fix the flaky test", "at the cursor, a space from what's there; not sent");
+
+    // holding ⌥ on its own: talking until it's let go.
+    use gpui_kit::Modifiers;
+    let alt = Modifiers { alt: true, ..Modifiers::default() };
+    let none = Modifiers::default();
+    let modifiers = |rig: &mut Rig, cx: &mut TestAppContext, m: Modifiers| {
+        let shell = rig.shell.clone();
+        cx.update_window(rig.window, |_, window, cx| shell.update(cx, |s, cx| s.dictate_modifiers(&m, window, cx))).unwrap();
+    };
+    modifiers(&mut rig, cx, alt);
+    rig.settle(cx);
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"start\"")), "held a moment: listening");
+    hear(&mut rig, cx, Heard::Listening);
+    modifiers(&mut rig, cx, none);
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")), "let go: finished");
+    hear(&mut rig, cx, Heard::Final("and the login".into()));
+    assert!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)).ends_with("flaky test and the login"));
+
+    // ⌥ with a key is a ⌥ combination, never talking.
+    modifiers(&mut rig, cx, alt);
+    let shell = rig.shell.clone();
+    cx.update_window(rig.window, |_, window, cx| shell.update(cx, |s, cx| s.dictate_key("e", window, cx))).unwrap();
+    rig.settle(cx);
+    modifiers(&mut rig, cx, none);
+    assert!(told(&rig, cx).is_empty(), "nothing started");
+
+    // escape throws a take away.
+    rig.click(cx, "mic");
+    hear(&mut rig, cx, Heard::Listening);
+    rig.press(cx, "escape");
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"cancel\"")));
+    assert!(!rig.exists(cx, "dictation"));
+}

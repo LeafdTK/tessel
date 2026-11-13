@@ -24,6 +24,16 @@ for b in tessel tesseld tesselctl; do
 done
 cp "$root/assets/icon/tessel.icns" "$app/Contents/Resources/tessel.icns"
 
+# the voice helper (the microphone, and apple's speech engine): swift, so not
+# part of cargo's build. it needs macOS 26's sdk; without it, tessel still
+# runs, and only the cloud voice engines are offered.
+voice_cfg=$([ "$profile" = release ] && echo release || echo debug)
+if command -v swift >/dev/null 2>&1 && swift build -c "$voice_cfg" --package-path "$root/voice" >/dev/null 2>&1; then
+    cp "$root/voice/.build/$voice_cfg/tessel-voice" "$app/Contents/MacOS/tessel-voice"
+else
+    echo "note: tessel-voice wasn't built (it needs swift and the macOS 26 sdk); voice input will offer cloud engines only" >&2
+fi
+
 # the workspace's version: the first `version = ` in the root Cargo.toml is [workspace.package]'s.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
 cat > "$app/Contents/Info.plist" <<PLIST
@@ -41,6 +51,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
     <key>CFBundleVersion</key><string>${version:-0.1.0}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Tessel listens while you hold ⌥ (or press the mic) in the message box, and writes what you say there.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Tessel turns what you say into text for the message box, on this Mac.</string>
 </dict>
 </plist>
 PLIST

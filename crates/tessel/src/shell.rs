@@ -17,6 +17,7 @@ mod browser;
 pub(crate) use browser::floating_at;
 mod chats;
 mod desktops;
+pub(crate) mod dictate;
 mod space;
 mod models;
 mod looks;
@@ -232,6 +233,7 @@ pub struct Shell {
     /// a desktop's panes arriving: 1 just switched, fading to 0.
     pub(crate) desktop_slide: Spring,
     pub(crate) desk: desktops::DeskDrag,
+    pub(crate) dictation: dictate::Dictation,
     /// a two-finger swipe across the sidebar: how far it has gone, whether it
     /// has already switched desktops, when it last moved, and whether the
     /// trackpad is in the middle of one.
@@ -447,8 +449,19 @@ impl Shell {
                 }
             })
         };
+        // talking: a key while ⌥ is held makes it a ⌥ combination, and escape throws a take away.
+        let voice_keys = {
+            let me = cx.entity().downgrade();
+            cx.intercept_keystrokes(move |ev, window, cx| {
+                let key = ev.keystroke.key.clone();
+                if me.update(cx, |this, cx| this.dictate_key(&key, window, cx)).unwrap_or(false) {
+                    cx.stop_propagation();
+                }
+            })
+        };
         let subscriptions = vec![
             menu_keys,
+            voice_keys,
             // the changes list narrows as you type.
             cx.subscribe_in(&changes_search, window, |_, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
@@ -691,6 +704,7 @@ impl Shell {
             rewound: false,
             desktop_slide: Spring::unit(0.0),
             desk: desktops::DeskDrag::new(),
+            dictation: dictate::Dictation::new(),
             swipe: (0.0, false, None, false),
             pane_zoom: None,
             pane_move: None,
@@ -2631,6 +2645,8 @@ impl Render for Shell {
             }))
             // drop a file anywhere on the window to send it with the next message.
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| this.attach_paths(paths.paths().to_vec(), window, cx)))
+            // ⌥ held on its own in the message box is talking.
+            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| this.dictate_modifiers(&ev.modifiers, window, cx)))
             // a click outside a page takes the keyboard back from it.
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| this.page_focus(ev.position, window, cx)))
             .children(root)

@@ -780,6 +780,7 @@ impl Shell {
                     .child(self.mcp_menu(cx))
                     .children(self.usage_meter_el(cx))
                     .children(self.context_meter_el(cx))
+                    .child(self.mic_button(cx))
                     .child(div().pl(theme::z(4.)).child(send)),
             );
         // what the keys do, as keys: the same caps the menus use, the words in
@@ -793,7 +794,8 @@ impl Shell {
             .child(hint("⏎", "send"))
             .child(hint("⇧ ⏎", "new line"))
             .child(hint("/", "commands"))
-            .child(hint("@", "files"));
+            .child(hint("@", "files"))
+            .child(hint("⌥", "hold to talk"));
         // while the agent works, say so right where you're looking: orchard's
         // orbiting dot, what it's doing, and for how long.
         let working = self.model.open_summary().filter(|s| !self.show_new && matches!(s.run_state, RunState::Working | RunState::Starting | RunState::Stalled)).map(|s| {
