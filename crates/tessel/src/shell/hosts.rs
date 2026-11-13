@@ -16,6 +16,9 @@ use gpui_kit::component::switch::Switch;
 use tessel_remote::hosts::{Host, Hosts, Transport};
 use tessel_remote::setup::{Options, Said};
 
+/// the machine card's height, at the top of the sidebar.
+pub(crate) const PICKER_H: f32 = 50.0;
+
 #[derive(Default)]
 pub(crate) struct HostsView {
     /// tessel's home on this mac, where `hosts.json` and this mac's key are.
@@ -288,43 +291,61 @@ impl Shell {
 
     // ---- drawing ------------------------------------------------------------------
 
-    /// the top of the sidebar: which machine this is, and the others.
+    /// the top of the sidebar: which machine this is (a card with its
+    /// picture, its name and how it's doing), and the others to switch to.
     pub(crate) fn host_picker(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
         let me = cx.entity().downgrade();
         let label = self.host_label();
         let remote = self.on_host();
-        let down = matches!(self.model.connection, crate::model::Connection::Down(_)) && remote;
-        let connecting = !matches!(self.model.connection, crate::model::Connection::Connected) && remote;
-        let via = if down {
+        let down = matches!(self.model.connection, crate::model::Connection::Down(_));
+        let connecting = !matches!(self.model.connection, crate::model::Connection::Connected);
+        let working = self.model.sessions.iter().filter(|s| s.run_state.is_busy()).count();
+        let chats = self.model.sessions.len();
+        let mut about = vec![if chats == 1 { "1 chat".to_owned() } else { format!("{chats} chats") }];
+        if working > 0 {
+            about.push(format!("{working} working"));
+        }
+        if remote {
+            about.push(self.hosts.via.clone());
+        }
+        let about = if down && remote {
             "Reconnecting…".to_owned()
         } else if connecting {
             "Connecting…".to_owned()
-        } else if remote {
-            self.hosts.via.clone()
         } else {
-            String::new()
+            about.join(" · ")
         };
-        div().mx_2().child(Popover::new("host-picker-popover")
+        let seed = self.hosts.list.current.clone().unwrap_or_else(|| "this-mac".into());
+        Popover::new("host-picker-popover")
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(
                 Button::new("host-picker")
                     .ghost()
                     .w_full()
-                    .h(px(30.))
+                    .h(px(PICKER_H))
                     .px(px(8.))
-                    .rounded(px(theme::R_TILE))
+                    .rounded(px(theme::R_CARD))
+                    .bg(p.fill.opacity(0.6))
+                    .border_1()
+                    .border_color(p.separator)
                     .tooltip("Which machine the window shows")
                     .child(
                         h_flex()
                             .w_full()
                             .min_w_0()
-                            .gap(px(8.))
-                            .child(Icon::empty().path(if remote { "icons/server.svg" } else { "icons/laptop.svg" }).size(z(15.)).text_color(if down { p.blocked } else { p.secondary }))
-                            .child(div().flex_shrink_0().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(p.label).child(label))
-                            .child(div().flex_1().min_w_0().truncate().set(Type::Subheadline).text_color(if down { p.blocked } else { p.tertiary }).child(via))
-                            .child(Icon::empty().path("icons/chevrons-up-down.svg").size(z(13.)).text_color(p.tertiary)),
+                            .gap(px(10.))
+                            .child(super::avatar::avatar(&seed, 28., 7.))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(1.))
+                                    .child(div().truncate().set(Type::Body).font_weight(FontWeight::SEMIBOLD).text_color(p.label).child(label))
+                                    .child(div().truncate().set(Type::Subheadline).text_color(if down && remote { p.blocked } else { p.tertiary }).child(about)),
+                            )
+                            .child(Icon::empty().path("icons/chevrons-up-down.svg").size(z(14.)).text_color(p.tertiary)),
                     ),
             )
             .content(move |_, _, cx| {
@@ -340,21 +361,40 @@ impl Shell {
                         let _ = me.update(cx, |this, cx| this.switch_host(to.clone(), cx));
                     }
                 };
-                let mut list = theme::float_list(&p).w(px(260.)).child(theme::float_item(&p, "host-mac", Some("laptop"), "This Mac", None, current.is_none()).test_support().on_click(go(None)));
+                let machine = |id: SharedString, seed: String, name: String, note: String, on: bool| {
+                    h_flex()
+                        .id(id)
+                        .test_support()
+                        .min_h(px(44.))
+                        .px(px(8.))
+                        .gap(px(10.))
+                        .rounded(px(theme::R_TILE))
+                        .when(on, |d| d.bg(p.selection))
+                        .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                        .child(super::avatar::avatar(&seed, 26., 6.))
+                        .child(
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .child(div().truncate().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(p.label).child(name))
+                                .child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(note)),
+                        )
+                };
+                let mut list = v_flex().w(px(280.)).p(px(6.)).gap(px(2.)).child(
+                    machine("host-mac".into(), "this-mac".into(), "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
+                );
                 for h in &this.hosts.list.hosts {
-                    let note = if h.ready() {
-                        match h.transport {
-                            Transport::Quic => None,
-                            Transport::Ssh => Some("through ssh"),
-                        }
+                    let note = if !h.ready() {
+                        "not set up yet".to_owned()
                     } else {
-                        Some("not set up yet")
+                        let how = match h.transport {
+                            Transport::Quic => "quic",
+                            Transport::Ssh => "through ssh",
+                        };
+                        format!("{} · {how}", h.arch.as_deref().map_or_else(|| "linux".to_owned(), |a| format!("linux {a}")))
                     };
-                    list = list.child(
-                        theme::float_item(&p, SharedString::from(format!("host-{}", h.id)), Some("server"), h.name.clone(), note, current.as_deref() == Some(h.id.as_str()))
-                            .test_support()
-                            .on_click(go(Some(h.id.clone()))),
-                    );
+                    let on = current.as_deref() == Some(h.id.as_str());
+                    list = list.child(machine(SharedString::from(format!("host-{}", h.id)), h.id.clone(), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
                 }
                 let settings = |adding: bool| {
                     let (me, popover) = (me.clone(), popover.clone());
@@ -370,11 +410,23 @@ impl Shell {
                         });
                     }
                 };
-                list.child(theme::float_sep(&p))
-                    .child(theme::float_item(&p, "host-add", Some("plus"), "Add a dev box…", None, false).test_support().on_click(settings(true)))
-                    .child(theme::float_item(&p, "host-manage", Some("settings-2"), "Manage hosts…", None, false).test_support().on_click(settings(false)))
-                    .into_any_element()
-            }))
+                list.child(
+                    h_flex()
+                        .id("host-add")
+                        .test_support()
+                        .min_h(px(40.))
+                        .px(px(8.))
+                        .gap(px(10.))
+                        .rounded(px(theme::R_TILE))
+                        .hover(|d| d.bg(p.hover))
+                        .child(div().size(px(26.)).flex_shrink_0().flex().items_center().justify_center().rounded(px(6.)).bg(p.fill).child(Icon::empty().path("icons/plus.svg").size(z(14.)).text_color(p.label)))
+                        .child(div().set(Type::Body).text_color(p.label).child("Connect a dev box"))
+                        .on_click(settings(true)),
+                )
+                .child(theme::float_sep(&p))
+                .child(theme::float_item(&p, "host-manage", Some("settings-2"), "Manage hosts…", None, false).test_support().on_click(settings(false)))
+                .into_any_element()
+            })
             .into_any_element()
     }
 

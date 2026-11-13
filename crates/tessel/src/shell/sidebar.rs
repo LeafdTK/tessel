@@ -31,9 +31,9 @@ impl Shell {
         let name = title.to_owned();
         let count = if queue { self.model.attention_queue().len() } else { self.model.sessions.iter().filter(|s| project_name(s) == title && s.attention.is_none()).count() };
         let tile = if queue {
-            div().size(theme::z(18.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(5.)).bg(theme::info(&p).opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(11.)).text_color(theme::info(&p)))
+            div().size(theme::z(16.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(4.)).bg(theme::info(&p).opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(10.)).text_color(theme::info(&p))).into_any_element()
         } else {
-            project_tile(title, &p)
+            super::avatar::avatar(title, 16., 4.).into_any_element()
         };
         let mut row = h_flex()
             .id(SharedString::from(format!("project-{title}")))
@@ -43,22 +43,32 @@ impl Shell {
             .h(px(crate::model::HEADER_H - 3.))
             .my(px(1.5))
             .mx_2()
-            .pl(px(4.))
+            .pl(px(8.))
             .pr(px(8.))
-            // 4 between the pieces puts the tile over the rows' dots and the
-            // name on the rows' text column: one line down the list.
-            .gap(px(4.))
+            // the name starts where the chats' titles do: one line down the list.
+            .gap(px(6.))
             .items_center()
             .rounded(px(theme::R_TILE))
             .when(!queue, |d| {
                 let n = name.clone();
                 d.hover(|d| d.bg(p.hover)).on_click(cx.listener(move |this, _, _, cx| this.toggle_project(&n, cx)))
             })
-            // the disclosure: which way it points says whether it is open.
-            .child(div().w(px(12.)).flex_shrink_0().flex().justify_center().when(!queue, |d| d.child(Icon::empty().path(if folded { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" }).size(theme::z(12.)).text_color(p.tertiary))))
             .child(tile)
-            .child(div().flex_1().min_w_0().truncate().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(if queue { p.label } else { p.label }).child(title.to_owned()))
-            ;
+            .child(div().min_w_0().truncate().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(title.to_owned()))
+            // which way it's folded, said quietly: there when folded, or under the pointer.
+            .child(
+                div()
+                    .flex_1()
+                    .when(!queue, |d| {
+                        d.child(
+                            div()
+                                .when(!folded, |i| i.invisible().group_hover(group.clone(), |s| s.visible()))
+                                .child(Icon::empty().path(if folded { "icons/chevron-right.svg" } else { "icons/chevron-down.svg" }).size(theme::z(11.)).text_color(p.tertiary)),
+                        )
+                    }),
+            );
+        // folded, how many it hides; open, the chats themselves say.
+        let count = if folded || queue { count } else { 0 };
         // the count, and on hover the + and ⋯ in its place: one slot at the
         // row's end, lined up with the counts and keys above it.
         let pill = (count > 0).then(|| theme::count_pill(&p, count.to_string(), queue));
@@ -216,25 +226,10 @@ pub(crate) fn project_color(name: &str) -> Hsla {
     gpui_kit::rgb(HUES[(sum as usize) % HUES.len()]).into()
 }
 
-/// a project's tile: its first letter on a colour of its own, picked from its
-/// name so it is the same every time. identity colours, never the ones that
-/// mean something (orange, red, green).
-pub(crate) fn project_tile(name: &str, p: &Palette) -> Div {
-    let hue = project_color(name);
-    let letter = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "·".into());
-    let _ = p;
-    div()
-        .size(theme::z(18.))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .rounded(theme::z(5.))
-        .bg(hue)
-        .text_size(theme::z(10.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(gpui_kit::white())
-        .child(letter)
+/// a project's tile: its own dithered glow, picked from its name so it's
+/// the same every time (see `avatar`).
+pub(crate) fn project_tile(name: &str, _p: &Palette) -> Div {
+    div().flex_shrink_0().child(super::avatar::avatar(name, 18., 5.))
 }
 
 /// show a folder in the Finder.

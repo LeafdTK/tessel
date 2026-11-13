@@ -26,6 +26,7 @@ mod git;
 mod kube;
 mod procs;
 pub(crate) mod hosts;
+mod avatar;
 mod palette;
 mod panel;
 mod panes;
@@ -1565,7 +1566,7 @@ impl Shell {
                         h_flex()
                             .id(ElementId::from(SharedString::from(format!("sub-{sid}-{task}"))))
                             .h(px(crate::model::SUB_H))
-                            .ml(px(SESSION_INDENT + 8.))
+                            .ml(px(SESSION_INDENT + 2.))
                             .mr_2()
                             .pr_2()
                             .gap_2()
@@ -1600,7 +1601,7 @@ impl Shell {
         let nav = v_flex()
             .flex_shrink_0()
             .pb(px(NAV_PAD))
-            .child(self.host_picker(cx))
+            .child(div().mx_2().mb(px(PICKER_GAP)).child(self.host_picker(cx)))
             .child(nav_row("nav-new", "square-pen", "New session", theme::keycaps(&p, "⌘ N").into_any_element()).on_click(cx.listener(|this, _, _, cx| this.show_new_session(cx))))
             .child(
                 nav_row(
@@ -1614,20 +1615,31 @@ impl Shell {
         v_flex().id("sidebar-sessions").flex_1().min_h_0().child(nav).child(list)
     }
 
+    /// a chat in the sidebar: what it is, and under it one quiet line with
+    /// its state (the dot says it in colour), how long, and anything else
+    /// worth knowing (its tabs, what it runs in the background).
     fn session_row(&self, s: &SessionSummary, selected: bool, in_queue: bool, now: Millis, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette.get();
         let state = state_mark(s, &p);
-        // the time sits on the first line, right aligned, so a long activity
-        // line can never push it out of view.
-        let (second, time) = row_lines(s, in_queue, now);
         let sid = s.id;
-        let label: SharedString = format!("{}, {second}", s.goal).into();
         let group = SharedString::from(format!("session-row-{sid}"));
         let menu = self.session_menu(s, group.clone(), cx);
         let in_workspace: Vec<&SessionSummary> = self.model.sessions.iter().filter(|o| o.cwd == s.cwd).collect();
         let tabs = in_workspace.len();
         let workspace_title = in_workspace.iter().min_by_key(|o| (o.created_ms, o.id)).map_or_else(|| s.goal.clone(), |o| o.goal.clone());
-        let hover_group = group.clone();
+        let (what, when) = row_lines(s, in_queue, now);
+        let mut meta = vec![what];
+        meta.extend(when);
+        if tabs > 1 {
+            meta.push(format!("{tabs} tabs"));
+        }
+        if s.background_tasks > 0 && !in_queue {
+            meta.push(format!("{} in the background", s.background_tasks));
+        }
+        let meta = meta.into_iter().filter(|m| !m.is_empty()).collect::<Vec<_>>().join(" · ");
+        let label: SharedString = format!("{workspace_title}, {meta}").into();
+        // a chat at rest that nobody has touched for a day steps back.
+        let stale = matches!(state, Mark::Ring(_)) && !selected && now.saturating_sub(s.updated_ms.max(s.created_ms)) > 86_400_000;
         h_flex()
             .group(group)
             .id(ElementId::from(sid.0))
@@ -1637,48 +1649,24 @@ impl Shell {
             .h(px(crate::model::ROW_H - 3.))
             .my(px(1.5))
             .mx_2()
-            .pl(px(SESSION_INDENT - 8.))
+            .pl(px(SESSION_INDENT))
             .pr_2()
-            .gap_2()
             .rounded(px(theme::R_TILE))
             .when(selected, |d| d.bg(p.selection))
             .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
-            // at rest a session shows what it is (a branch of its own, or a
-            // conversation); anything else shows its state, which is what matters then.
-            .child(match state {
-                Mark::Ring(_) => div()
-                    .size(px(14.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(gpui_kit::component::Icon::empty().path(if s.worktree.is_some() { "icons/git-branch.svg" } else { "icons/message-square.svg" }).size(theme::z(14.)).text_color(p.tertiary))
-                    .into_any_element(),
-                m => mark(m).into_any_element(),
-            })
             .child(
                 v_flex()
                     .flex_1()
                     .overflow_hidden()
-                    .gap(px(1.))
+                    .gap(px(2.))
+                    .child(div().pr(px(22.)).set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(if stale { p.secondary } else { p.label }).truncate().child(workspace_title))
                     .child(
                         h_flex()
-                            .gap_2()
-                            // the workspace: what it was made for (its first tab), and how many tabs it has.
-                            .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(workspace_title))
-                            // the count, like the time, makes way for the menu on hover.
-                            .when(tabs > 1, |d| d.child(theme::count_pill(&p, tabs.to_string(), false).group_hover(hover_group.clone(), |d| d.invisible())))
-                            // the time, and on hover the menu in its place: one slot at the
-                            // end of the first line, wherever the line below ends.
-                            // the time, which makes way for the menu on hover.
-                            .children(time.map(|t| div().flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).group_hover(hover_group.clone(), |d| d.invisible()).child(t))),
-                    )
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(div().flex_1().overflow_hidden().set(Type::Subheadline).text_color(p.secondary).truncate().child(second))
-                            .when(self.sessions_trace && !s.trace.is_empty(), |d| d.child(trace(&s.trace, p.tertiary, 56., 11.))),
+                            .gap(px(6.))
+                            .child(div().w(px(6.)).flex_shrink_0().flex().justify_center().child(mark_small(state, &p)))
+                            .child(div().flex_1().overflow_hidden().set(Type::Subheadline).text_color(if stale { p.tertiary } else { p.secondary }).truncate().child(meta))
+                            .when(self.sessions_trace && !s.trace.is_empty(), |d| d.child(trace(&s.trace, p.tertiary, 48., 10.))),
                     ),
             )
             // the menu: centred on the row, inside its corner, never past it.
@@ -2727,12 +2715,14 @@ impl Render for Shell {
 const NAV_ROW_H: f32 = 30.0;
 const NAV_PAD: f32 = 8.0;
 /// how far the list starts below the top of the sidebar's content.
-/// the machine picker, then new session and all sessions.
-pub(crate) const NAV_H: f32 = NAV_ROW_H * 3.0 + NAV_PAD;
+const PICKER_GAP: f32 = 6.0;
+/// the machine card, then new session and all sessions.
+pub(crate) const NAV_H: f32 = hosts::PICKER_H + PICKER_GAP + NAV_ROW_H * 2.0 + NAV_PAD;
 
 /// how far in a session's row starts: under its project's name, past the
 /// disclosure and tile.
-const SESSION_INDENT: f32 = 28.0;
+/// where a chat's title starts in the sidebar: under its project's name.
+const SESSION_INDENT: f32 = 30.0;
 
 /// a session's second line, and the time to show beside its name: why it
 /// wants you and for how long, or what it is doing and for how long.
@@ -2752,7 +2742,7 @@ fn row_lines(s: &SessionSummary, in_queue: bool, now: Millis) -> (String, Option
             (RunState::Working | RunState::Starting | RunState::Stalled, Some(a), Some(since)) => {
                 (if s.run_state == RunState::Stalled { format!("Stalled? {a}") } else { sentence(a) }, Some(ago(since, now)))
             }
-            (RunState::Idle, None, _) if s.worktree.is_some() => (s.worktree.as_ref().map(|w| w.branch.clone()).unwrap_or_default(), None),
+            (RunState::Idle, None, _) => ("Idle".to_owned(), (s.updated_ms.max(s.created_ms) > 0).then(|| ago(s.updated_ms.max(s.created_ms), now))),
             (state, activity, _) => (activity.as_deref().map(sentence).unwrap_or_else(|| state_word(state).to_owned()), None),
         }
     }
@@ -2890,6 +2880,18 @@ thread_local! {
     static FRAME_START: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     /// the palette marks are drawn in, set as each frame starts.
     static MARK_PALETTE: std::cell::Cell<Palette> = std::cell::Cell::new(Palette::dark());
+}
+
+/// a state as a small dot, for a line of text: 6pt, and while working a
+/// slow pulse instead of the orbiting ring.
+fn mark_small(m: Mark, p: &Palette) -> Div {
+    let (core, live) = match m {
+        Mark::Working(c) => (c, true),
+        Mark::Ring(_) => (p.tertiary.opacity(0.55), false),
+        Mark::Dot(c) | Mark::Diamond(c) | Mark::Check(c) | Mark::Cross(c) => (c, false),
+    };
+    let alpha = if live { 0.45 + 0.55 * ((now_ms() % 1400) as f32 / 1400.0 * std::f32::consts::PI).sin() } else { 1.0 };
+    div().size(px(6.)).rounded_full().bg(core.opacity(alpha))
 }
 
 /// draw a mark in a fixed 14pt box so rows line up whatever the shape.
