@@ -2824,3 +2824,29 @@ fn a_dev_box_is_picked_and_added_from_settings(cx: &mut TestAppContext) {
     rig.settle(cx);
     assert!(rig.exists(cx, "host-form-ssh"), "the add form asks how ssh reaches it");
 }
+
+#[gpui_kit::test]
+fn how_sandboxes_are_reached_is_set_in_settings(cx: &mut TestAppContext) {
+    use tessel_remote::net::{Net, Relay, Via};
+    let mut rig = Rig::with_sessions(cx, session(1, "Fix login", RunState::Idle, None), vec![]);
+    let home = rig.shell.read_with(cx, |s, _| s.hosts.home.clone());
+    rig.shell.update(cx, |s, cx| {
+        s.settings_section = "hosts";
+        s.open_settings(cx);
+    });
+    rig.settle(cx);
+    assert!(rig.exists(cx, "net-via-auto") && rig.exists(cx, "net-relay-n0"), "auto, by iroh's relays, unless asked otherwise");
+    // what picking WebSockets does (the segments are below the fold in a test window).
+    let ws = rig.shell.update(cx, |s, _| {
+        s.hosts.net.via = Via::Ws;
+        s.hosts.net.save(&s.hosts.home).map(|_| s.hosts.net.clone())
+    });
+    assert_eq!(Net::load(&home).via, Via::Ws, "{ws:?}");
+    rig.shell.update(cx, |s, cx| {
+        s.hosts_reload();
+        cx.notify();
+    });
+    rig.settle(cx);
+    assert!(!rig.exists(cx, "net-relay-n0"), "websockets have no relay to choose");
+    assert!(Net { relay: Relay::None, lookup: false, ..Net::default() }.check().is_err());
+}

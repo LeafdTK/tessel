@@ -11,6 +11,7 @@ pub mod forward;
 pub mod hosts;
 pub mod identity;
 pub mod link;
+pub mod net;
 pub mod p2p;
 pub mod quic;
 pub mod service;

@@ -12,8 +12,9 @@
 //! stream speaks what a quic stream does (see `quic`).
 
 use crate::identity;
-use iroh::endpoint::{Connection, presets};
-use iroh::{Endpoint, EndpointId, SecretKey};
+use crate::net::Net;
+use iroh::endpoint::Connection;
+use iroh::{Endpoint, EndpointAddr, EndpointId, SecretKey};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -70,8 +71,10 @@ pub async fn serve(home: &Path) -> anyhow::Result<()> {
     let home = home.to_owned();
     // on iroh's runtime, like everything iroh: its tasks outlive nothing else then.
     rt().spawn(async move {
-        let ep = Endpoint::builder(presets::N0).secret_key(secret).alpns(vec![ALPN.to_vec()]).bind().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-        eprintln!("tessel remote: iroh as iroh:{}", ep.id());
+        // as the mac that set it up asked (its relay, its lookup).
+        let net = Net::from_env();
+        let ep = net.builder().secret_key(secret).alpns(vec![ALPN.to_vec()]).bind().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        eprintln!("tessel remote: iroh as iroh:{} ({:?})", ep.id(), net.relay);
         while let Some(incoming) = ep.accept().await {
             let (home, dir) = (home.clone(), dir.clone());
             tokio::spawn(async move {
@@ -106,17 +109,26 @@ pub async fn serve(home: &Path) -> anyhow::Result<()> {
 
 // MARK: - the mac
 
-/// this mac's endpoint, made once and kept: its relay link and its idea of
-/// its own addresses are what make a connection quick.
+/// this mac's endpoint, made once and kept (made again when the settings
+/// change): its relay link and its idea of its own addresses are what make
+/// a connection quick.
 async fn endpoint(home: &Path) -> anyhow::Result<Endpoint> {
-    static EP: tokio::sync::OnceCell<Endpoint> = tokio::sync::OnceCell::const_new();
+    static EP: tokio::sync::Mutex<Option<(Net, Endpoint)>> = tokio::sync::Mutex::const_new(None);
+    let net = Net::load(home);
+    let mut held = EP.lock().await;
+    if let Some((n, ep)) = held.as_ref()
+        && *n == net
+    {
+        return Ok(ep.clone());
+    }
+    if let Some((_, old)) = held.take() {
+        rt().spawn(async move { old.close().await });
+    }
     let secret = key(&identity::dir(home), "client")?;
-    let ep = EP
-        .get_or_try_init(|| async move {
-            rt().spawn(async move { Endpoint::builder(presets::N0).secret_key(secret).alpns(vec![ALPN.to_vec()]).bind().await.map_err(|e| anyhow::anyhow!("{e}")) }).await?
-        })
-        .await?;
-    Ok(ep.clone())
+    let builder = net.builder();
+    let ep = rt().spawn(async move { builder.secret_key(secret).alpns(vec![ALPN.to_vec()]).bind().await.map_err(|e| anyhow::anyhow!("{e}")) }).await??;
+    *held = Some((net, ep.clone()));
+    Ok(ep)
 }
 
 /// start getting ready (a relay, this mac's addresses) before anything is dialed.
@@ -136,9 +148,14 @@ impl Link {
     /// dial the host with id `id` (`iroh:…`), giving up after `within`.
     pub async fn connect(home: &Path, id: &str, within: Duration) -> anyhow::Result<Link> {
         let id = parse_id(id)?;
+        // at your own relay, it's found there without any lookup.
+        let addr = match Net::load(home).relay_url() {
+            Some(url) => EndpointAddr::new(id).with_relay_url(url),
+            None => EndpointAddr::new(id),
+        };
         let ep = endpoint(home).await?;
         let conn = rt()
-            .spawn(async move { tokio::time::timeout(within, ep.connect(id, ALPN)).await })
+            .spawn(async move { tokio::time::timeout(within, ep.connect(addr, ALPN)).await })
             .await?
             .map_err(|_| anyhow::anyhow!("no answer by key within {}s", within.as_secs()))?
             .map_err(|e| anyhow::anyhow!("{e}"))?;

@@ -277,8 +277,9 @@ fn service_env(home: &str, path: Option<&str>) -> Vec<(String, String)> {
     ]
 }
 
-async fn start_service(acct: &Account, session: &str, home: &str, path: Option<&str>) -> anyhow::Result<()> {
-    let env = service_env(home, path);
+async fn start_service(acct: &Account, session: &str, home: &str, path: Option<&str>, net: &crate::net::Net) -> anyhow::Result<()> {
+    let mut env = service_env(home, path);
+    env.push(net.to_env());
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     acct.start(session, &format!("{home}/.tessel/bin/tesselctl"), &["remote", "serve-ws", "--port", &crate::ws::PORT.to_string()], &env).await
 }
@@ -303,6 +304,8 @@ pub async fn connect(home: &Path, host: &Host) -> anyhow::Result<crate::Link> {
     let acct = Arc::new(Account::load(home, &sb)?);
     let token = read_token(home, &host.id)?;
     let there = host.home.clone().unwrap_or_else(|| THERE.to_owned());
+    let net = crate::net::Net::load(home);
+    let by_key = net.via != crate::net::Via::Ws && host.iroh.is_some();
     let mut woken = {
         let (acct, sb) = (acct.clone(), sb.clone());
         tokio::spawn(async move { acct.wake(&sb).await })
@@ -319,7 +322,9 @@ pub async fn connect(home: &Path, host: &Host) -> anyhow::Result<crate::Link> {
     // running already: it answers by key in well under a second, and the
     // wake only matters for keeping it running, which can catch up. stopped:
     // the wake says it resumed it, and waiting on the dial is no use.
-    let first = dial(Duration::from_secs(3));
+    let first = async {
+        if by_key { dial(Duration::from_secs(3)).await } else { bail!("websockets were asked for") }
+    };
     tokio::pin!(first);
     // the dial, already over (and failed): it isn't waited on again.
     let mut dialled = false;
@@ -348,14 +353,18 @@ pub async fn connect(home: &Path, host: &Host) -> anyhow::Result<crate::Link> {
     let url = session.url.clone().context("the sandbox has no route for tessel's port")?;
     // woken just now (or its service had stopped): nothing listens yet.
     if session.resumed || crate::ws::Link::connect(&url, &token).await.is_err() {
-        start_service(&acct, &session.id, &there, sb.path.as_deref()).await?;
+        start_service(&acct, &session.id, &there, sb.path.as_deref(), &net).await?;
     }
     let id = session.id.clone();
     let lease = lease(async move { Ok(id) }, acct);
-    match dial(Duration::from_secs(12)).await {
+    let dialled = if by_key { dial(Duration::from_secs(12)).await } else { Err(anyhow::anyhow!("websockets were asked for")) };
+    match dialled {
         Ok(l) => Ok(crate::Link::P2p(l, Some(lease))),
+        Err(e) if net.via == crate::net::Via::Quic => Err(e.context("quic by key didn't get through (Settings › Hosts allows websockets too)")),
         Err(e) => {
-            eprintln!("tessel: quic by key didn't get through ({e:#}); using websockets");
+            if by_key {
+                eprintln!("tessel: quic by key didn't get through ({e:#}); using websockets");
+            }
             let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
             loop {
                 match crate::ws::Link::connect(&url, &token).await {
@@ -387,6 +396,22 @@ fn lease(session: impl std::future::Future<Output = anyhow::Result<String>> + Se
         }
     });
     Arc::new(Lease(task.abort_handle()))
+}
+
+/// tell a running sandbox's service the settings as they are now (its relay,
+/// its lookup): it starts again with them. a stopped one gets them when it next starts.
+pub async fn reconfigure(home: &Path, host: &Host) -> anyhow::Result<bool> {
+    let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
+    let acct = Account::load(home, &sb)?;
+    let v = acct.api("GET", &format!("/v2/sandboxes/{}?projectId={}", sb.name, acct.project), None).await?;
+    if v["sandbox"]["status"].as_str() != Some("running") {
+        return Ok(false);
+    }
+    let id = v["session"]["id"].as_str().context("no session")?.to_owned();
+    let there = host.home.clone().unwrap_or_else(|| THERE.to_owned());
+    let _ = acct.run(&id, "sh", &["-c", "pkill -f 'tesselctl remote serve-ws'; true"], &[]).await;
+    start_service(&acct, &id, &there, sb.path.as_deref(), &crate::net::Net::load(home)).await?;
+    Ok(true)
 }
 
 /// stop the host's sandbox now (it would by itself, soon after nothing shows it).
@@ -469,12 +494,13 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     // a service from an earlier setup holds the port (this one has the new
     // token), and a daemon from then is older than what was just copied in:
     // it hands over, its terminals and agents carrying on.
+    let net = crate::net::Net::load(home);
     let env = service_env(&there, sb.path.as_deref());
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let _ = acct
         .run(&session.id, "sh", &["-c", "pkill -f 'tesselctl remote serve-ws'; if [ -S \"$TESSEL_HOME/tesseld.sock\" ]; then tesselctl daemon restart >/dev/null 2>&1; fi; true"], &env)
         .await;
-    start_service(&acct, &session.id, &there, sb.path.as_deref()).await?;
+    start_service(&acct, &session.id, &there, sb.path.as_deref(), &net).await?;
 
     say(Said::Step("Connecting".into()));
     host.address = Some(url);

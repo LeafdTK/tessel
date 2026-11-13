@@ -99,6 +99,33 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             println!("added {id}");
             set_up(home, &id, args).await
         }
+        "net" => {
+            // how sandboxes are reached: what Settings › Hosts › Sandbox connections sets.
+            use tessel_remote::net::{Net, Relay, Via};
+            let mut net = Net::load(home);
+            let changes: Vec<String> = args.rest.drain(..).collect();
+            for c in &changes {
+                let (k, v) = c.split_once('=').with_context(|| format!("{c}: write it as key=value"))?;
+                match k {
+                    "via" => net.via = match v { "auto" => Via::Auto, "quic" => Via::Quic, "ws" | "websockets" => Via::Ws, _ => bail!("via: auto, quic or ws") },
+                    "relay" => net.relay = match v { "n0" | "iroh" => Relay::N0, "none" | "off" => Relay::None, url => Relay::Own(url.to_owned()) },
+                    "lookup" => net.lookup = matches!(v, "on" | "true" | "yes"),
+                    other => bail!("no setting {other}: via, relay or lookup"),
+                }
+            }
+            if !changes.is_empty() {
+                net.save(home)?;
+                for h in hosts.hosts.iter().filter(|h| h.vercel.is_some()) {
+                    match tessel_remote::vercel::reconfigure(home, h).await {
+                        Ok(true) => println!("{}: its service started again with these", h.name),
+                        Ok(false) => {}
+                        Err(e) => println!("{}: couldn't tell it ({e:#}); it gets them when it next starts", h.name),
+                    }
+                }
+            }
+            println!("via {:?}, relay {}, lookup {}", net.via, match &net.relay { Relay::N0 => "n0 (iroh's public relays)".to_owned(), Relay::None => "none".to_owned(), Relay::Own(u) => u.clone() }, if net.lookup { "on" } else { "off" });
+            Ok(())
+        }
         "ping" => {
             // how fast it is: reaching it, the path, and a few requests there and back.
             let which = args.next("which host")?;

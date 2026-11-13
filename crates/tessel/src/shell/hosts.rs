@@ -12,6 +12,7 @@ use crate::theme::{ButtonKind, z};
 use gpui_kit::component::Icon;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::Disableable as _;
 use gpui_kit::component::switch::Switch;
 use tessel_remote::hosts::{Host, Hosts, Transport};
 use tessel_remote::setup::{Options, Said};
@@ -36,6 +37,12 @@ pub(crate) struct HostsView {
     pub(crate) confirm_remove: Option<String>,
     /// what the last thing done to a host said.
     pub(crate) said: Option<String>,
+    /// how sandboxes are reached (`remote.json`).
+    pub(crate) net: tessel_remote::net::Net,
+    /// your own relay's address, as typed (made when the page shows, inputs need the window).
+    pub(crate) relay_input: Option<Entity<InputState>>,
+    /// "your own" was picked with no address yet: the field shows, waiting for one.
+    pub(crate) relay_own_next: bool,
 }
 
 /// setting a host up, as it goes.
@@ -82,13 +89,68 @@ fn machine_icon(host: Option<&Host>) -> &'static str {
 
 impl HostsView {
     pub(crate) fn new(home: PathBuf) -> Self {
-        Self { list: Hosts::load(&home), home, ..Default::default() }
+        Self { list: Hosts::load(&home), net: tessel_remote::net::Net::load(&home), home, ..Default::default() }
     }
 }
 
 impl Shell {
     pub(crate) fn hosts_reload(&mut self) {
         self.hosts.list = Hosts::load(&self.hosts.home);
+        self.hosts.net = tessel_remote::net::Net::load(&self.hosts.home);
+    }
+
+    /// change how sandboxes are reached: saved, told to the sandboxes that
+    /// are running (both ends have to agree), and the one shown connected again.
+    fn set_net(&mut self, change: impl FnOnce(&mut tessel_remote::net::Net), window: &mut Window, cx: &mut Context<Self>) {
+        let mut net = self.hosts.net.clone();
+        change(&mut net);
+        if let Err(e) = net.save(&self.hosts.home) {
+            self.hosts.said = Some(format!("{e:#}"));
+            cx.notify();
+            return;
+        }
+        self.hosts.net = net;
+        let sandboxes: Vec<Host> = self.hosts.list.hosts.iter().filter(|h| h.vercel.is_some()).cloned().collect();
+        let shown = self.hosts.list.current.clone().filter(|id| sandboxes.iter().any(|h| &h.id == id));
+        if sandboxes.is_empty() {
+            self.hosts.said = Some("Saved. Sandboxes added from now on are reached this way.".into());
+            cx.notify();
+            return;
+        }
+        self.hosts.said = Some("Telling the sandboxes that are running…".into());
+        let home = self.hosts.home.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let told = tokio::runtime::Builder::new_current_thread().enable_all().build().map(|rt| {
+                rt.block_on(async {
+                    let mut n = 0;
+                    for h in &sandboxes {
+                        if matches!(tessel_remote::vercel::reconfigure(&home, h).await, Ok(true)) {
+                            n += 1;
+                        }
+                    }
+                    n
+                })
+            });
+            let _ = tx.send(told.unwrap_or(0));
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let n = rx.await.unwrap_or(0);
+            let _ = in_window(&this, cx, |this, _, cx| {
+                this.hosts.said = Some(match n {
+                    0 => "Saved. Sandboxes get it when they next start.".into(),
+                    1 => "Saved, and the running sandbox started its service again with it.".into(),
+                    n => format!("Saved, and {n} running sandboxes started their service again with it."),
+                });
+                // the one shown, connected again the new way.
+                if let Some(id) = shown {
+                    this.cmd(Cmd::Host(Some(id)));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// what the window shows, by name.
@@ -225,6 +287,17 @@ impl Shell {
 
     /// the add form's fields, made when the page shows it (inputs need the window).
     pub(crate) fn ensure_host_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hosts.relay_input.is_none() {
+            let url = match &self.hosts.net.relay {
+                tessel_remote::net::Relay::Own(u) => u.clone(),
+                _ => String::new(),
+            };
+            self.hosts.relay_input = Some(cx.new(|cx| {
+                let mut s = InputState::new(window, cx).placeholder("https://relay.example.com");
+                s.set_value(url, window, cx);
+                s
+            }));
+        }
         if !self.hosts.adding || self.hosts.form.is_some() {
             return;
         }
@@ -556,6 +629,7 @@ impl Shell {
                 r.child(theme::button(&p, "host-show-mac", "Show", None, ButtonKind::Secondary).test_support().on_click(cx.listener(|this, _, _, cx| this.switch_host(None, cx))))
             }),
         );
+        rows = rows.child(self.net_settings(cx));
         let busy = self.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
         for h in &self.hosts.list.hosts {
             let showing = current.as_deref() == Some(h.id.as_str());
@@ -607,6 +681,98 @@ impl Shell {
             }
         }
         rows.children(self.hosts.said.clone().map(|t| div().px_4().py_2().border_t_1().border_color(p.separator).set(Type::Callout).text_color(p.secondary).child(t))).child(self.add_host_el(cx))
+    }
+
+    /// Settings › Hosts › Sandbox connections: how sandboxes are reached.
+    fn net_settings(&self, cx: &mut Context<Self>) -> Div {
+        use tessel_remote::net::{Relay, Via};
+        let p = self.palette.get();
+        let net = &self.hosts.net;
+        let via = match net.via {
+            Via::Auto => "auto",
+            Via::Quic => "quic",
+            Via::Ws => "ws",
+        };
+        let via_about = match net.via {
+            Via::Auto => "QUIC by key, punched straight through both NATs; WebSockets through Vercel when it can't get through.",
+            Via::Quic => "QUIC by key only: it fails rather than going slow.",
+            Via::Ws => "WebSockets through the sandbox's HTTPS address: no UDP, no relay, no lookup. Every request goes through Vercel's proxy, about a third slower.",
+        };
+        let relay = match &net.relay {
+            Relay::N0 => "n0",
+            Relay::Own(_) => "own",
+            Relay::None => "none",
+        };
+        let relay_about = match &net.relay {
+            Relay::N0 => "iroh's public relays, run by n0: they carry the first second of a connection, and what can't go direct. They see which keys talk, never what's said.",
+            Relay::Own(_) => "Your own iroh-relay: nothing goes through anyone else's servers.",
+            Relay::None => "No relay: direct paths only. Connecting takes longer, and fails where the NATs can't be punched.",
+        };
+        let quic = net.via != Via::Ws;
+        let mut block = v_flex()
+            .border_t_1()
+            .border_color(p.separator)
+            .child(div().px_4().pt_3().pb_1().set(Type::Headline).child("Sandbox connections"))
+            .child(self.setting_row(
+                "Connect by",
+                via_about,
+                self.segmented("net-via", &[("auto", "Auto"), ("quic", "QUIC"), ("ws", "WebSockets")], via, cx, |this, v, w, cx| {
+                    this.set_net(|n| n.via = match v { "quic" => Via::Quic, "ws" => Via::Ws, _ => Via::Auto }, w, cx)
+                }),
+            ));
+        if quic {
+            block = block.child(self.setting_row(
+                "Relay",
+                relay_about,
+                self.segmented("net-relay", &[("n0", "iroh's"), ("own", "Your Own"), ("none", "None")], relay, cx, |this, v, w, cx| {
+                    let typed = this.hosts.relay_input.as_ref().map(|i| i.read(cx).value().trim().to_owned()).unwrap_or_default();
+                    match v {
+                        "own" if typed.is_empty() => {
+                            this.hosts.said = Some("Write your relay's address below, then Use It.".into());
+                            this.hosts.relay_own_next = true;
+                            cx.notify();
+                        }
+                        "own" => this.set_net(|n| n.relay = Relay::Own(typed), w, cx),
+                        "none" => this.set_net(|n| n.relay = Relay::None, w, cx),
+                        _ => this.set_net(
+                            |n| {
+                                n.relay = Relay::N0;
+                                n.lookup = true;
+                            },
+                            w,
+                            cx,
+                        ),
+                    }
+                }),
+            ));
+            if (matches!(net.relay, Relay::Own(_)) || self.hosts.relay_own_next)
+                && let Some(input) = &self.hosts.relay_input
+            {
+                block = block.child(
+                    h_flex()
+                        .px_4()
+                        .pb_2()
+                        .gap_2()
+                        .child(div().flex_1().rounded(px(theme::R_TILE)).border_1().border_color(p.separator).bg(p.raised).px_2().py_1().child(div().id("net-relay-url").test_support().child(Input::new(input).appearance(false))))
+                        .child(theme::button(&p, "net-relay-use", "Use It", None, ButtonKind::Secondary).test_support().on_click(cx.listener(|this, _, window, cx| {
+                            let url = this.hosts.relay_input.as_ref().map(|i| i.read(cx).value().trim().to_owned()).unwrap_or_default();
+                            this.hosts.relay_own_next = false;
+                            this.set_net(|n| n.relay = Relay::Own(url), window, cx);
+                        }))),
+                );
+            }
+            let own = matches!(net.relay, Relay::Own(_));
+            let lookup = net.lookup;
+            block = block.child(self.setting_row(
+                "Public lookup",
+                if own { "Where each key is, published at n0's dns.iroh.link. Off, sandboxes are found at your relay, and nothing is published anywhere." } else { "Where each key is, published at n0's dns.iroh.link. It can only be off with a relay of your own." },
+                Switch::new("net-lookup").checked(lookup).disabled(!own).on_click(cx.listener(|this, on: &bool, window, cx| {
+                    let on = *on;
+                    this.set_net(|n| n.lookup = on, window, cx);
+                })),
+            ));
+        }
+        block
     }
 
     fn setup_steps(&self, run: &SetupRun) -> Div {
