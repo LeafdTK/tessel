@@ -39,13 +39,13 @@ for b in tesseld tesselctl; do (sha256sum "$HOME/.tessel/bin/$b" 2>/dev/null || 
 /// set `host` up (or bring it up to date). `host` is filled in as it goes:
 /// its address, key, transport and build.
 pub async fn setup(local_home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
-    let dest = host.ssh.clone();
-    say(Said::Step(format!("Reaching {dest} over ssh")));
+    let dest = ssh::To::of(host);
+    say(Said::Step(format!("Reaching {} over ssh", dest.dest)));
     let (hostname, _user) = ssh::resolve(&dest).await?;
     let probe = ssh::run(&dest, PROBE, Duration::from_secs(30)).await?;
-    anyhow::ensure!(probe.ok, "couldn't look around on {dest}: {}", probe.err.trim());
+    anyhow::ensure!(probe.ok, "couldn't look around on {}: {}", dest.dest, probe.err.trim());
     let lines: Vec<&str> = probe.out.lines().map(str::trim).collect();
-    anyhow::ensure!(lines.len() >= 5, "{dest} answered oddly: {:?}", probe.out);
+    anyhow::ensure!(lines.len() >= 5, "{} answered oddly: {:?}", dest.dest, probe.out);
     let (os, arch) = platform(lines[0])?;
     host.arch = Some(arch.to_owned());
     host.home = Some(lines[1].to_owned());

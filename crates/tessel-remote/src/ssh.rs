@@ -6,6 +6,35 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// where ssh goes: a destination (`user@host`, or a Host from ~/.ssh/config),
+/// and the key to go with, when it isn't one ssh would try by itself.
+#[derive(Clone, Debug)]
+pub struct To {
+    pub dest: String,
+    pub key: Option<String>,
+}
+
+impl To {
+    pub fn of(host: &crate::hosts::Host) -> Self {
+        Self { dest: host.ssh.clone(), key: host.key.clone().filter(|k| !k.trim().is_empty()) }
+    }
+}
+
+/// the ssh command: `$TESSEL_SSH` (e.g. `ssh -F other_config`), else `ssh`,
+/// with the key asked for (only it: an agent full of others can run out
+/// the server's tries before reaching it).
+fn command_to(to: &To) -> tokio::process::Command {
+    let mut cmd = command();
+    if let Some(key) = &to.key {
+        let key = match key.strip_prefix("~/") {
+            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            None => key.clone(),
+        };
+        cmd.args(["-i", &key, "-o", "IdentitiesOnly=yes"]);
+    }
+    cmd
+}
+
 /// the ssh command: `$TESSEL_SSH` (e.g. `ssh -F other_config`), else `ssh`.
 fn command() -> tokio::process::Command {
     let custom = std::env::var("TESSEL_SSH").unwrap_or_default();
@@ -26,13 +55,14 @@ pub struct Ran {
 
 /// run `script` (posix sh) on `dest`. it's sent on stdin, so the login shell
 /// there (bash, zsh, fish) doesn't matter.
-pub async fn run(dest: &str, script: &str, timeout: Duration) -> anyhow::Result<Ran> {
-    run_with(dest, "sh -s", script.as_bytes(), timeout).await
+pub async fn run(to: &To, script: &str, timeout: Duration) -> anyhow::Result<Ran> {
+    run_with(to, "sh -s", script.as_bytes(), timeout).await
 }
 
 /// run `command` on `dest`, with `input` on its stdin.
-pub async fn run_with(dest: &str, command_line: &str, input: &[u8], timeout: Duration) -> anyhow::Result<Ran> {
-    let mut cmd = command();
+pub async fn run_with(to: &To, command_line: &str, input: &[u8], timeout: Duration) -> anyhow::Result<Ran> {
+    let dest = to.dest.as_str();
+    let mut cmd = command_to(to);
     cmd.args(["-T", "--", dest, command_line]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().context("running ssh")?;
     let mut stdin = child.stdin.take().context("ssh's stdin")?;
@@ -75,8 +105,9 @@ fn reach_error(err: &str) -> String {
 
 /// what ssh will actually connect to for `dest` (after ~/.ssh/config):
 /// its hostname, and its user.
-pub async fn resolve(dest: &str) -> anyhow::Result<(String, String)> {
-    let mut cmd = command();
+pub async fn resolve(to: &To) -> anyhow::Result<(String, String)> {
+    let dest = to.dest.as_str();
+    let mut cmd = command_to(to);
     cmd.args(["-G", "--", dest]).stdin(Stdio::null());
     let out = tokio::time::timeout(Duration::from_secs(5), cmd.output()).await.context("ssh -G took too long")??;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -86,8 +117,9 @@ pub async fn resolve(dest: &str) -> anyhow::Result<(String, String)> {
 }
 
 /// a stream to the host's daemon, through ssh: `tesselctl bridge` there.
-pub fn bridge(dest: &str) -> anyhow::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
-    let mut cmd = command();
+pub fn bridge(to: &To) -> anyhow::Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static> {
+    let dest = to.dest.as_str();
+    let mut cmd = command_to(to);
     cmd.args(["-T", "--", dest, "\"$HOME/.tessel/bin/tesselctl\" bridge"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     let mut child = cmd.spawn().context("running ssh")?;
     let (stdout, stdin) = (child.stdout.take().context("ssh's stdout")?, child.stdin.take().context("ssh's stdin")?);

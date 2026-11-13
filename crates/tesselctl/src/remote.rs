@@ -75,8 +75,11 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
         "add" => {
             let ssh = args.next("where ssh reaches it (user@host, or a name from ~/.ssh/config)")?;
             let name = args.opt("--name")?.unwrap_or_default();
+            let key = args.opt("--key")?;
             let no_setup = args.flag("--no-setup");
-            let id = hosts.add(Host::new(&name, &ssh));
+            let mut host = Host::new(&name, &ssh);
+            host.key = key;
+            let id = hosts.add(host);
             hosts.save(home)?;
             println!("added {id}");
             if no_setup {

@@ -23,6 +23,9 @@ pub struct Host {
     pub name: String,
     /// how ssh reaches it: `user@host`, or a name from ~/.ssh/config.
     pub ssh: String,
+    /// the ssh key to use (`~/.ssh/…`), when it isn't one ssh tries by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     /// where its quic service is: `host:port`. learned at setup (ssh's idea of
     /// the host's address, and the port asked for).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,6 +53,7 @@ impl Host {
             id: slug(if name.trim().is_empty() { ssh } else { name }),
             name: if name.trim().is_empty() { ssh.trim().to_owned() } else { name.trim().to_owned() },
             ssh: ssh.trim().to_owned(),
+            key: None,
             address: None,
             fingerprint: None,
             transport: Transport::Quic,

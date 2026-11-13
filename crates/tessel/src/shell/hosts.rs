@@ -50,6 +50,7 @@ pub(crate) struct SetupRun {
 pub(crate) struct HostForm {
     name: Entity<InputState>,
     ssh: Entity<InputState>,
+    key: Entity<InputState>,
     port: Entity<InputState>,
     claude: bool,
 }
@@ -218,6 +219,7 @@ impl Shell {
         self.hosts.form = Some(HostForm {
             name: field("Dev box", "", window, cx),
             ssh: field("you@devbox.example.com, or a Host from ~/.ssh/config", "", window, cx),
+            key: field("~/.ssh/id_ed25519", "", window, cx),
             port: field("7731", &tessel_remote::quic::DEFAULT_PORT.to_string(), window, cx),
             claude: true,
         });
@@ -248,8 +250,11 @@ impl Shell {
             return;
         };
         let claude = f.claude;
+        let key = Some(f.key.read(cx).value().trim().to_owned()).filter(|k| !k.is_empty());
         let mut list = Hosts::load(&self.hosts.home);
-        let id = list.add(Host::new(&name, &ssh));
+        let mut host = Host::new(&name, &ssh);
+        host.key = key;
+        let id = list.add(host);
         if let Err(e) = list.save(&self.hosts.home) {
             self.error = Some(format!("Couldn't save the host: {e}"));
             return;
@@ -570,6 +575,7 @@ impl Shell {
             .gap_3()
             .child(div().set(Type::Headline).child("Add a dev box"))
             .child(field("ssh", "How you'd ssh to it. Your keys and ~/.ssh/config are used; there's no password prompt.", &f.ssh, "host-form-ssh"))
+            .child(field("ssh key", "Only if ssh wouldn't pick it by itself.", &f.key, "host-form-key"))
             .child(h_flex().gap_3().child(div().flex_1().child(field("Name", "", &f.name, "host-form-name"))).child(div().w(px(110.)).child(field("UDP port", "", &f.port, "host-form-port"))))
             .child(
                 h_flex()

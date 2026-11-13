@@ -36,7 +36,7 @@ pub async fn connect(local_home: &Path, host: &Host, name: &str) -> anyhow::Resu
     match host.transport {
         Transport::Quic => connect_quic(local_home, host, name).await,
         Transport::Ssh => {
-            let stream = ssh::bridge(&host.ssh)?;
+            let stream = ssh::bridge(&ssh::To::of(host))?;
             let (client, events, welcome) =
                 tokio::time::timeout(std::time::Duration::from_secs(20), Client::over(stream, name)).await.context("no answer through ssh")?.map_err(|e| anyhow::anyhow!("{e}"))?;
             Ok(Connected { client, events, welcome, link: None })

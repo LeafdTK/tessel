@@ -107,7 +107,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
 
   other machines (what Settings › Hosts does): a dev box runs its own daemon, reached over quic
   tesselctl host ls [--json]                the hosts, and which one the window shows
-  tesselctl host add USER@HOST [--name N]   add one and set it up over ssh: tessel copied there,
+  tesselctl host add USER@HOST [--name N] [--key ~/.ssh/KEY]
+                                            add one and set it up over ssh: tessel copied there,
       [--port 7731] [--no-claude]           this mac let in, its quic service started, claude installed
   tesselctl host setup|update HOST          again: brings tessel there up to date
   tesselctl host use HOST|mac               which one the window shows
