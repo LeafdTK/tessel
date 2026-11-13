@@ -44,7 +44,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl ps [--json]                     what agents started that's still running (left behind ones first)
   tesselctl ps stop PID [--force]           stop one, and everything under it
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
-  tesselctl secret groq [--remove]          keep your Groq key in the keychain: dictation is tidied by groq (fast)
+  tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
+                                            vercel makes dev boxes in vercel sandboxes
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
                                             --wait returns once each is closed (0 saved or
@@ -262,8 +263,8 @@ async fn run() -> anyhow::Result<()> {
     // macOS itself (hidden as it's typed), so it's in no argument, file or log.
     if args.rest.first().map(String::as_str) == Some("secret") {
         args.rest.remove(0);
-        let name = args.next("which: groq")?;
-        anyhow::ensure!(name == "groq", "the keys tessel keeps: groq");
+        let name = args.next("which: groq or vercel")?;
+        anyhow::ensure!(name == "groq" || name == "vercel", "the keys tessel keeps: groq, vercel");
         let remove = args.flag("--remove");
         let status = if remove {
             std::process::Command::new("security").args(["delete-generic-password", "-s", "tessel", "-a", &name]).status()?
@@ -273,7 +274,11 @@ async fn run() -> anyhow::Result<()> {
             std::process::Command::new("security").args(["add-generic-password", "-U", "-s", "tessel", "-a", &name, "-l", &format!("tessel: {name} key"), "-w"]).status()?
         };
         anyhow::ensure!(status.success(), "the keychain said no");
-        println!("{}", if remove { format!("{name} key removed") } else { format!("{name} key saved; talking in the message box is tidied by it now") });
+        let saved = match name.as_str() {
+            "groq" => "talking in the message box is tidied by it now",
+            _ => "dev boxes can be made in vercel sandboxes with it",
+        };
+        println!("{}", if remove { format!("{name} key removed") } else { format!("{name} key saved; {saved}") });
         return Ok(());
     }
 
