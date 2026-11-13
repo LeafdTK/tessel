@@ -3,9 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "assets/**", ".release-please-manifest.json"]
+    paths-ignore: ["**.md", "assets/**", "site/**", ".release-please-manifest.json"]
   pull_request:
-    paths-ignore: ["**.md", "assets/**", ".release-please-manifest.json"]
+    paths-ignore: ["**.md", "assets/**", "site/**", ".release-please-manifest.json"]
 
 concurrency:
   group: ci-${{ github.ref }}

@@ -1,0 +1,113 @@
+@import '@fontsource-variable/schibsted-grotesk';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+:root {
+	--ink: #07080a;
+	--coal: #0f1113;
+	--card: rgba(13, 15, 16, 0.86);
+	--bone: #ece6db;
+	--stone: #8d8981;
+	--ash: #6a6761;
+	--rule: rgba(236, 230, 219, 0.09);
+	--amber: #ef9f6c;
+	--iris: #93a6f2;
+	--mint: #9fd49a;
+
+	--display: 'Schibsted Grotesk Variable', 'Helvetica Neue', sans-serif;
+	--body: 'Geist Variable', -apple-system, system-ui, sans-serif;
+	--mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', monospace;
+
+	--radius: 22px;
+	color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	background: var(--ink);
+	color: var(--bone);
+	font-family: var(--body);
+	font-size: 16px;
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	scroll-behavior: smooth;
+}
+
+body {
+	margin: 0;
+	overflow-x: hidden;
+}
+
+img {
+	display: block;
+	max-width: 100%;
+	height: auto;
+}
+
+a {
+	color: inherit;
+}
+
+:focus-visible {
+	outline: 2px solid var(--iris);
+	outline-offset: 3px;
+	border-radius: 6px;
+}
+
+::selection {
+	background: #c8dc5a;
+	color: var(--ink);
+}
+
+code,
+kbd,
+.mono {
+	font-family: var(--mono);
+}
+
+/* the uppercase mono label, used for real artifacts: keys, paths, commands */
+.tag {
+	font-family: var(--mono);
+	font-size: 11.5px;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--stone);
+}
+
+.wrap {
+	width: min(1200px, 100% - 48px);
+	margin-inline: auto;
+}
+
+h1,
+h2,
+h3 {
+	font-family: var(--display);
+	font-weight: 640;
+	letter-spacing: -0.035em;
+	line-height: 1.02;
+	margin: 0;
+	text-wrap: balance;
+}
+
+.dim {
+	color: var(--ash);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		transition-duration: 0.001ms !important;
+	}
+}
