@@ -310,8 +310,20 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     let mut palette = spec.palette(dark);
     // glass: the frame lets the desktop through, blurred. the sheets stay solid, so text never sits on it.
     let glass = spec.glass.unwrap_or(false);
-    window.set_background_appearance(if glass { gpui_kit::WindowBackgroundAppearance::Blurred } else { gpui_kit::WindowBackgroundAppearance::Opaque });
-    if glass {
+    // apple's liquid glass where the system has it (macOS 26 on); the plain blur where it doesn't.
+    let view = crate::shell::view_of(window).unwrap_or(0);
+    let liquid = crate::glass::set(view, glass, dark);
+    window.set_background_appearance(match (glass, liquid) {
+        (true, true) => gpui_kit::WindowBackgroundAppearance::Transparent,
+        (true, false) => gpui_kit::WindowBackgroundAppearance::Blurred,
+        _ => gpui_kit::WindowBackgroundAppearance::Opaque,
+    });
+    if glass && liquid {
+        // liquid glass reads as a material: the frame is mostly glass, and the
+        // panes are frosted over it, solid enough that text always reads.
+        palette.sidebar = palette.sidebar.opacity(0.18);
+        palette.window = palette.window.opacity(0.8);
+    } else if glass {
         palette.sidebar = palette.sidebar.opacity(0.45);
     }
     // felt: the frame's colour is drawn as cloth underneath (see `shell::backdrop`),
