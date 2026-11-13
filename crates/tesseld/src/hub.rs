@@ -1541,6 +1541,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             folders: self.sessions.iter().map(|(id, l)| (l.state.meta.cwd.clone(), *id)).collect(),
             live: self.sessions.iter().filter_map(|(id, l)| l.agent.as_ref().and_then(|a| a.pid()).map(|p| (*id, p as i32))).collect(),
             seen: self.procs_seen.lock().unwrap().clone(),
+            terms: self.terms.values().filter(|t| t.info.exited.is_none()).map(|t| t.info.id).collect(),
         }
     }
 

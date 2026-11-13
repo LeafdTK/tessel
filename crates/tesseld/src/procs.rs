@@ -30,6 +30,8 @@ pub struct Known {
     pub live: HashMap<SessionId, i32>,
     /// every process seen under an agent: its chat, and when it started (seconds since the epoch).
     pub seen: HashMap<i32, (SessionId, u64)>,
+    /// tessel's terminals whose programs are still running: what's in one that isn't has been left.
+    pub terms: HashSet<u64>,
 }
 
 fn epoch_secs() -> u64 {
@@ -135,6 +137,7 @@ pub fn list(known: &Known) -> (Vec<AgentProcess>, HashMap<i32, (SessionId, u64)>
     let agents: HashSet<i32> = known.live.values().copied().collect();
     let me = std::process::id() as i32;
     // whose each is, from its environment.
+    // (the process, its chat, whether it's in a terminal that's still running, its command line)
     let mut ours: HashMap<i32, (Proc, Option<SessionId>, bool, String)> = HashMap::new();
     for p in &procs {
         if p.pid == me || agents.contains(&p.pid) {
@@ -152,7 +155,8 @@ pub fn list(known: &Known) -> (Vec<AgentProcess>, HashMap<i32, (SessionId, u64)>
         if command.contains("tesselctl mcp") || p.comm.ends_with("tessel-voice") {
             continue;
         }
-        let terminal = var("TESSEL_TERM").is_some();
+        // in a terminal of tessel's that's still running: the person's, not left.
+        let terminal = var("TESSEL_TERM").and_then(|t| t.parse::<u64>().ok()).is_some_and(|t| known.terms.contains(&t)) && p.ppid != 1;
         ours.insert(p.pid, (p.clone(), session, terminal, command));
     }
     // lineage: what's under a running agent is its chat's, whatever it is; and
@@ -286,7 +290,7 @@ mod tests {
         // an "agent", running a command in a shell of its own (as claude runs Bash), that will outlive it.
         let agent = std::process::Command::new("/bin/sh").args(["-c", "/bin/sh -c 'sleep 30; true' & wait"]).spawn().unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let mut known = super::Known { folders: vec![], live: [(session, agent.id() as i32)].into(), seen: Default::default() };
+        let mut known = super::Known { folders: vec![], live: [(session, agent.id() as i32)].into(), seen: Default::default(), terms: Default::default() };
         let (rows, seen) = super::list(&known);
         let row = rows.iter().find(|r| r.session == Some(session)).expect("what's under a running agent is its chat's");
         assert_eq!(row.name, "sleep");
