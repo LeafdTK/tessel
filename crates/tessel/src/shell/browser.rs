@@ -97,8 +97,9 @@ impl Shell {
             }
             UiEvent::BrowserActivity { session, what, at } => {
                 self.page(session).borrow_mut().activity = Some((what, at, Instant::now()));
-                // the agent is using the browser: let it be seen.
-                if self.model.open.as_ref().is_some_and(|o| o.id == session) && !self.browser_visible() {
+                // the agent is using the browser in visual mode: let it be seen.
+                // (otherwise the layout is the person's, and stays as it is.)
+                if self.watching(session) && !self.browser_visible() {
                     self.browser_show_next = true;
                 }
             }
@@ -122,6 +123,11 @@ impl Shell {
         let media_type = if p.image.is_empty() { "application/vnd.tessel.element".into() } else { "image/png".into() };
         self.attachments.push(tessel_proto::Attachment { name: p.label(), media_type, data: p.image, element: Some(note) });
         self.focus_composer_next = true;
+    }
+
+    /// the open chat is `session`, in visual mode: the person asked to watch it work.
+    fn watching(&self, session: SessionId) -> bool {
+        self.model.open.as_ref().is_some_and(|o| o.id == session) && self.model.open_summary().is_some_and(|s| s.visual)
     }
 
     pub(crate) fn browser_visible(&self) -> bool {
@@ -302,8 +308,8 @@ impl Shell {
     fn run_page_act(&mut self, call: PageCall, cx: &mut Context<Self>) {
         let Some(page) = self.pages.get(&call.session).cloned() else { return };
         let Some(native) = page.borrow().native.clone() else { return };
-        // the agent is using the browser: let it be seen.
-        if call.agent && self.model.open.as_ref().is_some_and(|o| o.id == call.session) && !self.browser_visible() {
+        // the agent is using the browser in visual mode: let it be seen.
+        if call.agent && self.watching(call.session) && !self.browser_visible() {
             self.browser_show_next = true;
             cx.notify();
         }
@@ -537,6 +543,8 @@ impl Shell {
             .min_h_0()
             .overflow_hidden()
             .bg(gpui_kit::white())
+            // round like the page on it and the pane around it, or its square corners show.
+            .rounded_b(px(radius as f32))
             .track_focus(&self.browser_focus)
             .cursor(if state.picking { CursorStyle::Crosshair } else { CursorStyle::Arrow })
             .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
