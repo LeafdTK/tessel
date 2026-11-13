@@ -219,7 +219,7 @@ async fn reach(home: &std::path::Path, host: Option<&str>) -> Result<(Client, Ev
     match tessel_remote::connect(home, h, "tessel").await {
         Ok(c) => {
             let via = match &c.link {
-                Some(l) => format!("quic, {} ms", l.rtt().as_millis()),
+                Some(l) => format!("{}, {} ms", l.kind(), l.rtt().as_millis()),
                 None => "ssh".to_owned(),
             };
             Ok((c.client, c.events, c.welcome, c.link, via))

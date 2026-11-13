@@ -10,17 +10,20 @@
 pub mod forward;
 pub mod hosts;
 pub mod identity;
+pub mod link;
 pub mod quic;
 pub mod service;
 pub mod setup;
 pub mod ssh;
+pub mod vercel;
+pub mod ws;
 
 use anyhow::Context;
 use hosts::{Host, Transport};
 use std::path::Path;
 use tessel_client::{Client, Events, Welcome};
 
-pub use quic::Link;
+pub use link::Link;
 
 /// a daemon on a host, connected to.
 pub struct Connected {
@@ -35,6 +38,13 @@ pub struct Connected {
 pub async fn connect(local_home: &Path, host: &Host, name: &str) -> anyhow::Result<Connected> {
     match host.transport {
         Transport::Quic => connect_quic(local_home, host, name).await,
+        Transport::Vercel => {
+            let link = vercel::connect(local_home, host).await?;
+            let stream = link.open("tessel").await?;
+            let (client, events, welcome) =
+                tokio::time::timeout(std::time::Duration::from_secs(20), Client::over(stream, name)).await.context("the daemon didn't answer")?.map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(Connected { client, events, welcome, link: Some(Link::Ws(link)) })
+        }
         Transport::Ssh => {
             let stream = ssh::bridge(&ssh::To::of(host))?;
             let (client, events, welcome) =
@@ -48,9 +58,9 @@ pub async fn connect(local_home: &Path, host: &Host, name: &str) -> anyhow::Resu
 pub async fn connect_quic(local_home: &Path, host: &Host, name: &str) -> anyhow::Result<Connected> {
     let addr = host.address.as_deref().context("it hasn't been set up (no address)")?;
     let me = identity::Identity::load_or_make(&identity::dir(local_home), "client")?;
-    let link = Link::connect(addr, host.fingerprint.as_deref(), &me).await?;
+    let link = quic::Link::connect(addr, host.fingerprint.as_deref(), &me).await?;
     let stream = link.open("tessel").await?;
     let (client, events, welcome) =
         tokio::time::timeout(std::time::Duration::from_secs(20), Client::over(stream, name)).await.context("the daemon didn't answer")?.map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(Connected { client, events, welcome, link: Some(link) })
+    Ok(Connected { client, events, welcome, link: Some(Link::Quic(link)) })
 }

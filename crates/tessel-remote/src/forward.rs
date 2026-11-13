@@ -7,7 +7,7 @@
 //! rewritten on the way in and back on the way out. every connection to it is
 //! a stream of its own over the host's quic link (`tcp PORT`).
 
-use crate::quic::Link;
+use crate::Link;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -193,9 +193,9 @@ mod tests {
         });
         let me = Identity::load_or_make(mac.path(), "client").unwrap();
         identity::allow(host.path(), &me.fingerprint(), "test").unwrap();
-        let link = Link::connect(&addr, Some(&host_id.fingerprint()), &me).await.unwrap();
+        let link = crate::quic::Link::connect(&addr, Some(&host_id.fingerprint()), &me).await.unwrap();
         let f = Forwards::default();
-        f.set(Some(link), tokio::runtime::Handle::current());
+        f.set(Some(crate::Link::Quic(link)), tokio::runtime::Handle::current());
         let url = f.to_local(&format!("http://localhost:{port}/app?x=1"));
         let local = f.ports()[0].1;
         assert_ne!(local, port);

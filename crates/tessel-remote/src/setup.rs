@@ -39,6 +39,9 @@ for b in tesseld tesselctl; do (sha256sum "$HOME/.tessel/bin/$b" 2>/dev/null || 
 /// set `host` up (or bring it up to date). `host` is filled in as it goes:
 /// its address, key, transport and build.
 pub async fn setup(local_home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
+    if host.vercel.is_some() {
+        return crate::vercel::setup(local_home, host, opts, say).await;
+    }
     let dest = ssh::To::of(host);
     say(Said::Step(format!("Reaching {} over ssh", dest.dest)));
     let (hostname, _user) = ssh::resolve(&dest).await?;

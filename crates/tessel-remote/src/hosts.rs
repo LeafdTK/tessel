@@ -14,6 +14,8 @@ pub enum Transport {
     /// through ssh (`ssh HOST tesselctl bridge`): for a host whose udp port
     /// can't be reached. slower to start, and a dropped network drops it.
     Ssh,
+    /// websockets, through a vercel sandbox's https route (see `vercel`).
+    Vercel,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,6 +38,9 @@ pub struct Host {
     pub fingerprint: Option<String>,
     #[serde(default)]
     pub transport: Transport,
+    /// a vercel sandbox, not a machine ssh reaches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vercel: Option<crate::vercel::Sandbox>,
     /// `x86_64` or `aarch64`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arch: Option<String>,
@@ -57,10 +62,20 @@ impl Host {
             address: None,
             fingerprint: None,
             transport: Transport::Quic,
+            vercel: None,
             arch: None,
             home: None,
             build: None,
         }
+    }
+
+    /// a dev box in a vercel sandbox called `name`.
+    pub fn sandbox(name: &str, vcpus: u32) -> Self {
+        let mut h = Self::new(name, "");
+        h.name = name.trim().to_owned();
+        h.vercel = Some(crate::vercel::Sandbox { name: slug(name), team: None, project: None, vcpus, path: None });
+        h.transport = Transport::Vercel;
+        h
     }
 
     /// set up enough to connect to.
@@ -68,6 +83,7 @@ impl Host {
         match self.transport {
             Transport::Quic => self.address.is_some() && self.fingerprint.is_some(),
             Transport::Ssh => self.build.is_some(),
+            Transport::Vercel => self.address.is_some() && self.build.is_some(),
         }
     }
 }

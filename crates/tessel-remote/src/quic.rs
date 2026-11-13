@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskCx, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, BufReader, ReadBuf};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 
 pub const ALPN: &[u8] = b"tessel/1";
 /// where a host listens unless told otherwise (udp).
@@ -141,11 +141,17 @@ fn peer(conn: &Connection) -> Option<String> {
     certs.first().map(|c| identity::fingerprint(c))
 }
 
-async fn relay(mut send: SendStream, recv: RecvStream, home: &Path) -> anyhow::Result<()> {
-    let mut recv = BufReader::new(recv);
+async fn relay(send: SendStream, recv: RecvStream, home: &Path) -> anyhow::Result<()> {
+    relay_stream(tokio::io::join(recv, send), home).await
+}
+
+/// one stream from a mac, whatever carries it (a quic stream, a websocket):
+/// its first line says what it's for, and the rest is relayed there.
+pub(crate) async fn relay_stream(stream: impl AsyncRead + AsyncWrite + Unpin + Send, home: &Path) -> anyhow::Result<()> {
+    let mut stream = BufReader::new(stream);
     let mut line = String::new();
     // a line, not a novel: whoever sends one isn't speaking this.
-    let n = tokio::time::timeout(Duration::from_secs(10), (&mut recv).take(256).read_line(&mut line)).await.context("no header")??;
+    let n = tokio::time::timeout(Duration::from_secs(10), (&mut stream).take(256).read_line(&mut line)).await.context("no header")??;
     anyhow::ensure!(n > 0, "closed before saying what for");
     let what = line.trim();
     let target: Result<Box<dyn Duplex>, String> = match what.split_once(' ') {
@@ -159,13 +165,13 @@ async fn relay(mut send: SendStream, recv: RecvStream, home: &Path) -> anyhow::R
     let mut target = match target {
         Ok(t) => t,
         Err(why) => {
-            send.write_all(format!("no {why}\n").as_bytes()).await?;
-            let _ = send.finish();
+            stream.write_all(format!("no {why}\n").as_bytes()).await?;
+            let _ = stream.shutdown().await;
             return Ok(());
         }
     };
-    send.write_all(b"ok\n").await?;
-    let mut stream = tokio::io::join(recv, send);
+    stream.write_all(b"ok\n").await?;
+    stream.flush().await?;
     let _ = tokio::io::copy_bidirectional(&mut stream, &mut target).await;
     Ok(())
 }

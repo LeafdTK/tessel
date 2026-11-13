@@ -328,7 +328,11 @@ impl Shell {
                     "mac" | "local" | "this" => None,
                     w => Some(self.hosts.list.find(w).ok_or_else(|| format!("there's no host {w} (host.list says which there are)"))?.id.clone()),
                 };
-                self.switch_host(to, cx);
+                // after the answer: it goes back the way the question came, before the switch.
+                let me = cx.entity().downgrade();
+                cx.defer(move |cx| {
+                    let _ = me.update(cx, |this, cx| this.switch_host(to, cx));
+                });
                 done
             }
             "host.add" => {

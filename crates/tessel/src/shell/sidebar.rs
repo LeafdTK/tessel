@@ -33,7 +33,7 @@ impl Shell {
         let tile = if queue {
             div().size(theme::z(16.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(4.)).bg(theme::info(&p).opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(10.)).text_color(theme::info(&p))).into_any_element()
         } else {
-            super::avatar::avatar(title, 16., 4.).into_any_element()
+            super::avatar::letter(title, 18., 5.).into_any_element()
         };
         let mut row = h_flex()
             .id(SharedString::from(format!("project-{title}")))
@@ -46,7 +46,7 @@ impl Shell {
             .pl(px(8.))
             .pr(px(8.))
             // the name starts where the chats' titles do: one line down the list.
-            .gap(px(6.))
+            .gap(px(4.))
             .items_center()
             .rounded(px(theme::R_TILE))
             .when(!queue, |d| {
@@ -226,10 +226,10 @@ pub(crate) fn project_color(name: &str) -> Hsla {
     gpui_kit::rgb(HUES[(sum as usize) % HUES.len()]).into()
 }
 
-/// a project's tile: its own dithered glow, picked from its name so it's
+/// a project's tile: its first letter on two colours picked from its name,
 /// the same every time (see `avatar`).
 pub(crate) fn project_tile(name: &str, _p: &Palette) -> Div {
-    div().flex_shrink_0().child(super::avatar::avatar(name, 18., 5.))
+    super::avatar::letter(name, 18., 5.)
 }
 
 /// show a folder in the Finder.

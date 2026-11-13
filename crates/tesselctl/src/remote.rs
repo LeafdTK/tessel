@@ -16,6 +16,10 @@ pub async fn remote(home: &Path, args: &mut Args) -> anyhow::Result<()> {
             let port = args.opt("--port")?.map(|p| p.parse()).transpose()?.unwrap_or(tessel_remote::quic::DEFAULT_PORT);
             tessel_remote::service::serve(home, port).await
         }
+        "serve-ws" => {
+            let port = args.opt("--port")?.map(|p| p.parse()).transpose()?.unwrap_or(tessel_remote::ws::PORT);
+            tessel_remote::ws::serve(home, port).await
+        }
         "install" => {
             let port = args.opt("--port")?.map(|p| p.parse()).transpose()?.unwrap_or(tessel_remote::quic::DEFAULT_PORT);
             println!("{}", tessel_remote::service::install(home, port)?);
@@ -67,8 +71,29 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
                     (false, _) => "not set up".to_owned(),
                     (true, Transport::Quic) => format!("quic {}", h.address.as_deref().unwrap_or("")),
                     (true, Transport::Ssh) => "through ssh".to_owned(),
+                    (true, Transport::Vercel) => format!("vercel sandbox, {}", h.address.as_deref().unwrap_or("")),
                 };
-                println!("{} {}  ({}, ssh {}; {how})", if current.as_deref() == Some(&h.id) { "*" } else { " " }, h.id, h.name, h.ssh);
+                let reach = if h.vercel.is_some() { String::new() } else { format!("ssh {}; ", h.ssh) };
+                println!("{} {}  ({}, {reach}{how})", if current.as_deref() == Some(&h.id) { "*" } else { " " }, h.id, h.name);
+            }
+            Ok(())
+        }
+        "add" if args.rest.iter().any(|a| a == "--vercel") => {
+            let name = args.opt("--vercel")?.context("--vercel NAME: what to call the sandbox")?;
+            let vcpus = args.opt("--vcpus")?.map(|v| v.parse()).transpose()?.unwrap_or(2);
+            anyhow::ensure!(vcpus == 1 || (vcpus % 2 == 0 && vcpus <= 8), "--vcpus: 1, 2, 4 or 8");
+            let id = hosts.add(Host::sandbox(&name, vcpus));
+            hosts.save(home)?;
+            println!("added {id}");
+            set_up(home, &id, args).await
+        }
+        "stop" => {
+            let which = args.next("which host")?;
+            let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
+            if tessel_remote::vercel::stop(home, &host).await? {
+                println!("{} stopped; its disk is kept, and showing it again starts it", host.name);
+            } else {
+                println!("{} wasn't running", host.name);
             }
             Ok(())
         }
@@ -141,6 +166,7 @@ async fn set_up(home: &Path, id: &str, args: &mut Args) -> anyhow::Result<()> {
         match host.transport {
             Transport::Quic => format!("quic to {}", host.address.as_deref().unwrap_or("")),
             Transport::Ssh => "through ssh".into(),
+            Transport::Vercel => format!("a vercel sandbox at {}", host.address.as_deref().unwrap_or("")),
         },
         host.id
     );

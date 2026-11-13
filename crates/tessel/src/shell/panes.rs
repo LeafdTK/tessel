@@ -787,10 +787,16 @@ impl Shell {
         // what the keys do, as keys: the same caps the menus use, the words in
         // a tone you can read at a glance without it competing with the box.
         let hint = |keys: &str, what: &'static str| h_flex().gap(theme::z(6.)).child(theme::keycaps(&p, keys)).child(div().text_color(p.secondary).child(what));
+        // as many as fit, most useful first: the rest wrap to a line that isn't shown,
+        // so a narrow pane drops whole hints instead of cutting one in half.
         let hints = h_flex()
+            .flex_wrap()
+            .h(theme::z(30.))
+            .overflow_hidden()
             .px(theme::z(12.))
             .pt(theme::z(8.))
-            .gap(theme::z(16.))
+            .gap_x(theme::z(16.))
+            .gap_y(theme::z(8.))
             .set(Type::Subheadline)
             .child(hint("⏎", "send"))
             .child(hint("⇧ ⏎", "new line"))

@@ -34,6 +34,8 @@ pub(crate) struct HostsView {
     /// the add form is open (its fields are made once the window can).
     pub(crate) adding: bool,
     pub(crate) confirm_remove: Option<String>,
+    /// what the last thing done to a host said.
+    pub(crate) said: Option<String>,
 }
 
 /// setting a host up, as it goes.
@@ -48,16 +50,34 @@ pub(crate) struct SetupRun {
 }
 
 pub(crate) struct HostForm {
+    /// a vercel sandbox, not a machine reached over ssh.
+    vercel: bool,
     name: Entity<InputState>,
     ssh: Entity<InputState>,
     key: Entity<InputState>,
     port: Entity<InputState>,
     claude: bool,
+    vcpus: u32,
+    /// a vercel token, when the keychain has none yet.
+    token: Entity<InputState>,
+    team: Entity<InputState>,
+    project: Entity<InputState>,
+    /// the keychain has a vercel token already (asked once, when the form opens).
+    has_token: bool,
 }
 
 enum Progress {
     Said(Said),
     Done(Box<Host>, Result<(), String>),
+}
+
+/// what a machine's tile shows: this mac, a server, or a sandbox in the cloud.
+fn machine_icon(host: Option<&Host>) -> &'static str {
+    match host {
+        None => "laptop",
+        Some(h) if h.vercel.is_some() => "cloud",
+        Some(_) => "server",
+    }
 }
 
 impl HostsView {
@@ -216,12 +236,20 @@ impl Shell {
                 s
             })
         };
+        let saved: serde_json::Value = std::fs::read(tessel_remote::vercel::config(&self.hosts.home)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let has_token = tessel_remote::vercel::token().is_some();
         self.hosts.form = Some(HostForm {
+            vercel: false,
             name: field("Dev box", "", window, cx),
             ssh: field("you@devbox.example.com, or a Host from ~/.ssh/config", "", window, cx),
             key: field("~/.ssh/id_ed25519", "", window, cx),
             port: field("7731", &tessel_remote::quic::DEFAULT_PORT.to_string(), window, cx),
             claude: true,
+            vcpus: 2,
+            token: cx.new(|cx| InputState::new(window, cx).placeholder("vcp_…").masked(true)),
+            team: field("team_…", saved["team"].as_str().unwrap_or(""), window, cx),
+            project: field("prj_…", saved["project"].as_str().unwrap_or(""), window, cx),
+            has_token,
         });
         if let Some(f) = &self.hosts.form {
             f.ssh.update(cx, |s, cx| s.focus(window, cx));
@@ -237,23 +265,57 @@ impl Shell {
 
     fn host_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(f) = self.hosts.form.as_ref() else { return };
-        let (name, ssh) = (f.name.read(cx).value().trim().to_owned(), f.ssh.read(cx).value().trim().to_owned());
-        let port = f.port.read(cx).value().trim().to_owned();
-        if ssh.is_empty() {
-            self.error = Some("Say how ssh reaches it: you@host, or a Host from your ~/.ssh/config.".into());
-            cx.notify();
-            return;
-        }
-        let Ok(port) = (if port.is_empty() { Ok(tessel_remote::quic::DEFAULT_PORT) } else { port.parse::<u16>() }) else {
-            self.error = Some(format!("{port} isn't a port."));
-            cx.notify();
-            return;
+        let text = |e: &Entity<InputState>, cx: &App| e.read(cx).value().trim().to_owned();
+        let (name, claude) = (text(&f.name, cx), f.claude);
+        let (host, port) = if f.vercel {
+            if name.is_empty() {
+                self.error = Some("Name the sandbox: it's how vercel knows it, and how it's found again.".into());
+                cx.notify();
+                return;
+            }
+            let token = text(&f.token, cx);
+            if !token.is_empty()
+                && let Err(e) = tessel_remote::vercel::save_token(&token)
+            {
+                self.error = Some(format!("Couldn't keep the token in the keychain: {e}"));
+                cx.notify();
+                return;
+            }
+            if !f.has_token && token.is_empty() {
+                self.error = Some("Paste a Vercel token (vercel.com › Account Settings › Tokens).".into());
+                cx.notify();
+                return;
+            }
+            let (team, project) = (text(&f.team, cx), text(&f.project, cx));
+            if team.is_empty() || project.is_empty() {
+                self.error = Some("Say which Vercel team and project the sandbox goes in.".into());
+                cx.notify();
+                return;
+            }
+            let cfg = serde_json::json!({"team": team, "project": project});
+            if let Err(e) = std::fs::write(tessel_remote::vercel::config(&self.hosts.home), serde_json::to_vec_pretty(&cfg).unwrap_or_default()) {
+                self.error = Some(format!("Couldn't save the team and project: {e}"));
+                cx.notify();
+                return;
+            }
+            (Host::sandbox(&name, f.vcpus), tessel_remote::quic::DEFAULT_PORT)
+        } else {
+            let (ssh, port) = (text(&f.ssh, cx), text(&f.port, cx));
+            if ssh.is_empty() {
+                self.error = Some("Say how ssh reaches it: you@host, or a Host from your ~/.ssh/config.".into());
+                cx.notify();
+                return;
+            }
+            let Ok(port) = (if port.is_empty() { Ok(tessel_remote::quic::DEFAULT_PORT) } else { port.parse::<u16>() }) else {
+                self.error = Some(format!("{port} isn't a port."));
+                cx.notify();
+                return;
+            };
+            let mut host = Host::new(&name, &ssh);
+            host.key = Some(text(&f.key, cx)).filter(|k| !k.is_empty());
+            (host, port)
         };
-        let claude = f.claude;
-        let key = Some(f.key.read(cx).value().trim().to_owned()).filter(|k| !k.is_empty());
         let mut list = Hosts::load(&self.hosts.home);
-        let mut host = Host::new(&name, &ssh);
-        host.key = key;
         let id = list.add(host);
         if let Err(e) = list.save(&self.hosts.home) {
             self.error = Some(format!("Couldn't save the host: {e}"));
@@ -264,6 +326,34 @@ impl Shell {
         self.error = None;
         self.hosts_reload();
         self.host_setup(id, Options { port, claude }, true, window, cx);
+    }
+
+    /// stop a sandbox now, off the ui thread (it would stop by itself soon after nothing shows it).
+    fn host_stop(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.hosts.list.get(id).cloned() else { return };
+        if self.hosts.list.current.as_deref() == Some(id) {
+            self.switch_host(None, cx);
+        }
+        let home = self.hosts.home.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let r = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string()).and_then(|rt| rt.block_on(tessel_remote::vercel::stop(&home, &host)).map_err(|e| format!("{e:#}")));
+            let _ = tx.send(r);
+        });
+        self.hosts.said = Some("Stopping…".into());
+        cx.spawn_in(window, async move |this, cx| {
+            let r = rx.await.unwrap_or_else(|_| Err("it went away".into()));
+            let _ = in_window(&this, cx, |this, _, cx| {
+                this.hosts.said = Some(match r {
+                    Ok(true) => "Stopped. Its disk is kept; showing it again starts it.".into(),
+                    Ok(false) => "It wasn't running.".into(),
+                    Err(e) => e,
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn host_remove(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -322,6 +412,7 @@ impl Shell {
             about.join(" · ")
         };
         let seed = self.hosts.list.current.clone().unwrap_or_else(|| "this-mac".into());
+        let icon = machine_icon(self.hosts.list.current());
         Popover::new("host-picker-popover")
             .p_0()
             .anchor(Anchor::TopLeft)
@@ -341,7 +432,7 @@ impl Shell {
                             .w_full()
                             .min_w_0()
                             .gap(px(10.))
-                            .child(super::avatar::avatar(&seed, 28., 7.))
+                            .child(super::avatar::machine(&seed, icon, 28., 7.))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -366,7 +457,7 @@ impl Shell {
                         let _ = me.update(cx, |this, cx| this.switch_host(to.clone(), cx));
                     }
                 };
-                let machine = |id: SharedString, seed: String, name: String, note: String, on: bool| {
+                let machine = |id: SharedString, seed: String, icon: &'static str, name: String, note: String, on: bool| {
                     h_flex()
                         .id(id)
                         .test_support()
@@ -376,7 +467,7 @@ impl Shell {
                         .rounded(px(theme::R_TILE))
                         .when(on, |d| d.bg(p.selection))
                         .when(!on, |d| d.hover(|d| d.bg(p.hover)))
-                        .child(super::avatar::avatar(&seed, 26., 6.))
+                        .child(super::avatar::machine(&seed, icon, 26., 6.))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -386,7 +477,7 @@ impl Shell {
                         )
                 };
                 let mut list = v_flex().w(px(280.)).p(px(6.)).gap(px(2.)).child(
-                    machine("host-mac".into(), "this-mac".into(), "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
+                    machine("host-mac".into(), "this-mac".into(), "laptop", "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
                 );
                 for h in &this.hosts.list.hosts {
                     let note = if !h.ready() {
@@ -395,11 +486,12 @@ impl Shell {
                         let how = match h.transport {
                             Transport::Quic => "quic",
                             Transport::Ssh => "through ssh",
+                            Transport::Vercel => "vercel sandbox",
                         };
                         format!("{} · {how}", h.arch.as_deref().map_or_else(|| "linux".to_owned(), |a| format!("linux {a}")))
                     };
                     let on = current.as_deref() == Some(h.id.as_str());
-                    list = list.child(machine(SharedString::from(format!("host-{}", h.id)), h.id.clone(), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
+                    list = list.child(machine(SharedString::from(format!("host-{}", h.id)), h.id.clone(), machine_icon(Some(h)), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
                 }
                 let settings = |adding: bool| {
                     let (me, popover) = (me.clone(), popover.clone());
@@ -467,12 +559,14 @@ impl Shell {
         let busy = self.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
         for h in &self.hosts.list.hosts {
             let showing = current.as_deref() == Some(h.id.as_str());
+            let reach = h.vercel.as_ref().map_or_else(|| h.ssh.clone(), |v| format!("vercel: {}", v.name));
             let about = if !h.ready() {
-                format!("{} · not set up yet", h.ssh)
+                format!("{reach} · not set up yet")
             } else {
                 let how = match h.transport {
                     Transport::Quic => format!("quic to {}", h.address.as_deref().unwrap_or("?")),
                     Transport::Ssh => "through ssh: udp is closed, open it for quic".to_owned(),
+                    Transport::Vercel => "a vercel sandbox: runs while shown, keeps its disk".to_owned(),
                 };
                 let arch = h.arch.as_deref().map(|a| format!(" · linux {a}")).unwrap_or_default();
                 let live = if showing && self.hosts.on.as_deref() == Some(h.id.as_str()) && matches!(self.model.connection, crate::model::Connection::Connected) {
@@ -480,7 +574,7 @@ impl Shell {
                 } else {
                     String::new()
                 };
-                format!("{} · {how}{arch}{live}", h.ssh)
+                format!("{reach} · {how}{arch}{live}")
             };
             let (id, id2, id3) = (h.id.clone(), h.id.clone(), h.id.clone());
             let armed = self.hosts.confirm_remove.as_deref() == Some(h.id.as_str());
@@ -490,6 +584,10 @@ impl Shell {
             }
             if showing {
                 r = r.child(theme::button(&p, "host-sign-in", "Sign in to Claude", Some("log-in"), ButtonKind::Ghost).test_support().on_click(cx.listener(|this, _, window, cx| this.host_sign_in(window, cx))));
+            }
+            if h.vercel.is_some() && h.ready() {
+                let id4 = h.id.clone();
+                r = r.child(theme::button(&p, SharedString::from(format!("host-stop-{}", h.id)), "Stop", None, ButtonKind::Ghost).test_support().on_click(cx.listener(move |this, _, window, cx| this.host_stop(&id4, window, cx))));
             }
             r = r
                 .child(
@@ -508,7 +606,7 @@ impl Shell {
                 rows = rows.child(self.setup_steps(run));
             }
         }
-        rows.child(self.add_host_el(cx))
+        rows.children(self.hosts.said.clone().map(|t| div().px_4().py_2().border_t_1().border_color(p.separator).set(Type::Callout).text_color(p.secondary).child(t))).child(self.add_host_el(cx))
     }
 
     fn setup_steps(&self, run: &SetupRun) -> Div {
@@ -567,16 +665,37 @@ impl Shell {
                 .when(!hint.is_empty(), |d| d.child(div().set(Type::Subheadline).text_color(p.tertiary).child(hint)))
         };
         let claude = f.claude;
-        v_flex()
-            .border_t_1()
-            .border_color(p.separator)
-            .px_4()
-            .py_3()
-            .gap_3()
-            .child(div().set(Type::Headline).child("Add a dev box"))
-            .child(field("ssh", "How you'd ssh to it. Your keys and ~/.ssh/config are used; there's no password prompt.", &f.ssh, "host-form-ssh"))
-            .child(field("ssh key", "Only if ssh wouldn't pick it by itself.", &f.key, "host-form-key"))
-            .child(h_flex().gap_3().child(div().flex_1().child(field("Name", "", &f.name, "host-form-name"))).child(div().w(px(110.)).child(field("UDP port", "", &f.port, "host-form-port"))))
+        let kind = self.segmented("host-form-kind", &[("ssh", "A machine over ssh"), ("vercel", "A Vercel sandbox")], if f.vercel { "vercel" } else { "ssh" }, cx, |this, v, _, cx| {
+            if let Some(f) = this.hosts.form.as_mut() {
+                f.vercel = v == "vercel";
+            }
+            cx.notify();
+        });
+        let mut form = v_flex().border_t_1().border_color(p.separator).px_4().py_3().gap_3().child(h_flex().gap_3().child(div().flex_1().set(Type::Headline).child("Add a dev box")).child(kind));
+        if f.vercel {
+            let vcpus = f.vcpus.to_string();
+            let size = self.segmented("host-form-vcpus", &[("2", "2 CPUs"), ("4", "4 CPUs"), ("8", "8 CPUs")], &vcpus, cx, |this, v, _, cx| {
+                if let Some(f) = this.hosts.form.as_mut() {
+                    f.vcpus = v.parse().unwrap_or(2);
+                }
+                cx.notify();
+            });
+            form = form
+                .child(div().set(Type::Subheadline).text_color(p.secondary).child("A Linux VM Vercel keeps for you. It runs while the window shows it (Vercel bills the CPU it uses), stops by itself a few minutes after, and keeps its disk: showing it again picks up where it was."))
+                .child(h_flex().gap_3().items_end().child(div().flex_1().child(field("Name", "How Vercel knows it.", &f.name, "host-form-name"))).child(v_flex().gap(px(4.)).pb(px(18.)).child(size)))
+                .child(if f.has_token {
+                    div().set(Type::Callout).text_color(p.secondary).child("Vercel token: in this Mac's keychain.").into_any_element()
+                } else {
+                    field("Vercel token", "vercel.com › Account Settings › Tokens. Kept in this Mac's keychain.", &f.token, "host-form-token").into_any_element()
+                })
+                .child(h_flex().gap_3().child(div().flex_1().child(field("Team", "", &f.team, "host-form-team"))).child(div().flex_1().child(field("Project", "", &f.project, "host-form-project"))));
+        } else {
+            form = form
+                .child(field("ssh", "How you'd ssh to it. Your keys and ~/.ssh/config are used; there's no password prompt.", &f.ssh, "host-form-ssh"))
+                .child(field("ssh key", "Only if ssh wouldn't pick it by itself.", &f.key, "host-form-key"))
+                .child(h_flex().gap_3().child(div().flex_1().child(field("Name", "", &f.name, "host-form-name"))).child(div().w(px(110.)).child(field("UDP port", "", &f.port, "host-form-port"))));
+        }
+        form
             .child(
                 h_flex()
                     .gap_2()
