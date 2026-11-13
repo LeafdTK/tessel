@@ -7551,6 +7551,7 @@ name = "tesselctl"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "libc",
  "serde_json",
  "tessel-client",
  "tessel-proto",

@@ -71,8 +71,8 @@ pub enum HubMsg {
     Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
     /// a worktree finished being made (or failed) for a pending create.
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
-    /// keys for a terminal: a binary frame from any client.
-    TermInput { payload: Vec<u8> },
+    /// keys for a terminal: a binary frame from a client.
+    TermInput { client: ClientId, payload: Vec<u8> },
     /// from a terminal's thread.
     TermOutput { term: TermId, bytes: Vec<u8> },
     TermChanged { term: TermId, title: String, cwd: Option<String> },
@@ -178,6 +178,8 @@ pub struct Hub {
     settings: tessel_proto::DaemonSettings,
     terms: std::collections::BTreeMap<TermId, crate::term::Handle>,
     next_term: TermId,
+    /// each visual session's terminal, where its agent's Bash commands show.
+    mirrors: HashMap<SessionId, TermId>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
@@ -259,6 +261,7 @@ impl Hub {
             next_ui: 1,
             settings: tessel_proto::DaemonSettings::default(),
             terms: Default::default(),
+            mirrors: HashMap::new(),
             next_term: 1,
             restart: None,
             git_undo: Default::default(),
@@ -425,6 +428,11 @@ impl Hub {
             let id = t.info.id;
             match crate::term::adopt(crate::term::Released { info: t.info, pid: t.pid, master, screen: unb64(&t.screen) }, self.tx.clone()) {
                 Ok(handle) => {
+                    if handle.mirror
+                        && let Some(s) = handle.info.session
+                    {
+                        self.mirrors.insert(s, id);
+                    }
                     self.terms.insert(id, handle);
                 }
                 Err(e) => eprintln!("tesseld: taking over terminal {id}: {e}"),
@@ -538,9 +546,11 @@ impl Hub {
                 }
                 _ => self.tell_everyone(ev),
             },
-            HubMsg::TermInput { payload } => {
+            HubMsg::TermInput { client, payload } => {
+                // a mirror shows only what its commands print: keys typed at it go nowhere.
                 if let Some((term, bytes)) = tessel_proto::term::decode(&payload)
                     && let Some(t) = self.terms.get(&term)
+                    && (!t.mirror || t.feeders.contains(&client))
                 {
                     t.send(crate::term::Cmd::Input(bytes.to_vec()));
                 }
@@ -726,7 +736,7 @@ impl Hub {
                 }
             },
             // the agent learns its tools when it starts: a running one restarts once idle.
-            Request::SessionSetVisual { session, visual, bash } => self.relink(session, Input::SetVisual { visual, bash }),
+            Request::SessionSetVisual { session, visual } => self.relink(session, Input::SetVisual { visual }),
             Request::SessionLinkDir { session, path, .. } => {
                 let path = path.trim().to_owned();
                 if !self.sessions.contains_key(&session) {
@@ -1184,7 +1194,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 }
                 Ok(Response::Ack)
             }
+            Request::TermMirror { session, command } => self.mirror_command(client, session, &command).map(|info| Response::Term { info }),
             Request::TermInput { term, text } => match self.terms.get(&term) {
+                Some(t) if t.mirror => Err(RpcError::new(ErrorCode::Conflict, format!("terminal {term} shows the agent's own commands; nothing can be typed there"))),
                 Some(t) if t.info.exited.is_some() => Err(RpcError::new(ErrorCode::Conflict, format!("terminal {term} has exited"))),
                 Some(t) => {
                     t.send(crate::term::Cmd::Input(text.into_bytes()));
@@ -1206,7 +1218,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 None => Err(no_term(term)),
             },
             Request::TermClose { term } => match self.terms.get_mut(&term) {
-                Some(t) if t.info.exited.is_some() => {
+                Some(t) if t.info.exited.is_some() || t.mirror => {
                     self.forget_term(term);
                     Ok(Response::Ack)
                 }
@@ -1420,6 +1432,41 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         crate::setup::env(&cwd, &root, port)
     }
 
+    /// the session's mirror terminal, headed for one more of its agent's Bash
+    /// commands: what it's for (the call's description, when the agent gave
+    /// one) and the command, cut to a line. `client` then sends its output.
+    fn mirror_command(&mut self, client: ClientId, session: SessionId, command: &str) -> Result<tessel_proto::term::TermInfo, RpcError> {
+        let live = self.sessions.get(&session).ok_or_else(|| not_found(session))?;
+        let cwd = live.state.meta.cwd.clone();
+        // the call this is: the newest Bash still running with this command.
+        let description = live.state.items().iter().rev().find_map(|i| match &i.body {
+            tessel_proto::ItemBody::Tool { tool, input, status: tessel_proto::ToolStatus::Running, .. } if tool == "Bash" && input["command"].as_str() == Some(command) => {
+                input["description"].as_str().map(str::to_owned)
+            }
+            _ => None,
+        });
+        let existing = self.mirrors.get(&session).copied().filter(|t| self.terms.contains_key(t));
+        let (id, first) = match existing {
+            Some(id) => (id, false),
+            None => {
+                let id = self.next_term;
+                self.next_term += 1;
+                let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: 120, rows: 32, session: Some(session), command: vec![], exited: None, keep_open: true, agent: true };
+                let handle = crate::term::mirror(info.clone(), self.tx.clone()).map_err(|e| RpcError::new(ErrorCode::Internal, format!("couldn't start a terminal: {e}")))?;
+                self.terms.insert(id, handle);
+                self.mirrors.insert(session, id);
+                self.tell_everyone(Event::TermUpdated { info });
+                (id, true)
+            }
+        };
+        let clients = &self.clients;
+        let t = self.terms.get_mut(&id).expect("just found or made");
+        t.feeders.retain(|c| clients.contains_key(c));
+        t.feeders.insert(client);
+        t.send(crate::term::Cmd::Input(mirror_header(description.as_deref(), command, t.info.cols, first).into_bytes()));
+        Ok(t.info.clone())
+    }
+
     /// a terminal: a shell, or `command` in one. a session's terminal knows its workspace.
     fn open_term(&mut self, session: Option<SessionId>, cwd: String, command: Vec<String>, cols: u16, rows: u16, agent: bool) -> Result<tessel_proto::term::TermInfo, RpcError> {
         if !std::path::Path::new(&cwd).is_dir() {
@@ -1591,7 +1638,19 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             return Ok(());
         }
         // the agent knows its workspace's ports and names, as its terminals do.
-        let workspace_env = self.workspace_env(session);
+        let mut workspace_env = self.workspace_env(session);
+        // visual mode: every shell the agent starts goes through `tessel-shell`,
+        // which shows its own Bash commands in a terminal as they run.
+        if self.sessions.get(&session).is_some_and(|l| l.state.visual)
+            && let Some(prefix) = self.cfg.tools_bin.as_deref().and_then(|bin| shell_prefix(&self.cfg.paths.home, bin))
+        {
+            if let Some(theirs) = std::env::var_os("CLAUDE_CODE_SHELL_PREFIX").filter(|p| !p.is_empty()) {
+                workspace_env.push(("TESSEL_SHELL_PREFIX_NEXT".into(), theirs.to_string_lossy().into_owned()));
+            }
+            workspace_env.push(("CLAUDE_CODE_SHELL_PREFIX".into(), prefix.to_string_lossy().into_owned()));
+            workspace_env.push(("TESSEL_SESSION".into(), session.to_string()));
+            workspace_env.push(("TESSEL_HOME".into(), self.cfg.paths.home.to_string_lossy().into_owned()));
+        }
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
         let cwd = live.state.meta.cwd.clone();
         if !Path::new(&cwd).is_dir() {
@@ -1618,7 +1677,6 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             effort: live.state.effort.clone(),
             fast: live.state.fast,
             visual: live.state.visual,
-            visual_bash: live.state.visual_bash,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             env: workspace_env,
             raw_log: Some(self.cfg.paths.raw_log(&session)),
@@ -1876,6 +1934,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
     }
 
     fn forget_term(&mut self, term: TermId) {
+        self.mirrors.retain(|_, t| *t != term);
         if let Some(t) = self.terms.remove(&term) {
             t.send(crate::term::Cmd::Quit);
             self.tell_everyone(Event::TermRemoved { term });
@@ -1892,6 +1951,47 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
         }
     }
+}
+
+/// `tessel-shell`: tesselctl by another name (a shell prefix must be one
+/// bare program, and tesselctl knows by its name what it's run as). made or
+/// mended under tessel's home, pointing at the tesselctl beside this daemon.
+fn shell_prefix(home: &Path, tesselctl: &Path) -> Option<std::path::PathBuf> {
+    let link = home.join("bin").join("tessel-shell");
+    if std::fs::read_link(&link).ok().as_deref() != Some(tesselctl) {
+        std::fs::create_dir_all(link.parent()?).ok()?;
+        let _ = std::fs::remove_file(&link);
+        if let Err(e) = std::os::unix::fs::symlink(tesselctl, &link) {
+            eprintln!("tesseld: making {}: {e}", link.display());
+            return None;
+        }
+    }
+    Some(link)
+}
+
+/// what heads a mirrored command: its description in bold, then the command
+/// dimmed, on one line however long it is (the full command is in the chat).
+fn mirror_header(description: Option<&str>, command: &str, cols: u16, first: bool) -> String {
+    let plain = |s: &str| s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>();
+    let fit = |s: String, room: usize| {
+        if s.chars().count() <= room {
+            s
+        } else {
+            format!("{}…", s.chars().take(room.saturating_sub(1)).collect::<String>().trim_end())
+        }
+    };
+    let room = (cols as usize).saturating_sub(2).max(10);
+    let line = fit(format!("$ {}", plain(command.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim())), room);
+    let line = if command.trim().lines().count() > 1 && !line.ends_with('…') { format!("{line} …") } else { line };
+    let mut out = String::new();
+    if !first {
+        out.push('\n');
+    }
+    if let Some(d) = description.map(str::trim).filter(|d| !d.is_empty()) {
+        out.push_str(&format!("\x1b[1m{}\x1b[0m\n", fit(plain(d), room)));
+    }
+    out.push_str(&format!("\x1b[2m{line}\x1b[0m\n"));
+    out
 }
 
 fn no_term(term: TermId) -> RpcError {

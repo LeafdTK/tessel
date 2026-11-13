@@ -8,6 +8,7 @@ publish.workspace = true
 tessel-proto.workspace = true
 tessel-client = { path = "../tessel-client" }
 anyhow.workspace = true
+libc = "0.2"
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std"] }
 uuid.workspace = true

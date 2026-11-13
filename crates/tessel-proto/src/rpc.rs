@@ -115,14 +115,10 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
-    /// visual mode on or off, and whether its agent may still use Bash. what
-    /// isn't given stays. a running agent takes it up once it's idle.
+    /// visual mode on or off. a running agent takes it up once it's idle.
     SessionSetVisual {
         session: SessionId,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        visual: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        bash: Option<bool>,
+        visual: bool,
     },
     SessionUnlinkDir {
         cmd_id: Uuid,
@@ -461,6 +457,14 @@ pub enum Request {
     TermKeepOpen {
         term: crate::term::TermId,
         on: bool,
+    },
+    /// a command the session's agent is running with its own Bash (visual
+    /// mode): its terminal, where what it prints is shown as it comes. the
+    /// one asking then sends the output as binary frames for that terminal,
+    /// which only it may; nothing typed there reaches anything.
+    TermMirror {
+        session: SessionId,
+        command: String,
     },
     /// answer once the screen shows `text`, or (with no text) once it exits.
     TermWait {

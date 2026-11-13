@@ -50,12 +50,9 @@ Keep to what genuinely reads better that way: a one-line answer stays a line.";
 
 /// visual mode, said to the agent: the person is watching, so its commands
 /// run where they can see them.
-pub const VISUAL_NOTE: &str = "\n\nVisual mode is on: the person is watching you work. Run every shell command with tessel_terminal op exec \
-(command, timeout?): it runs in a terminal they see, and gives you its output and exit code, as Bash would (Bash is off). \
-Do anything in a web page with tessel_browser, which they see too.";
-pub const VISUAL_NOTE_BASH: &str = "\n\nVisual mode is on: the person is watching you work. Run shell commands they should see with tessel_terminal op exec \
-(command, timeout?): it runs in a terminal they see and gives you its output and exit code. Bash is still there for quick checks. \
-Do anything in a web page with tessel_browser, which they see too.";
+pub const VISUAL_NOTE: &str = "\n\nVisual mode is on: the person is watching you work. Your Bash commands, and what they print, \
+show in a terminal beside the chat as they run, headed by each call's description, so keep descriptions plain and short. \
+Use Bash as you always would. Do anything in a web page with tessel_browser, which they see too.";
 
 /// a message from the user. with attachments it becomes a list of blocks:
 /// the text, then each image or document.

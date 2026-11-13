@@ -34,7 +34,7 @@ pub enum Cmd {
     SetEffort { session: SessionId, effort: Option<String> },
     SetFast { session: SessionId, fast: bool },
     /// visual mode, and whether its agent keeps Bash: what isn't given stays.
-    SetVisual { session: SessionId, visual: Option<bool>, bash: Option<bool> },
+    SetVisual { session: SessionId, visual: bool },
     SetMode { session: SessionId, mode: String },
     Models,
     RefreshMcp(SessionId),
@@ -436,7 +436,7 @@ async fn session(
                     Cmd::SetModel { session, model } => client.request(Request::SessionSetModel { cmd_id: Uuid::new_v4(), session, model }).await.map(drop),
                     Cmd::SetEffort { session, effort } => client.request(Request::SessionSetEffort { cmd_id: Uuid::new_v4(), session, effort }).await.map(drop),
                     Cmd::SetFast { session, fast } => client.request(Request::SessionSetFast { cmd_id: Uuid::new_v4(), session, fast }).await.map(drop),
-                    Cmd::SetVisual { session, visual, bash } => client.request(Request::SessionSetVisual { session, visual, bash }).await.map(drop),
+                    Cmd::SetVisual { session, visual } => client.request(Request::SessionSetVisual { session, visual }).await.map(drop),
                     Cmd::UiAnswer { call, result } => {
                         let (ok, err) = match result {
                             Ok(v) => (Some(v), None),

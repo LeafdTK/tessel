@@ -60,6 +60,9 @@ pub struct Released {
 pub struct Handle {
     pub info: TermInfo,
     pub attached: HashSet<ClientId>,
+    /// no program: it shows what `feeders` send it (an agent's own commands, mirrored).
+    pub mirror: bool,
+    pub feeders: HashSet<ClientId>,
     /// closed while still running: forget it as soon as it exits.
     pub closing: bool,
     cmds: std::sync::mpsc::Sender<Cmd>,
@@ -139,6 +142,13 @@ pub fn spawn(info: TermInfo, env: Vec<(String, String)>, hub: UnboundedSender<Hu
     start(info, master, Some(child), pid, Vec::new(), hub)
 }
 
+/// a terminal with no program of its own: what it shows is sent to it (as
+/// input would be) by whoever runs the commands it mirrors.
+pub fn mirror(info: TermInfo, hub: UnboundedSender<HubMsg>) -> io::Result<Handle> {
+    let none = OwnedFd::from(std::fs::File::open("/dev/null")?);
+    start(info, none, None, 0, Vec::new(), hub)
+}
+
 /// carry on with a terminal another daemon let go of.
 pub fn adopt(r: Released, hub: UnboundedSender<HubMsg>) -> io::Result<Handle> {
     unsafe {
@@ -166,7 +176,7 @@ fn start(info: TermInfo, master: OwnedFd, child: Option<Child>, pid: i32, screen
     let id = info.id;
     let thread_info = info.clone();
     std::thread::Builder::new().name(format!("term-{id}")).spawn(move || run(thread_info, master, wake_r, child, pid, screen, rx, hub))?;
-    Ok(Handle { info, attached: HashSet::new(), closing: false, cmds: tx, wake: wake_w })
+    Ok(Handle { info, attached: HashSet::new(), mirror: pid == 0, feeders: HashSet::new(), closing: false, cmds: tx, wake: wake_w })
 }
 
 struct Waiter {
@@ -180,10 +190,28 @@ fn reply(hub: &UnboundedSender<HubMsg>, client: ClientId, id: u64, result: Resul
     let _ = hub.send(HubMsg::Reply { client, id, result });
 }
 
+/// what a pipe wrote, for a screen: a bare line feed only moves down, so each
+/// becomes a return and a line feed (a pty's line discipline does the same).
+/// `after_cr`: whether the last byte before these was a return.
+fn crlf(bytes: &[u8], after_cr: &mut bool) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len() + bytes.len() / 16);
+    for &b in bytes {
+        if b == b'\n' && !*after_cr {
+            out.push(b'\r');
+        }
+        out.push(b);
+        *after_cr = b == b'\r';
+    }
+    out
+}
+
 /// the terminal's thread: until told to quit.
 #[allow(clippy::too_many_arguments)]
 fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Child>, pid: i32, screen: Vec<u8>, cmds: std::sync::mpsc::Receiver<Cmd>, hub: UnboundedSender<HubMsg>) {
     let fd = master.as_raw_fd();
+    // no program (pid 0): a mirror. what comes in is shown, nothing is signalled.
+    let program = pid != 0;
+    let mut after_cr = false;
     let Ok(mut term) = tessel_term::Term::new(info.cols, info.rows, SCROLLBACK) else {
         if let Some(c) = child.as_mut() {
             let _ = c.kill();
@@ -199,7 +227,7 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
     let answers = out.clone();
     let _ = term.answer_with(move |b| answers.borrow_mut().extend(b.iter().copied()));
 
-    let mut exited = info.exited.is_some();
+    let mut exited = info.exited.is_some() || !program;
     let mut handoff = None;
     let mut waiters: Vec<Waiter> = Vec::new();
     let (mut title, mut pwd) = (String::new(), String::new());
@@ -225,6 +253,16 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
         let mut quit = false;
         while let Ok(cmd) = cmds.try_recv() {
             match cmd {
+                Cmd::Input(bytes) if !program => {
+                    let shown = crlf(&bytes, &mut after_cr);
+                    term.feed(&shown);
+                    let _ = hub.send(HubMsg::TermOutput { term: info.id, bytes: shown });
+                    let (t, p) = (term.title(), term.pwd());
+                    if t != title || p != pwd {
+                        (title, pwd) = (t, p);
+                        let _ = hub.send(HubMsg::TermChanged { term: info.id, title: title.clone(), cwd: (!pwd.is_empty()).then(|| pwd.clone()) });
+                    }
+                }
                 Cmd::Input(bytes) => {
                     if !exited {
                         out.borrow_mut().extend(bytes);
@@ -232,7 +270,9 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
                 }
                 Cmd::Resize(cols, rows) => {
                     let ws = libc::winsize { ws_row: rows.max(1), ws_col: cols.max(1), ws_xpixel: 0, ws_ypixel: 0 };
-                    unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+                    if program {
+                        unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &ws) };
+                    }
                     let _ = term.resize(cols, rows, 0, 0);
                     (info.cols, info.rows) = (cols, rows);
                 }
@@ -243,7 +283,7 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
                 Cmd::Process { client, id } => reply(&hub, client, id, Ok(if exited { Response::TermProcess { pid: None, command: String::new(), cwd: None } } else { foreground(fd) })),
                 Cmd::Wait { client, id, text, deadline } => waiters.push(Waiter { client, id, text, deadline }),
                 Cmd::Hangup => {
-                    if !exited {
+                    if program && !exited {
                         unsafe { libc::kill(-pid, libc::SIGHUP) };
                     }
                 }
@@ -320,7 +360,7 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
             waiters.retain(|w| {
                 let done = match &w.text {
                     Some(t) => screen.as_deref().is_some_and(|s| s.contains(t.as_str())),
-                    None => exited,
+                    None => exited && program,
                 };
                 if done {
                     let r = match &w.text {
@@ -347,7 +387,7 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
         let _ = back.send(Released { screen: term.dump(), info, pid, master });
         return;
     }
-    if !exited {
+    if program && !exited {
         unsafe { libc::kill(-pid, libc::SIGHUP) };
         // reaped off this thread so a stubborn program can't hold it.
         std::thread::spawn(move || {
@@ -410,5 +450,13 @@ mod tests {
     fn several_words_are_quoted_one_word_is_a_line() {
         assert_eq!(super::shell_line(&["npm run dev".into()]), "npm run dev");
         assert_eq!(super::shell_line(&["echo".into(), "it's".into()]), r#"'echo' 'it'\''s'"#);
+    }
+
+    #[test]
+    fn what_a_pipe_wrote_starts_each_line_at_the_left() {
+        let mut cr = false;
+        assert_eq!(super::crlf(b"a\nb\r\nc\r", &mut cr), b"a\r\nb\r\nc\r");
+        // a return at the end of one write and its line feed at the start of the next are one line end.
+        assert_eq!(super::crlf(b"\nd\n", &mut cr), b"\nd\r\n");
     }
 }

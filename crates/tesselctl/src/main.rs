@@ -4,6 +4,7 @@
 //! app can do can be done (and tested) from here.
 
 mod mcp;
+mod shell;
 
 use anyhow::{Context, bail};
 use tessel_client::{Client, ClientError, Events};
@@ -35,8 +36,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl effort SESSION LEVEL            low, medium, high, xhigh, max or default
   tesselctl fast SESSION on|off             fast mode, where the model has it
   tesselctl link SESSION DIR                let the agent work in another folder too
-  tesselctl visual SESSION on|off           watch the agent work: commands in a terminal, browser steps paced
-  tesselctl visual SESSION bash on|off      in visual mode, let it use Bash too (off by default)
+  tesselctl visual SESSION on|off           watch the agent work: its Bash commands live in a terminal, browser steps paced
   tesselctl models                          the models the agent offers
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
@@ -101,9 +101,15 @@ SESSION may be any unique prefix of a session id.
 global: --no-start   do not start a daemon if none is running
 env:    TESSEL_HOME  which daemon (default ~/.tessel)";
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
+fn main() {
+    // as a visual-mode agent's shell prefix: before anything else, so the
+    // shells it only passes on cost one exec and nothing more.
+    let args: Vec<String> = std::env::args().collect();
+    if args.first().and_then(|a| a.rsplit('/').next()) == Some(shell::NAME) {
+        shell::main(args);
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("a runtime");
+    if let Err(e) = rt.block_on(run()) {
         eprintln!("tesselctl: {e:#}");
         std::process::exit(1);
     }
@@ -452,9 +458,8 @@ async fn run() -> anyhow::Result<()> {
                 "off" => Ok(false),
                 other => Err(anyhow::anyhow!("on or off, not {other}")),
             };
-            let first = args.next("on, off or bash")?;
-            let (visual, bash) = if first == "bash" { (None, Some(on(&args.next("on or off")?)?)) } else { (Some(on(&first)?), None) };
-            client.request(Request::SessionSetVisual { session, visual, bash }).await?;
+            let visual = on(&args.next("on or off")?)?;
+            client.request(Request::SessionSetVisual { session, visual }).await?;
         }
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;

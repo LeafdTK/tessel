@@ -210,15 +210,12 @@ impl ClaudeBackend {
             if let Some(i) = args.iter().position(|a| a == wire::HOST_NOTE) {
                 args[i] = format!("{}{}", wire::HOST_NOTE, wire::TOOLS_NOTE);
             }
-            // visual mode: the person watches. commands go where they can see
-            // them, so Bash (which they can't) is off unless they allowed it.
-            if opts.visual {
-                if let Some(i) = args.iter().position(|a| a.starts_with(wire::HOST_NOTE)) {
-                    args[i].push_str(if opts.visual_bash { wire::VISUAL_NOTE_BASH } else { wire::VISUAL_NOTE });
-                }
-                if !opts.visual_bash {
-                    args.extend(["--disallowedTools".to_owned(), "Bash".to_owned(), "BashOutput".to_owned(), "KillShell".to_owned()]);
-                }
+            // visual mode: the person watches, so the agent is told. nothing
+            // else changes for it: its own Bash is what they see run.
+            if opts.visual
+                && let Some(i) = args.iter().position(|a| a.starts_with(wire::HOST_NOTE))
+            {
+                args[i].push_str(wire::VISUAL_NOTE);
             }
         }
         args
@@ -588,7 +585,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tessel-handoff-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let backend = echo_agent(&dir);
-        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, visual_bash: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
+        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
         let Spawned { agent, mut output } = backend.spawn(opts).unwrap();
         agent.send_user("before", &[]);
         assert!(matches!(next(&mut output).await, Some(AgentOutput::Events(_) | AgentOutput::Alive)), "it talks");
@@ -632,7 +629,7 @@ mod tests {
 
     #[test]
     fn effort_and_fast_mode_are_asked_for_at_start() {
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, visual: false, visual_bash: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
         let at = args.iter().position(|a| a == "--settings").expect("fast mode is a setting");
@@ -657,7 +654,7 @@ mod tests {
     #[test]
     fn an_agent_given_tessels_tools_gets_them_scoped_to_its_session_and_is_told_why() {
         let tools = crate::backend::AgentTools { command: "/opt/tessel/tesselctl".into(), env: vec![("TESSEL_SESSION".into(), "s-1".into())] };
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, visual_bash: false, add_dirs: vec![], raw_log: None, tools: Some(tools), env: vec![] };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: Some(tools), env: vec![] };
         let args = ClaudeBackend::args(&opts);
         // not on the command line: that makes the agent wait for every server before starting.
         assert!(!args.iter().any(|a| a == "--mcp-config"));
@@ -674,19 +671,16 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--allowedTools", "mcp__tessel"]), "they run without a permission prompt");
         assert!(ClaudeBackend::first_lines(&SpawnOpts { tools: None, ..opts.clone() }).is_empty());
 
-        // visual mode: told it's watched, and without Bash unless that was allowed.
+        // visual mode: told it's watched; its tools stay as they are.
         let watched = ClaudeBackend::args(&SpawnOpts { visual: true, ..opts.clone() });
-        assert!(watched.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("Visual mode is on") && w[1].contains("op exec")));
-        let off = watched.iter().position(|a| a == "--disallowedTools").expect("Bash is off");
-        assert_eq!(&watched[off + 1..off + 4], ["Bash", "BashOutput", "KillShell"]);
-        let with_bash = ClaudeBackend::args(&SpawnOpts { visual: true, visual_bash: true, ..opts.clone() });
-        assert!(!with_bash.iter().any(|a| a == "--disallowedTools"), "allowed, it stays");
+        assert!(watched.windows(2).any(|w| w[0] == "--append-system-prompt" && w[1].contains("Visual mode is on") && w[1].contains("Use Bash as you always would")));
+        assert!(!watched.iter().any(|a| a == "--disallowedTools"), "Bash stays: it's what they watch");
         assert!(!ClaudeBackend::args(&opts).iter().any(|a| a.contains("Visual mode")), "and nothing of it otherwise");
     }
 
     #[test]
     fn first_spawn_names_the_session_and_later_ones_resume_it() {
-        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, visual_bash: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
+        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--session-id", "abc"]));
         assert!(!args.iter().any(|a| a == "--resume"));

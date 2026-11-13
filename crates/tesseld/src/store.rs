@@ -191,8 +191,8 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
     tx.execute(
         "INSERT INTO sessions (id, goal, cwd, worktree_repo, worktree_branch, parent, created_ms, updated_ms, seq,
                                attention_reason, attention_since, attention_seq, model, agent_session_id, cost_usd, turn_open,
-                               permission_mode, context_used, context_window, linked_dirs, effort, fast, mcp, visual, visual_bash)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                               permission_mode, context_used, context_window, linked_dirs, effort, fast, mcp, visual)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
          ON CONFLICT(id) DO UPDATE SET
              goal = excluded.goal, cwd = excluded.cwd, worktree_repo = excluded.worktree_repo,
              worktree_branch = excluded.worktree_branch, parent = excluded.parent, updated_ms = excluded.updated_ms,
@@ -200,7 +200,7 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
              attention_seq = excluded.attention_seq, model = excluded.model, agent_session_id = excluded.agent_session_id,
              cost_usd = excluded.cost_usd, turn_open = excluded.turn_open, permission_mode = excluded.permission_mode,
              context_used = excluded.context_used, context_window = excluded.context_window, linked_dirs = excluded.linked_dirs,
-             effort = excluded.effort, fast = excluded.fast, mcp = excluded.mcp, visual = excluded.visual, visual_bash = excluded.visual_bash",
+             effort = excluded.effort, fast = excluded.fast, mcp = excluded.mcp, visual = excluded.visual",
         params![
             p.meta.id.to_string(),
             p.meta.goal,
@@ -226,7 +226,6 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
             p.fast,
             (!p.mcp.is_empty()).then(|| serde_json::to_string(&p.mcp)).transpose()?,
             p.visual,
-            p.visual_bash,
         ],
     )?;
     {
@@ -247,7 +246,7 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
     let mut stmt = conn.prepare(
         "SELECT id, goal, cwd, worktree_repo, worktree_branch, parent, created_ms, updated_ms, seq,
                 attention_reason, attention_since, attention_seq, model, agent_session_id, cost_usd, turn_open,
-                permission_mode, context_used, context_window, linked_dirs, effort, fast, mcp, visual, visual_bash
+                permission_mode, context_used, context_window, linked_dirs, effort, fast, mcp, visual
          FROM sessions ORDER BY created_ms",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -276,12 +275,11 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
             r.get::<_, bool>(21)?,
             r.get::<_, Option<String>>(22)?,
             r.get::<_, bool>(23)?,
-            r.get::<_, bool>(24)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, goal, cwd, wt_repo, wt_branch, parent, created, updated, seq, reason, since, aseq, model, agent_sid, cost, turn_open, mode, used, window, linked, effort, fast, mcp, visual, visual_bash) = row?;
+        let (id, goal, cwd, wt_repo, wt_branch, parent, created, updated, seq, reason, since, aseq, model, agent_sid, cost, turn_open, mode, used, window, linked, effort, fast, mcp, visual) = row?;
         // a row we can't make sense of is skipped, not fatal: one bad session must not take the rest down.
         let Ok(id) = id.parse::<SessionId>() else {
             eprintln!("tesseld: store: skipping session with unreadable id {id:?}");
@@ -322,7 +320,6 @@ fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
             updated_ms: updated as u64,
             mcp: mcp.and_then(|m| serde_json::from_str(&m).ok()).unwrap_or_default(),
             visual,
-            visual_bash,
         });
     }
     Ok(out)
@@ -380,7 +377,6 @@ mod tests {
             updated_ms: 100,
             mcp: vec![tessel_proto::McpServer { name: "tessel".into(), status: "connected".into(), scope: None }],
             visual: true,
-            visual_bash: false,
         }
     }
 

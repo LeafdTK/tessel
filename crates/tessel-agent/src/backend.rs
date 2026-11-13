@@ -22,9 +22,9 @@ pub struct SpawnOpts {
     pub effort: Option<String>,
     /// fast mode.
     pub fast: bool,
-    /// visual mode: the person watches. told so, and without Bash unless `visual_bash`.
+    /// visual mode: the person watches, and the agent is told so. (its Bash
+    /// commands reach their terminal through the shell prefix in `env`.)
     pub visual: bool,
-    pub visual_bash: bool,
     /// other folders the agent may work in besides `cwd`.
     pub add_dirs: Vec<PathBuf>,
     /// append every line the agent writes here, verbatim. this is the record

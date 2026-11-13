@@ -732,19 +732,58 @@ async fn a_new_session_starts_on_tessels_default_model_not_the_agents() {
 
 #[tokio::test]
 async fn visual_mode_is_kept_with_the_session_and_reaches_the_agent() {
-    let d = Daemon::start(&["plain"]).await;
+    let d = Daemon::start_with(&["plain"], |cfg| cfg.tools_bin = Some(PathBuf::from("/bin/echo"))).await;
     let (c, _ev) = d.client().await;
     let s = create(&c, &d.cwd(), None).await;
-    assert!(!s.visual && !s.visual_bash);
-    c.request(Request::SessionSetVisual { session: s.id, visual: Some(true), bash: None }).await.unwrap();
-    let on = until(&c, s.id, "visual mode on", |s| s.visual).await;
-    assert!(!on.visual_bash, "Bash stays off unless allowed");
+    assert!(!s.visual);
+    c.request(Request::SessionSetVisual { session: s.id, visual: true }).await.unwrap();
+    until(&c, s.id, "visual mode on", |s| s.visual).await;
     c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "go".into(), attachments: vec![] }).await.unwrap();
     let opts = d.backend.spawned.lock().unwrap()[0].clone();
-    assert!(opts.visual && !opts.visual_bash, "the agent starts knowing it's watched");
-    c.request(Request::SessionSetVisual { session: s.id, visual: None, bash: Some(true) }).await.unwrap();
-    let both = until(&c, s.id, "bash allowed", |s| s.visual_bash).await;
-    assert!(both.visual, "what wasn't given stays");
+    assert!(opts.visual, "the agent starts knowing it's watched");
+    // and every shell it starts goes through tessel-shell: tesselctl, by that name.
+    let env = |k: &str| opts.env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let prefix = PathBuf::from(env("CLAUDE_CODE_SHELL_PREFIX").expect("a shell prefix"));
+    assert_eq!(prefix.file_name().unwrap(), "tessel-shell");
+    assert_eq!(std::fs::read_link(&prefix).unwrap(), PathBuf::from("/bin/echo"));
+    assert_eq!(env("TESSEL_SESSION"), Some(s.id.to_string()), "so it knows whose commands they are");
+}
+
+#[tokio::test]
+async fn an_agents_own_commands_show_in_one_terminal_that_only_they_write_to() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let (window, _wev) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    let mirror = |command: &str| {
+        let c = &c;
+        let command = command.to_owned();
+        async move {
+            match c.request(Request::TermMirror { session: s.id, command }).await.unwrap() {
+                Response::Term { info } => info,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let first = mirror("cargo test").await;
+    assert!(first.agent && first.session == Some(s.id), "the agent's, for the pane to follow");
+    c.send_term_input(first.id, b"running 3 tests\nok\n").unwrap();
+    // keys typed at it go nowhere: from a window, or as a script.
+    window.send_term_input(first.id, b"typed").unwrap();
+    assert!(window.request(Request::TermInput { term: first.id, text: "typed".into() }).await.is_err());
+    let second = mirror("git status\ngit diff").await;
+    assert_eq!(second.id, first.id, "one terminal, each command under the last");
+    c.send_term_input(first.id, b"clean").unwrap();
+    let text = |r: Response| match r {
+        Response::TermText { text } => text,
+        other => panic!("{other:?}"),
+    };
+    let screen = text(c.request(Request::TermWait { term: first.id, text: Some("clean".into()), timeout_ms: 5000 }).await.unwrap());
+    assert!(screen.contains("$ cargo test\nrunning 3 tests\nok\n"), "{screen}");
+    assert!(screen.contains("$ git status …") && !screen.contains("typed"), "{screen}");
+    // closed, it goes; the next command gets a new one.
+    c.request(Request::TermClose { term: first.id }).await.unwrap();
+    assert_ne!(mirror("ls").await.id, first.id);
 }
 
 #[tokio::test]

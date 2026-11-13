@@ -38,7 +38,7 @@ fn summary() -> SessionSummary {
         permission_mode: None,
         context_used: None,
         context_window: None,
-        tasks: vec![], mcp: vec![], linked_dirs: vec![], visual: false, visual_bash: false,
+        tasks: vec![], mcp: vec![], linked_dirs: vec![], visual: false,
         cost_usd: 0.0,
         trace: vec![],
         asking: None,

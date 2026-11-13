@@ -88,7 +88,7 @@ async fn read_loop(mut read: impl AsyncRead + Unpin, client: ClientId, hub: &mps
                 Err(_) => return,
                 Ok(Some(f)) => {
                     if f.kind == KIND_BINARY {
-                        if hub.send(HubMsg::TermInput { payload: f.payload }).is_err() {
+                        if hub.send(HubMsg::TermInput { client, payload: f.payload }).is_err() {
                             return;
                         }
                         continue;
@@ -230,7 +230,7 @@ mod tests {
                 summary: SessionSummary {
                     id: s, goal: "g".into(), cwd: "/".into(), worktree: None, parent: None, run_state: RunState::Working,
                     activity: None, activity_since_ms: None, attention: None, warm: true, background_tasks: 0, model: None,
-                    permission_mode: None, effort: None, fast: false, context_used: None, context_window: None, tasks: vec![], mcp: vec![], linked_dirs: vec![], visual: false, visual_bash: false,
+                    permission_mode: None, effort: None, fast: false, context_used: None, context_window: None, tasks: vec![], mcp: vec![], linked_dirs: vec![], visual: false,
                     cost_usd: 0.0, trace: vec![], asking: None, last_seq: seq, created_ms: 0, updated_ms: 0,
                 },
             },

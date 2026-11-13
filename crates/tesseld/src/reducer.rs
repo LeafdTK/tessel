@@ -47,7 +47,7 @@ pub enum Input {
     SetModel { model: String },
     SetEffort { effort: Option<String> },
     SetFast { fast: bool },
-    SetVisual { visual: Option<bool>, bash: Option<bool> },
+    SetVisual { visual: bool },
     SetMode { mode: String },
     LinkDir { path: String },
     UnlinkDir { path: String },
@@ -142,7 +142,6 @@ pub struct SessionState {
     pub effort: Option<String>,
     pub fast: bool,
     pub visual: bool,
-    pub visual_bash: bool,
     context_used: Option<u64>,
     context_window: Option<u64>,
     mcp: Vec<McpServer>,
@@ -166,7 +165,6 @@ pub struct Persisted {
     pub effort: Option<String>,
     pub fast: bool,
     pub visual: bool,
-    pub visual_bash: bool,
     pub context_used: Option<u64>,
     pub context_window: Option<u64>,
     pub agent_session_id: Option<String>,
@@ -206,7 +204,6 @@ impl SessionState {
             effort: None,
             fast: false,
             visual: false,
-            visual_bash: false,
             context_used: None,
             context_window: None,
             mcp: Vec::new(),
@@ -229,7 +226,6 @@ impl SessionState {
         s.effort = p.effort;
         s.fast = p.fast;
         s.visual = p.visual;
-        s.visual_bash = p.visual_bash;
         s.context_used = p.context_used;
         s.context_window = p.context_window;
         s.agent_session_id = p.agent_session_id;
@@ -258,7 +254,6 @@ impl SessionState {
             effort: self.effort.clone(),
             fast: self.fast,
             visual: self.visual,
-            visual_bash: self.visual_bash,
             context_used: self.context_used,
             context_window: self.context_window,
             agent_session_id: self.agent_session_id.clone(),
@@ -462,7 +457,6 @@ impl SessionState {
             effort: self.effort.clone(),
             fast: self.fast,
             visual: self.visual,
-            visual_bash: self.visual_bash,
             context_used: self.context_used,
             context_window: self.context_window,
             mcp: self.mcp.clone(),
@@ -530,10 +524,9 @@ impl SessionState {
                     fx.summary_changed = true;
                 }
             }
-            Input::SetVisual { visual, bash } => {
-                let (v, b) = (visual.unwrap_or(self.visual), bash.unwrap_or(self.visual_bash));
-                if (v, b) != (self.visual, self.visual_bash) {
-                    (self.visual, self.visual_bash) = (v, b);
+            Input::SetVisual { visual } => {
+                if self.visual != visual {
+                    self.visual = visual;
                     fx.summary_changed = true;
                 }
             }

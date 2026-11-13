@@ -117,13 +117,10 @@ pub struct SessionSummary {
     /// other folders the agent may read and write besides its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub linked_dirs: Vec<String>,
-    /// visual mode: the person watches. the agent runs its commands in
-    /// terminals they can see, and acts in the browser at a pace they can follow.
+    /// visual mode: the person watches. the agent's Bash commands show in a
+    /// terminal as they run, and it acts in the browser at a pace they can follow.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub visual: bool,
-    /// in visual mode, the agent may still use its own Bash (unseen).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub visual_bash: bool,
     /// what the agent has running inside it right now: subagents and background commands.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<TaskSummary>,
