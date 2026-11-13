@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.0](https://github.com/LeafdTK/tessel/compare/v0.2.0...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* bigger message text, set in Settings ([fd7f579](https://github.com/LeafdTK/tessel/commit/fd7f579b2e5007d0a82cdbc7c3ff4e19a69ac26e))
+* desktops follow your fingers when swiped ([39471ff](https://github.com/LeafdTK/tessel/commit/39471ffae237cf16ae0c2c354a4dc243a903a7c8))
+* kubernetes pane, a cluster at a glance ([bc9088f](https://github.com/LeafdTK/tessel/commit/bc9088f1d897ba6d0c2dd0f51c8fc410e0fd1330))
+* swipes blur the page and slide the highlight ([28fcc83](https://github.com/LeafdTK/tessel/commit/28fcc83643e9f11a056909eb08b3a9c9614e3df8))
+* visual mode shows the agent's own bash live ([9a142ee](https://github.com/LeafdTK/tessel/commit/9a142eeee8acea6c9382aed77523a296da56f0f9))
+* visual mode, watch the agent work ([cf38076](https://github.com/LeafdTK/tessel/commit/cf380765f14835cb43e62ad5b36f864f99a3ea4c))
+
+
+### Fixes
+
+* a restart hands over the lock, losing nothing ([e4ca6c4](https://github.com/LeafdTK/tessel/commit/e4ca6c41e1a4c27402a27837cad9626e4a781231))
+* a slow trackpad swipe still switches desktops ([fe2c5c4](https://github.com/LeafdTK/tessel/commit/fe2c5c41f158aaeecb69cbc1a15991b2f93f9ff6))
+* a stuck agent says so, and tools never wait forever ([4c1833a](https://github.com/LeafdTK/tessel/commit/4c1833af36c6226885758bebb042f491edac0f9d))
+* a swiped-to desktop slides in as itself ([991efb4](https://github.com/LeafdTK/tessel/commit/991efb473e2bf9226a12aa557fa78d3d409c9dc5))
+* agents leave your layout alone ([2b09158](https://github.com/LeafdTK/tessel/commit/2b091583cd63be5356eecd5d9f6b3601737596c7))
+* collapsed projects stay in the sidebar on hover ([0ab4ebc](https://github.com/LeafdTK/tessel/commit/0ab4ebc8e03e1ddb5c06c17736ad7f387a21ec49))
+* new sessions take files and say they're starting ([ecb241d](https://github.com/LeafdTK/tessel/commit/ecb241daeb42176a4db9f03a223e842c54b4bb56))
+* the notch keeps its own window clear ([3a0bd4d](https://github.com/LeafdTK/tessel/commit/3a0bd4d3da29acd8f0fbf1e08e04e667f339f873))
+* tool output folds by default, like thoughts ([5790e75](https://github.com/LeafdTK/tessel/commit/5790e75015f465c1b8a601615ca47da7e0f8996f))
+
 ## [0.2.0](https://github.com/LeafdTK/tessel/compare/v0.1.0...v0.2.0) (2026-11-12)
 
 
