@@ -140,6 +140,10 @@ impl Shell {
         let (was, now) = (super::desktops::desktop_key(&self.ui), super::desktops::desktop_key(&ui));
         let switching = was != now;
         if switching {
+            // a switch by key or command, from rest: keep a picture of what's left, for a swipe back.
+            if !self.desk.active() {
+                self.shoot_desktop(window);
+            }
             self.leave_desktop(was, cx);
         }
         self.adopt_ui(ui);

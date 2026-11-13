@@ -485,6 +485,12 @@ impl Shell {
         layer.children(self.drop_overlay(origin)).into_any_element()
     }
 
+    /// every pane straight to where it belongs, no animating: for a desktop arriving by swipe.
+    pub(crate) fn settle_panes(&mut self) {
+        self.pane_fx.clear();
+        self.sync_panes();
+    }
+
     /// keep the panes' targets in line with the tree and the room. called at the top of a frame.
     pub(crate) fn sync_panes(&mut self) {
         let Some(area) = self.pane_area.get() else { return };

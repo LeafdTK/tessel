@@ -54,11 +54,14 @@ pub(crate) struct DeskDrag {
     last: Option<std::time::Instant>,
     /// when the fingers last lifted: the coasting that follows is the trackpad's, not a new swipe.
     lifted: Option<std::time::Instant>,
+    /// each desktop's panes as they looked when it was last left, by desktop id:
+    /// what slides in, so arriving changes nothing you can see.
+    pub(crate) shots: HashMap<String, std::sync::Arc<RenderImage>>,
 }
 
 impl DeskDrag {
     pub(crate) fn new() -> Self {
-        Self { x: Spring::points(0.0), shift: Default::default(), peek: None, commit: None, gone: (0.0, 0.0), sideways: None, touching: false, speed: 0.0, last: None, lifted: None }
+        Self { x: Spring::points(0.0), shift: Default::default(), peek: None, commit: None, gone: (0.0, 0.0), sideways: None, touching: false, speed: 0.0, last: None, lifted: None, shots: HashMap::new() }
     }
 
     /// something to draw: the panes are off their place, or a desktop is coming in.
@@ -418,11 +421,11 @@ impl Shell {
                 g.commit = None;
                 let at = g.x.value();
                 g.x.snap(at);
-                self.desk_follow(d, now, cx);
+                self.desk_follow(d, now, window, cx);
             }
-            TouchPhase::Moved if self.desk.touching => self.desk_follow(d, now, cx),
+            TouchPhase::Moved if self.desk.touching => self.desk_follow(d, now, window, cx),
             TouchPhase::Ended | TouchPhase::Cancelled => {
-                self.desk_follow(d, now, cx);
+                self.desk_follow(d, now, window, cx);
                 self.desk_let_go(now);
                 cx.notify();
             }
@@ -450,7 +453,7 @@ impl Shell {
     }
 
     /// the fingers moved by `d`: the panes go with them, sideways swipes only.
-    fn desk_follow(&mut self, d: (f32, f32), now: std::time::Instant, cx: &mut Context<Self>) {
+    fn desk_follow(&mut self, d: (f32, f32), now: std::time::Instant, window: &mut Window, cx: &mut Context<Self>) {
         let width = self.pane_area.get().map_or(800.0, |b| f32::from(b.size.width)).max(1.0);
         let g = &mut self.desk;
         g.gone.0 += d.0;
@@ -484,6 +487,10 @@ impl Shell {
         self.desk.x.snap(x);
         self.desk.shift.set(x);
         let wanted = toward.filter(|_| x.abs() > 0.5);
+        // leaving from rest: this desktop as it is, for coming back to.
+        if self.desk.peek.is_none() && wanted.is_some() && self.desk.commit.is_none() {
+            self.shoot_desktop(window);
+        }
         if self.desk.peek.as_ref().map(|p| p.0) != wanted {
             self.desk.peek = wanted.map(|n| (n, self.desk_panes(n)));
         }
@@ -528,20 +535,54 @@ impl Shell {
 
     /// once a frame: a swipe that carried on, landed, shows its desktop.
     pub(crate) fn sync_desk(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let g = &mut self.desk;
-        g.shift.set(g.x.value());
-        if g.touching || g.x.is_moving() {
+        self.desk.shift.set(self.desk.x.value());
+        if self.desk.touching || self.desk.x.is_moving() {
             return;
         }
-        match g.commit.take() {
-            Some(n) => {
+        match self.desk.commit {
+            // landed: the desktop coming in stays drawn where it is until the
+            // switch has happened, then its panes take its place in the same
+            // frame, already where they belong. nothing flashes, nothing moves.
+            Some(n) if self.ui.desktop != n => self.use_desktop(n, window, cx),
+            Some(_) => {
+                let g = &mut self.desk;
+                g.commit = None;
                 g.x.snap(0.0);
                 g.shift.set(0.0);
                 g.peek = None;
-                self.use_desktop(n, window, cx);
+                self.desktop_slide.snap(0.0);
+                self.settle_panes();
+                cx.notify();
             }
-            None if g.x.value() == 0.0 && g.peek.is_some() => g.peek = None,
+            None if self.desk.x.value() == 0.0 && self.desk.peek.is_some() => self.desk.peek = None,
             None => {}
+        }
+    }
+
+    /// keep a picture of the panes as they are now (the last frame drawn), for this desktop.
+    pub(crate) fn shoot_desktop(&mut self, window: &mut Window) {
+        let Some(area) = self.pane_area.get() else { return };
+        let Ok(frame) = window.render_to_image() else { return };
+        let scale = window.scale_factor();
+        // only this window's frame will do (asked from another window's turn, it may not be).
+        let whole = window.viewport_size();
+        if (frame.width() as f32 - f32::from(whole.width) * scale).abs() > 2.0 {
+            return;
+        }
+        let (x, y) = ((f32::from(area.origin.x) * scale).max(0.0) as u32, (f32::from(area.origin.y) * scale).max(0.0) as u32);
+        let (w, h) = ((f32::from(area.size.width) * scale) as u32, (f32::from(area.size.height) * scale) as u32);
+        if w == 0 || h == 0 || x + w > frame.width() || y + h > frame.height() {
+            return;
+        }
+        let mut shot = image::imageops::crop_imm(&frame, x, y, w, h).to_image();
+        // what's painted is bgra.
+        for px in shot.chunks_exact_mut(4) {
+            px.swap(0, 2);
+        }
+        let key = desktop_key(&self.ui);
+        // the picture it replaces lets go of its place on the gpu.
+        if let Some(old) = self.desk.shots.insert(key, std::sync::Arc::new(RenderImage::new(vec![image::Frame::new(shot)]))) {
+            let _ = window.drop_image(old);
         }
     }
 
@@ -560,6 +601,14 @@ impl Shell {
         }).unwrap_or_default();
         let name = self.ui.desktops.get(*n).map(|d| d.name.clone()).unwrap_or_default();
         let mut layer = div().absolute().top(px(pad_top)).left(px(left)).w(px(w)).h(px(h));
+        // as it looked when it was left: exactly what arriving will show.
+        if let Some(shot) = self.ui.desktops.get(*n).and_then(|d| self.desk.shots.get(&d.id)).cloned() {
+            let pic = canvas(|_, _, _| (), move |bounds, (), window, _| {
+                let _ = window.paint_image(bounds, bounds, Corners::default(), shot.clone(), 0, false);
+            })
+            .size_full();
+            return Some(layer.child(pic).into_any_element());
+        }
         if rects.is_empty() {
             layer = layer.child(div().size_full().flex().items_center().justify_center().set(crate::theme::Type::Title).text_color(p.secondary).child(name));
         }
