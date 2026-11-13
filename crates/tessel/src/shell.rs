@@ -24,6 +24,7 @@ mod looks;
 mod files;
 mod git;
 mod kube;
+mod procs;
 mod palette;
 mod panel;
 mod panes;
@@ -262,6 +263,7 @@ pub struct Shell {
     term_focus: Option<String>,
     git: git::GitView,
     kube: kube::KubeView,
+    procs: procs::ProcsView,
     bench_term: Option<terminal::BenchTerm>,
     /// a theme being tried on: drawn, not written.
     theme_preview: Option<String>,
@@ -617,6 +619,7 @@ impl Shell {
                 let alive = in_window(&this, cx, |this, window, cx| {
                     this.workspace_tick();
                     this.kube_tick();
+                    this.procs_tick();
                     this.poll_ui(window, cx);
                     cx.notify();
                 });
@@ -719,6 +722,7 @@ impl Shell {
             term_focus: None,
             git: git::GitView::new(window, cx),
             kube: kube::KubeView::new(kube_filter),
+            procs: procs::ProcsView::default(),
             bench_term: launch.bench_term.then(terminal::BenchTerm::default),
             theme_preview: None,
             theme_preview_by_palette: false,
@@ -1034,6 +1038,7 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
             UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),
+            UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
             UiEvent::Answer { tag: "folder.info", result } => {

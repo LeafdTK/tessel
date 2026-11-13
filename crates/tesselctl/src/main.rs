@@ -40,6 +40,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl models                          the models the agent offers
   tesselctl kube [pods|deployments|services|nodes] [-n NS] [--context C] [--json]
   tesselctl kube contexts|namespaces        what the kubernetes module shows, through your kubectl
+  tesselctl ps [--json]                     what agents started that's still running (left behind ones first)
+  tesselctl ps stop PID [--force]           stop one, and everything under it
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
   tesselctl secret groq [--remove]          keep your Groq key in the keychain: dictation is tidied by groq (fast)
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
@@ -487,6 +489,39 @@ async fn run() -> anyhow::Result<()> {
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionLinkDir { cmd_id: Uuid::new_v4(), session, path: args.next("a folder")? }).await?;
+        }
+        "ps" => {
+            if args.rest.first().map(String::as_str) == Some("stop") {
+                args.rest.remove(0);
+                let force = args.flag("--force");
+                let pid: i32 = args.next("a pid (tesselctl ps lists them)")?.parse()?;
+                match client.request(Request::ProcessStop { pid, force }).await? {
+                    Response::Shipped { said, .. } => println!("{said}"),
+                    other => bail!("unexpected reply: {other:?}"),
+                }
+            } else {
+                let json = args.flag("--json");
+                match client.request(Request::Processes).await? {
+                    Response::Processes { procs } if json => println!("{}", serde_json::to_string_pretty(&procs)?),
+                    Response::Processes { procs } => {
+                        for p in procs {
+                            let ports = p.ports.iter().map(|x| format!(":{x}")).collect::<Vec<_>>().join(" ");
+                            let session = p.session.map(|s| s.to_string()[..8].to_owned()).unwrap_or_else(|| "--------".into());
+                            println!(
+                                "{:<7} {session}  {:<22} {:>5.0}% {:>6}MB {:<12} {}{}",
+                                p.pid,
+                                p.name,
+                                p.cpu,
+                                p.rss_bytes / 1_048_576,
+                                ports,
+                                if p.left_behind { "left behind " } else { "" },
+                                if p.children > 0 { format!("(+{})", p.children) } else { String::new() }
+                            );
+                        }
+                    }
+                    other => bail!("unexpected reply: {other:?}"),
+                }
+            }
         }
         "voice" => {
             let what = args.next("tidy")?;

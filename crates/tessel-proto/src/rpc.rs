@@ -282,6 +282,17 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    // ---- what agents left running ----------------------------------------------
+    /// every process started for a chat that's still running, one row per
+    /// tree (a browser's helpers fold into it).
+    Processes,
+    /// stop one, and everything under it. `force`: at once (SIGKILL), not asked (SIGTERM).
+    /// only a process tessel started can be stopped this way.
+    ProcessStop {
+        pid: i32,
+        #[serde(default)]
+        force: bool,
+    },
     // ---- voice -------------------------------------------------------------------
     /// what was dictated, made into what was meant: noises, false starts and
     /// punctuation fixed, the chat's names spelled right. never fails: at worst
@@ -713,6 +724,9 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    Processes {
+        procs: Vec<crate::procs::AgentProcess>,
     },
     Tidied {
         text: String,

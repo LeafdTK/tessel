@@ -1414,10 +1414,12 @@ pub enum Module {
     Browser,
     /// a cluster at a glance: pods, deployments, services, nodes (through kubectl).
     Kube,
+    /// what agents started that's still running: servers, browsers, watchers.
+    Processes,
 }
 
 /// name, module, title, lucide icon, what it is.
-pub const MODULES: [(&str, Module, &str, &str, &str); 13] = [
+pub const MODULES: [(&str, Module, &str, &str, &str); 14] = [
     ("conversation", Module::Conversation, "Conversation", "message-square", "The session: what the agent says and does, and the message box"),
     ("sessions", Module::Sessions, "Sessions", "list", "Every session, the ones that need you first"),
     ("workspace", Module::Workspace, "Workspace", "panels-top-left", "Changes, files, checks, artifacts and info as tabs"),
@@ -1431,6 +1433,7 @@ pub const MODULES: [(&str, Module, &str, &str, &str); 13] = [
     ("git", Module::Git, "Git", "git-graph", "History as a graph; stage, commit and undo"),
     ("browser", Module::Browser, "Browser", "globe", "The page you and the agent both use: watch it work, point at things to show it"),
     ("kubernetes", Module::Kube, "Kubernetes", "ship-wheel", "A cluster at a glance: pods, deployments, services and nodes, their logs and shells"),
+    ("processes", Module::Processes, "Processes", "activity", "What agents started that's still running: servers, browsers, watchers, and the ones left behind"),
 ];
 
 impl Module {

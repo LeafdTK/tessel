@@ -710,6 +710,7 @@ impl Shell {
             Module::Terminal => self.terminal_el(pane.map_or("", |p| p.id.as_str()), cx),
             // nor does a cluster.
             Module::Kube => self.kube_el(cx),
+            Module::Processes => self.procs_el(cx),
             _ if session.is_none() => quiet("Open a session to see this."),
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),
             Module::Files => div().size_full().child(self.files_tab(cx)).into_any_element(),

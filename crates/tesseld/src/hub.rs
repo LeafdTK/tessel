@@ -187,6 +187,10 @@ pub struct Hub {
     next_term: TermId,
     /// each visual session's terminal, where its agent's Bash commands show.
     mirrors: HashMap<SessionId, TermId>,
+    /// every process seen under an agent, so it's still known once the agent has gone.
+    procs_seen: Arc<std::sync::Mutex<HashMap<i32, (SessionId, u64)>>>,
+    /// when what's under the agents was last looked at.
+    procs_looked: std::time::Instant,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
@@ -269,6 +273,8 @@ impl Hub {
             settings: tessel_proto::DaemonSettings::default(),
             terms: Default::default(),
             mirrors: HashMap::new(),
+            procs_seen: Default::default(),
+            procs_looked: std::time::Instant::now(),
             next_term: 1,
             restart: None,
             git_undo: Default::default(),
@@ -950,6 +956,22 @@ impl Hub {
                     Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
                 });
             }
+            Request::Processes | Request::ProcessStop { .. } => {
+                let known = self.known_procs();
+                let memory = self.procs_seen.clone();
+                return self.later(client, id, async move {
+                    tokio::task::spawn_blocking(move || match req {
+                        Request::ProcessStop { pid, force } => crate::procs::stop(&known, pid, force).map(|said| Response::Shipped { said, url: None }),
+                        _ => {
+                            let (procs, seen) = crate::procs::list(&known);
+                            *memory.lock().unwrap() = seen;
+                            Ok(Response::Processes { procs })
+                        }
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?
+                });
+            }
             Request::VoiceTidy { session, text } => {
                 let backend = self.backend.clone();
                 let at = session.and_then(|s| self.sessions.get(&s)).map(|l| (std::path::PathBuf::from(&l.state.meta.cwd), l.state.meta.goal.clone()));
@@ -1513,6 +1535,15 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         Ok(t.info.clone())
     }
 
+    /// what finding agents' processes needs: each chat's folder, and the pids of the agents running now.
+    fn known_procs(&self) -> crate::procs::Known {
+        crate::procs::Known {
+            folders: self.sessions.iter().map(|(id, l)| (l.state.meta.cwd.clone(), *id)).collect(),
+            live: self.sessions.iter().filter_map(|(id, l)| l.agent.as_ref().and_then(|a| a.pid()).map(|p| (*id, p as i32))).collect(),
+            seen: self.procs_seen.lock().unwrap().clone(),
+        }
+    }
+
     /// a terminal: a shell, or `command` in one. a session's terminal knows its workspace.
     fn open_term(&mut self, session: Option<SessionId>, cwd: String, command: Vec<String>, cols: u16, rows: u16, agent: bool) -> Result<tessel_proto::term::TermInfo, RpcError> {
         if !std::path::Path::new(&cwd).is_dir() {
@@ -1698,8 +1729,11 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if self.sessions.get(&session).is_some_and(|l| l.agent.is_some()) {
             return Ok(());
         }
-        // the agent knows its workspace's ports and names, as its terminals do.
+        // the agent knows its workspace's ports and names, as its terminals do,
+        // and which chat it is: everything it starts carries that, so what it
+        // leaves running can be found and stopped (see `procs`).
         let mut workspace_env = self.workspace_env(session);
+        workspace_env.push(("TESSEL_SESSION".into(), session.to_string()));
         // visual mode: every shell the agent starts goes through `tessel-shell`,
         // which shows its own Bash commands in a terminal as they run.
         if self.sessions.get(&session).is_some_and(|l| l.state.visual)
@@ -1709,7 +1743,6 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 workspace_env.push(("TESSEL_SHELL_PREFIX_NEXT".into(), theirs.to_string_lossy().into_owned()));
             }
             workspace_env.push(("CLAUDE_CODE_SHELL_PREFIX".into(), prefix.to_string_lossy().into_owned()));
-            workspace_env.push(("TESSEL_SESSION".into(), session.to_string()));
             workspace_env.push(("TESSEL_HOME".into(), self.cfg.paths.home.to_string_lossy().into_owned()));
         }
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
@@ -1898,6 +1931,21 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
 
     fn tick(&mut self) {
         let now = now_ms();
+        // every half a minute, while agents run, a look at what's under them:
+        // so what they start is known even if it outlives them between looks.
+        if self.procs_looked.elapsed() >= Duration::from_secs(30) && self.sessions.values().any(|l| l.agent.is_some()) {
+            self.procs_looked = std::time::Instant::now();
+            let known = self.known_procs();
+            let memory = self.procs_seen.clone();
+            tokio::task::spawn_blocking(move || {
+                let (_, mut seen) = crate::procs::list(&known);
+                // what was remembered and is still running stays remembered.
+                for (pid, was) in known.seen {
+                    seen.entry(pid).or_insert(was);
+                }
+                *memory.lock().unwrap() = seen;
+            });
+        }
         let reap_after = self.cfg.idle_reap.as_millis() as Millis;
         let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in ids {

@@ -2746,3 +2746,36 @@ fn talking_puts_words_in_the_box_by_mic_or_by_holding_option(cx: &mut TestAppCon
     assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"cancel\"")));
     assert!(!rig.exists(cx, "dictation"));
 }
+
+#[gpui_kit::test]
+fn the_processes_pane_shows_what_agents_left_and_stops_it_when_sure(cx: &mut TestAppContext) {
+    use tessel_proto::procs::{AgentProcess, ProcessKind};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let dir = layout_dir("procs");
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    rig.layout(cx, r#"{"root": {"type": "panes", "w": "full", "h": "full", "layout": {"split": "row", "children": [
+        {"module": "conversation"}, {"module": "processes"}
+    ]}}}"#);
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::Processes, .. })), "a visible pane asks");
+    let server = AgentProcess { pid: 4242, ppid: 1, session: Some(a.id), name: "node".into(), command: "node astro dev".into(), kind: ProcessKind::Command, age_secs: 3600, rss_bytes: 300 << 20, cpu: 1.0, ports: vec![41042], children: 2, left_behind: true };
+    let browser = AgentProcess { pid: 5151, name: "Google Chrome".into(), kind: ProcessKind::Browser, left_behind: false, children: 13, ports: vec![], ..server.clone() };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "procs.list", result: Ok(Response::Processes { procs: vec![server, browser] }) }]);
+    assert!(rig.exists(cx, "proc-4242") && rig.exists(cx, "proc-5151"));
+    // one, when sure. (its button shows under the pointer.)
+    rig.asked();
+    cx.update_window(rig.window, |_, window, cx| window.hover("proc-4242", cx)).unwrap();
+    rig.settle(cx);
+    rig.click(cx, "proc-4242-stop");
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::ProcessStop { .. }, .. })), "a first click only asks");
+    rig.click(cx, "proc-4242-stop");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::ProcessStop { pid: 4242, force: false }, .. })));
+    // all that were left behind, at once: the browser its agent still uses stays.
+    rig.click(cx, "procs-stop-left");
+    rig.click(cx, "procs-stop-left");
+    let stops: Vec<i32> = rig.asked().iter().filter_map(|c| match c {
+        Cmd::Ask { req: tessel_proto::Request::ProcessStop { pid, .. }, .. } => Some(*pid),
+        _ => None,
+    }).collect();
+    assert_eq!(stops, [4242]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

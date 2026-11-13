@@ -9,6 +9,7 @@ pub mod handoff;
 pub mod hub;
 pub mod kube;
 pub mod orphans;
+pub mod procs;
 pub mod paths;
 pub mod reducer;
 pub mod server;
