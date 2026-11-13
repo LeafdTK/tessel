@@ -1752,6 +1752,11 @@ fn a_subagents_report_is_told_apart_from_what_a_person_wrote() {
     // as claude code sends it now: a line saying where it's from, first.
     let introduced = format!("Another Claude session sent a message:\n{wrapped}");
     assert_eq!(crate::shell::handback_for_test(&introduced).as_deref(), Some("alive and wagging\nsecond line"));
+    // a background task ending, told the agent as if from the person.
+    let note = "<task-notification>\n<task-id>af7e</task-id>\n<status>completed</status>\n<summary>Agent \"Verify competitor feature matrix\" finished</summary>\n<result>…</result>\n</task-notification>";
+    assert_eq!(crate::shell::task_note_for_test(note), Some(("Agent \"Verify competitor feature matrix\" finished".into(), true)));
+    assert_eq!(crate::shell::task_note_for_test("<task-notification><status>failed</status></task-notification>").map(|n| n.1), Some(false));
+    assert_eq!(crate::shell::task_note_for_test("about <task-notification> tags"), None, "a person writing about one is a person");
     assert_eq!(crate::shell::handback_for_test("look at this:\nand this too:\n<agent-message from=\"x\">hi</agent-message>"), None, "more than a line before it is someone writing");
 }
 
@@ -2701,6 +2706,31 @@ fn talking_puts_words_in_the_box_by_mic_or_by_holding_option(cx: &mut TestAppCon
     rig.settle(cx);
     modifiers(&mut rig, cx, none);
     assert!(told(&rig, cx).is_empty(), "nothing started");
+
+    // ⇧⌥: hands free. letting go doesn't end it; Done does.
+    let chord = Modifiers { alt: true, shift: true, ..Modifiers::default() };
+    modifiers(&mut rig, cx, chord);
+    rig.settle(cx);
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"start\"")));
+    hear(&mut rig, cx, Heard::Listening);
+    modifiers(&mut rig, cx, none);
+    assert!(told(&rig, cx).is_empty(), "still listening with hands free");
+    assert!(rig.exists(cx, "dictation-done"), "with a way to finish");
+    rig.click(cx, "dictation-done");
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")));
+    hear(&mut rig, cx, Heard::Final("a long one".into()));
+
+    // holding ⌥, then adding ⇧: it carries on after letting go; ⇧⌥ again ends it.
+    modifiers(&mut rig, cx, alt);
+    rig.settle(cx);
+    hear(&mut rig, cx, Heard::Listening);
+    modifiers(&mut rig, cx, chord);
+    modifiers(&mut rig, cx, none);
+    assert!(!told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")), "kept going");
+    modifiers(&mut rig, cx, chord);
+    assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")), "⇧⌥ again: done");
+    modifiers(&mut rig, cx, none);
+    hear(&mut rig, cx, Heard::Final("".into()));
 
     // escape throws a take away.
     rig.click(cx, "mic");

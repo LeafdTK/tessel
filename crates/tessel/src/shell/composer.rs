@@ -333,7 +333,7 @@ impl Shell {
             .aria_label("Message")
             .w_full()
             .text_size(theme::z(size))
-            .children(self.dictation_el())
+            .children(self.dictation_el(cx))
             .child(
                 gpui_kit::component::input::Textarea::new(&self.composer)
                     .when(bare, |i| i.appearance(false))

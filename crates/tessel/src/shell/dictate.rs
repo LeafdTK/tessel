@@ -1,5 +1,8 @@
-//! voice in the message box: hold ⌥ (or press the mic) and talk; let go and
-//! what you said is in the box, at the cursor, for you to send or fix first.
+//! voice in the message box. hold ⌥ and talk; let go and what you said is in
+//! the box, at the cursor, for you to send or fix first. for something long,
+//! ⇧⌥ (or the mic) keeps listening with your hands free, until Done (or ⇧⌥
+//! again); adding ⇧ while holding ⌥ does the same mid-sentence. esc throws a
+//! take away.
 //!
 //! the listening is `tessel-voice`'s, a small helper beside the app: the
 //! microphone, and the speech engines that only exist in swift (apple's own,
@@ -72,7 +75,13 @@ pub(crate) struct Dictation {
     /// ⌥ went down on its own, then: it becomes talking if nothing else is pressed first.
     alt_since: Option<Instant>,
     alt_spoiled: bool,
+    /// ⇧ came with it: once started, it keeps listening after they're let go.
+    alt_hands_free: bool,
+    /// ⇧⌥ was down last time the modifiers changed: pressing it again (not holding it) ends a hands-free take.
+    chord_down: bool,
     link: Option<std::process::ChildStdin>,
+    /// the helper's pid: stopped if it ever stops answering.
+    pid: Option<u32>,
     /// what the helper was told, in a test (there's no helper there).
     #[cfg(test)]
     pub(crate) told: Vec<String>,
@@ -87,7 +96,10 @@ impl Dictation {
             by_key: false,
             alt_since: None,
             alt_spoiled: false,
+            alt_hands_free: false,
+            chord_down: false,
             link: None,
+            pid: None,
             #[cfg(test)]
             told: Vec::new(),
         }
@@ -96,6 +108,23 @@ impl Dictation {
     pub(crate) fn active(&self) -> bool {
         self.state != Listen::Off
     }
+}
+
+/// `~/.tessel/voice.log`: what was said to the helper, what it said back, and
+/// what it noted on the way (its stderr). levels left out: they're many.
+fn voice_log(what: &str) {
+    use std::io::Write;
+    let path = tessel_proto::local::home().join("voice.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{} {what}", chrono_now());
+    }
+}
+
+/// the time of day, for the log.
+fn chrono_now() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let s = (ms / 1000) % 86_400;
+    format!("{:02}:{:02}:{:02}.{:03}Z", s / 3600, (s / 60) % 60, s % 60, ms % 1000)
 }
 
 /// where the helper is: beside the app (in its bundle), else built in the source tree.
@@ -126,6 +155,7 @@ impl Shell {
             if self.dictation.link.is_none() {
                 self.start_voice_helper(window, cx)?;
             }
+            voice_log(&format!("→ {}", line.trim()));
             let ok = self.dictation.link.as_mut().is_some_and(|w| w.write_all(line.as_bytes()).and_then(|()| w.flush()).is_ok());
             if !ok {
                 self.dictation.link = None;
@@ -141,23 +171,28 @@ impl Shell {
         let mut child = std::process::Command::new(&path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::fs::OpenOptions::new().create(true).append(true).open(tessel_proto::local::home().join("voice.log")).map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from))
             .spawn()
             .map_err(|e| format!("Couldn't start the voice helper: {e}"))?;
         let stdout = child.stdout.take().ok_or("the voice helper has no output")?;
         self.dictation.link = child.stdin.take();
+        self.dictation.pid = Some(child.id());
         let (tx, mut rx) = mpsc::unbounded_channel::<Heard>();
         std::thread::Builder::new()
             .name("tessel-voice".into())
             .spawn(move || {
                 for line in std::io::BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
+                    if !line.contains("\"level\"") {
+                        voice_log(&format!("← {line}"));
+                    }
                     if let Some(h) = heard(&line)
                         && tx.send(h).is_err()
                     {
                         break;
                     }
                 }
+                voice_log("the helper went");
                 let _ = tx.send(Heard::Gone);
                 let _ = child.wait();
             })
@@ -209,6 +244,23 @@ impl Shell {
             self.error = Some(e);
             self.dictation.state = Listen::Off;
         }
+        // it always answers a stop within seconds; if it doesn't, it's stuck, and it goes.
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor().timer(Duration::from_secs(10)).await;
+            let _ = in_window(&this, cx, |this, _, cx| {
+                if this.dictation.state == Listen::Finishing {
+                    voice_log("no answer to stop in 10s: stopping the helper");
+                    this.dictation.state = Listen::Off;
+                    this.dictation.link = None;
+                    if let Some(pid) = this.dictation.pid.take() {
+                        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                    }
+                    this.error = Some("Voice input stopped answering, so it was restarted. Try again (~/.tessel/voice.log says what happened).".into());
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -257,6 +309,7 @@ impl Shell {
             Heard::Gone => {
                 d.state = Listen::Off;
                 d.link = None;
+                d.pid = None;
             }
             _ => {}
         }
@@ -278,21 +331,44 @@ impl Shell {
         });
     }
 
-    /// ⌥ on its own, held in the message box, is talking; anything pressed
-    /// with it first makes it the ⌥ it always was.
+    /// ⌥ on its own, held in the message box, is talking until it's let go;
+    /// ⇧⌥ is talking until Done (or ⇧⌥ again). anything pressed with them
+    /// first makes them the shortcut they always were.
     pub(crate) fn dictate_modifiers(&mut self, m: &Modifiers, window: &mut Window, cx: &mut Context<Self>) {
-        let alone = m.alt && !m.control && !m.shift && !m.platform && !m.function;
-        if alone {
+        let others = m.control || m.platform || m.function;
+        let alt_only = m.alt && !m.shift && !others;
+        let chord = m.alt && m.shift && !others;
+        let fresh_chord = chord && !self.dictation.chord_down;
+        self.dictation.chord_down = chord;
+        if alt_only || chord {
+            if self.dictation.active() {
+                if chord && self.dictation.by_key {
+                    // ⇧ added while holding ⌥: keep going without holding anything.
+                    self.dictation.by_key = false;
+                    cx.notify();
+                } else if fresh_chord && !self.dictation.by_key && self.dictation.alt_since.is_none() {
+                    // ⇧⌥ again: that's the end of a hands-free take.
+                    self.dictate_stop(window, cx);
+                }
+                self.dictation.alt_since.get_or_insert_with(Instant::now);
+                return;
+            }
+            if chord {
+                self.dictation.alt_hands_free = true;
+            }
             let in_box = self.composer.focus_handle(cx).is_focused(window);
-            if in_box && !self.dictation.active() && self.dictation.alt_since.is_none() {
+            if in_box && self.dictation.alt_since.is_none() {
                 let at = Instant::now();
                 self.dictation.alt_since = Some(at);
                 self.dictation.alt_spoiled = false;
+                self.dictation.alt_hands_free = chord;
                 cx.spawn_in(window, async move |this, cx| {
                     cx.background_executor().timer(HOLD).await;
                     let _ = in_window(&this, cx, |this, window, cx| {
-                        if this.dictation.alt_since == Some(at) && !this.dictation.alt_spoiled {
-                            this.dictate_start(true, window, cx);
+                        let d = &this.dictation;
+                        if d.alt_since == Some(at) && !d.alt_spoiled && !d.active() {
+                            let hands_free = d.alt_hands_free;
+                            this.dictate_start(!hands_free, window, cx);
                         }
                     });
                 })
@@ -307,6 +383,7 @@ impl Shell {
         }
         // ⌥ let go.
         self.dictation.alt_since = None;
+        self.dictation.alt_hands_free = false;
         if self.dictation.by_key && self.dictation.active() {
             self.dictation.by_key = false;
             self.dictate_stop(window, cx);
@@ -326,7 +403,7 @@ impl Shell {
     }
 
     /// above what's typed while listening: the voice as a waveform, and the words so far.
-    pub(crate) fn dictation_el(&self) -> Option<AnyElement> {
+    pub(crate) fn dictation_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let d = &self.dictation;
         if !d.active() {
             return None;
@@ -361,7 +438,8 @@ impl Shell {
             Listen::Finishing => (format!("{}…", tail(&d.words, 140)), false),
             Listen::Off => return None,
         };
-        let hint = if d.by_key { "let go of ⌥ to finish · esc to throw away" } else { "click the mic to finish · esc to throw away" };
+        let hint = if d.by_key { "let go of ⌥ to finish · ⇧ to keep going · esc to throw away" } else { "⇧⌥ or Done to finish · esc to throw away" };
+        let hands_free = !d.by_key && matches!(d.state, Listen::On | Listen::Waking | Listen::Preparing(..));
         Some(
             h_flex()
                 .id("dictation")
@@ -373,6 +451,24 @@ impl Shell {
                 .child(wave)
                 .child(div().flex_1().min_w_0().set(Type::Callout).text_color(if quiet { p.tertiary } else { p.secondary }).truncate().child(line))
                 .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(hint))
+                .when(hands_free, |d| {
+                    d.child(
+                        Button::new("dictation-cancel")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::component::Icon::empty().path("icons/x.svg"))
+                            .tooltip("Throw it away (esc)")
+                            .on_click(cx.listener(|this, _, window, cx| this.dictate_cancel(window, cx))),
+                    )
+                    .child(
+                        Button::new("dictation-done")
+                            .primary()
+                            .xsmall()
+                            .label("Done")
+                            .tooltip("Put what you said in the box (⇧⌥)")
+                            .on_click(cx.listener(|this, _, window, cx| this.dictate_stop(window, cx))),
+                    )
+                })
                 .into_any_element(),
         )
     }

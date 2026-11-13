@@ -795,7 +795,8 @@ impl Shell {
             .child(hint("⇧ ⏎", "new line"))
             .child(hint("/", "commands"))
             .child(hint("@", "files"))
-            .child(hint("⌥", "hold to talk"));
+            .child(hint("⌥", "hold to talk"))
+            .child(hint("⇧ ⌥", "talk, hands free"));
         // while the agent works, say so right where you're looking: orchard's
         // orbiting dot, what it's doing, and for how long.
         let working = self.model.open_summary().filter(|s| !self.show_new && matches!(s.run_state, RunState::Working | RunState::Starting | RunState::Stalled)).map(|s| {

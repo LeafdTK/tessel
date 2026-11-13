@@ -1951,6 +1951,16 @@ impl Shell {
             // tessel's own tools: what they did (a surface, the window changing) is the record.
             // ("mcp__photon__" is how they were called before the rename.)
             ItemBody::Tool { tool, status, .. } if (tool.starts_with("mcp__tessel__") || tool.starts_with("mcp__photon__")) && *status != ToolStatus::Failed => None,
+            ItemBody::User { text, .. } if let Some((summary, ok)) = task_note(text) => Some(
+                h_flex()
+                    .gap(px(8.))
+                    .set(Type::Callout)
+                    .text_color(p.tertiary)
+                    .child(mark(if ok { Mark::Check(p.finished) } else { Mark::Cross(p.failed) }))
+                    .child(div().text_color(p.secondary).child("Background task"))
+                    .child(div().min_w_0().truncate().child(summary))
+                    .into_any_element(),
+            ),
             ItemBody::User { text, .. } if let Some(report) = handback(text) => Some(
                 v_flex()
                     .gap(px(6.))
@@ -2093,7 +2103,7 @@ impl Shell {
         // what was said can be copied: a button that appears over it on hover.
         let copy_text = match &item.body {
             ItemBody::Text { text, .. } if !text.trim().is_empty() => Some(text.clone()),
-            ItemBody::User { text, .. } if handback(text).is_none() && !text.trim().is_empty() => Some(text.clone()),
+            ItemBody::User { text, .. } if from_person(text) && !text.trim().is_empty() => Some(text.clone()),
             _ => None,
         };
         let body = match copy_text {
@@ -2125,7 +2135,7 @@ impl Shell {
             // a turn starts with what you said: room above it. the agent's
             // words breathe; its tool calls sit close, as one run of work.
             let (top, bottom) = match &item.body {
-                ItemBody::User { text, .. } if handback(text).is_none() && !text.starts_with("<surface-event") => (if ix == 0 { 8. } else { 28. }, 10.),
+                ItemBody::User { text, .. } if from_person(text) => (if ix == 0 { 8. } else { 28. }, 10.),
                 ItemBody::Text { .. } => (8., 8.),
                 ItemBody::Thinking { .. } => (6., 6.),
                 ItemBody::Tool { .. } => (3., 3.),
@@ -2885,6 +2895,28 @@ pub(crate) fn in_window<R>(this: &WeakEntity<Shell>, cx: &mut AsyncWindowContext
     cx.update(|window, app| this.update(app, |s, cx| f(s, window, cx)))?
 }
 
+/// claude code tells the agent a background task ended as a message "from
+/// the user": `<task-notification>` with the task's summary and status. it
+/// isn't from the person, so it's shown as what it is. (summary, whether it went well.)
+fn task_note(text: &str) -> Option<(String, bool)> {
+    let body = text.trim_start().strip_prefix("<task-notification>")?;
+    let tag = |name: &str| {
+        let open = format!("<{name}>");
+        let close = format!("</{name}>");
+        let from = body.find(&open)? + open.len();
+        let to = body[from..].find(&close)? + from;
+        Some(body[from..to].trim().to_owned())
+    };
+    let summary = tag("summary").unwrap_or_else(|| "A background task ended".to_owned());
+    let ok = tag("status").is_none_or(|s| s == "completed");
+    Some((summary, ok))
+}
+
+/// written by the person, not something the harness put in their place.
+fn from_person(text: &str) -> bool {
+    handback(text).is_none() && task_note(text).is_none() && !text.starts_with("<surface-event")
+}
+
 fn handback(text: &str) -> Option<String> {
     // claude code may put a line before it ("Another Claude session sent a message:").
     // only that: a person who writes about one is still a person.
@@ -2913,7 +2945,7 @@ impl Shell {
         for ix in 0..open.len() {
             if let Some((item, 0)) = open.row(ix)
                 && let ItemBody::User { text, .. } = &item.body
-                && handback(text).is_none()
+                && from_person(text)
                 && !text.trim().is_empty()
             {
                 said.push((ix, text.lines().next().unwrap_or_default().chars().take(90).collect()));
@@ -2976,6 +3008,11 @@ fn surface_event_line(text: &str) -> String {
 #[cfg(test)]
 pub(crate) fn handback_for_test(text: &str) -> Option<String> {
     handback(text)
+}
+
+#[cfg(test)]
+pub(crate) fn task_note_for_test(text: &str) -> Option<(String, bool)> {
+    task_note(text)
 }
 
 /// first letter capitalised. activity lines from the daemon are lowercase fragments.

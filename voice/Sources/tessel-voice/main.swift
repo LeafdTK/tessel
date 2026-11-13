@@ -36,7 +36,13 @@ func emit(_ fields: [String: Any]) {
 }
 
 func fail(_ message: String) {
+    note("error: \(message)")
     emit(["ev": "error", "message": message])
+}
+
+/// a step taken, for tessel's voice.log (stderr goes there).
+func note(_ what: String) {
+    FileHandle.standardError.write(Data("  voice: \(what)\n".utf8))
 }
 
 // MARK: - one take: from start to stop
@@ -174,6 +180,7 @@ final class Voice {
             fail("This Mac's speech recognition isn't available.")
             return
         }
+        note("start \(engine), asking for the microphone (status \(AVCaptureDevice.authorizationStatus(for: .audio).rawValue))")
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
             fail(VoiceError.noMicrophone.description)
             return
@@ -184,13 +191,16 @@ final class Voice {
             fail("Apple's speech engine doesn't know \(asked.identifier(.bcp47)). Pick another language in Settings.")
             return
         }
+        note("microphone allowed; language \(locale.identifier(.bcp47)) (asked \(asked.identifier(.bcp47)))")
         let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
         // the model for a language comes down the first time it's used.
         do {
             if !(await AssetInventory.reservedLocales).contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
                 _ = try? await AssetInventory.reserve(locale: locale)
             }
-            if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber])
+            note(request == nil ? "the language's model is here" : "downloading the language's model")
+            if let request {
                 let what = "Downloading Apple's speech model for \(locale.identifier(.bcp47))"
                 emit(["ev": "preparing", "what": what, "progress": 0.0])
                 let progress = Task {
@@ -225,6 +235,7 @@ final class Voice {
             fail("Couldn't start listening: \(error.localizedDescription)")
             return
         }
+        note("listening")
         let take = Take(mic: mic, analyzer: analyzer)
         self.take = take
         emit(["ev": "listening", "locale": locale.identifier(.bcp47)])
@@ -248,6 +259,7 @@ final class Voice {
                 }
             }
             if !take.cancelled {
+                note("final: \(settled.count) characters")
                 emit(["ev": "final", "text": settled.trimmingCharacters(in: .whitespacesAndNewlines)])
             }
         }
@@ -255,13 +267,38 @@ final class Voice {
 
     /// done talking: the last words are worked out, then the whole of it is said once more as final.
     func stop() async {
-        guard let take else { return }
+        guard let take else {
+            note("stop, with nothing listening")
+            // nothing was listening (it never got going): still, the app is waiting to hear it's over.
+            emit(["ev": "final", "text": ""])
+            return
+        }
+        note("stop: finishing")
         self.take = nil
         take.mic.stop()
-        do {
-            try await take.analyzer.finalizeAndFinishThroughEndOfInput()
-        } catch {
-            fail("Couldn't finish: \(error.localizedDescription)")
+        // the last words worked out, but never for long: what was heard is
+        // better than a take that never ends.
+        let analyzer = take.analyzer
+        let finished = await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                do {
+                    try await analyzer.finalizeAndFinishThroughEndOfInput()
+                } catch {
+                    note("finishing: \(error.localizedDescription)")
+                }
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(4))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+        if !finished {
+            note("finishing took too long; keeping what was heard")
+            await analyzer.cancelAndFinishNow()
         }
         await take.results?.value
     }
