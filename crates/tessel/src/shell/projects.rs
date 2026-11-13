@@ -175,7 +175,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |this, window, cx| this.start_in(path.to_string_lossy().into_owned(), window, cx));
+            let _ = super::in_window(&this, cx, |this, window, cx| this.start_in(path.to_string_lossy().into_owned(), window, cx));
         })
         .detach();
     }
@@ -185,7 +185,7 @@ impl Shell {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
             let Some(path) = paths.into_iter().next() else { return };
-            let _ = this.update_in(cx, |this, window, cx| this.project_parent.update(cx, |s, cx| s.set_value(tilde(&path.to_string_lossy()), window, cx)));
+            let _ = super::in_window(&this, cx, |this, window, cx| this.project_parent.update(cx, |s, cx| s.set_value(tilde(&path.to_string_lossy()), window, cx)));
         })
         .detach();
     }

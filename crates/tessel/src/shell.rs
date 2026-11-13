@@ -561,7 +561,7 @@ impl Shell {
                 {
                     batch.push(more);
                 }
-                let alive = this.update_in(cx, |this, window, cx| {
+                let alive = in_window(&this, cx, |this, window, cx| {
                     for ev in batch {
                         this.apply(ev, cx);
                     }
@@ -596,7 +596,7 @@ impl Shell {
         let clock = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let alive = this.update_in(cx, |this, window, cx| {
+                let alive = in_window(&this, cx, |this, window, cx| {
                     this.workspace_tick();
                     this.kube_tick();
                     this.poll_ui(window, cx);
@@ -780,7 +780,7 @@ impl Shell {
             let poll = cx.spawn_in(window, async move |this, cx| {
                 loop {
                     cx.background_executor().timer(Duration::from_millis(120)).await;
-                    let alive = this.update_in(cx, |this, window, cx| {
+                    let alive = in_window(&this, cx, |this, window, cx| {
                         this.poll_page(cx);
                         this.follow_page_focus(window, cx);
                     });
@@ -1632,7 +1632,8 @@ impl Shell {
                             .gap_2()
                             // the workspace: what it was made for (its first tab), and how many tabs it has.
                             .child(div().flex_1().overflow_hidden().set(Type::Body).text_color(p.label).truncate().child(workspace_title))
-                            .when(tabs > 1, |d| d.child(theme::count_pill(&p, tabs.to_string(), false)))
+                            // the count, like the time, makes way for the menu on hover.
+                            .when(tabs > 1, |d| d.child(theme::count_pill(&p, tabs.to_string(), false).group_hover(hover_group.clone(), |d| d.invisible())))
                             // the time, and on hover the menu in its place: one slot at the
                             // end of the first line, wherever the line below ends.
                             // the time, which makes way for the menu on hover.
@@ -1939,7 +1940,7 @@ impl Shell {
                             .gap(px(8.))
                             .set(Type::Callout)
                             .child(mark(Mark::Check(p.finished)))
-                            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.label).child("Subagent"))
+                            .child(div().font_weight(FontWeight::SEMIBOLD).text_color(p.label).child(if text.contains("[Subagent hand-back]") || !text.trim_start().starts_with("Another") { "Subagent" } else { "Another session" }))
                             .child(div().text_color(p.secondary).child("reported back")),
                     )
                     .child(div().ml(px(6.)).pl(px(14.)).border_l_1().border_color(p.separator).set(Type::Callout).text_color(p.secondary).line_clamp(6).child(report))
@@ -2855,8 +2856,24 @@ fn mark(m: Mark) -> impl IntoElement {
 /// the report inside a subagent's hand-back, which arrives as a user message
 /// wrapped in `<agent-message>` with a preamble for the model. `None` for
 /// anything a person actually wrote.
+/// run `f` on the shell, in the window the task was started for. not
+/// `update_in`: that uses whichever window last drew while reading the shell,
+/// and the notch reads it too, so the shell's own work (its theme, its
+/// pictures, its layout) could land on the notch's little window.
+pub(crate) fn in_window<R>(this: &WeakEntity<Shell>, cx: &mut AsyncWindowContext, f: impl FnOnce(&mut Shell, &mut Window, &mut Context<Shell>) -> R) -> gpui_kit::Result<R> {
+    cx.update(|window, app| this.update(app, |s, cx| f(s, window, cx)))?
+}
+
 fn handback(text: &str) -> Option<String> {
-    let body = text.trim_start().strip_prefix("<agent-message")?;
+    // claude code may put a line before it ("Another Claude session sent a message:").
+    // only that: a person who writes about one is still a person.
+    let text = text.trim_start();
+    let at = text.find("<agent-message")?;
+    let before = text[..at].trim();
+    if !before.is_empty() && (before.contains('\n') || !before.ends_with(':') || before.len() > 120) {
+        return None;
+    }
+    let body = text[at..].strip_prefix("<agent-message")?;
     let body = body.split_once('>')?.1;
     let body = body.rsplit_once("</agent-message>").map_or(body, |(b, _)| b);
     let report = body.split_once("The report follows:").map_or(body, |(_, r)| r);

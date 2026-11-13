@@ -196,7 +196,7 @@ impl Shell {
         let pick = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
-            let _ = this.update_in(cx, |this, window, cx| this.attach_paths(paths, window, cx));
+            let _ = super::in_window(&this, cx, |this, window, cx| this.attach_paths(paths, window, cx));
         })
         .detach();
     }
