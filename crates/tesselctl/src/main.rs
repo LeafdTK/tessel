@@ -115,6 +115,10 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             shown, stops by itself after, and keeps its disk
   tesselctl host stop HOST                  stop a sandbox now
   tesselctl host ping HOST                  how fast it is: connecting, the path, round trips
+  tesselctl host bring HOST [--what a,b,…] [--sign-in]
+                                            bring your claude there: claude-md, settings, skills,
+                                            commands, agents, mcp, git, gh (default: what's suggested);
+                                            --sign-in makes it a claude token (your browser, once)
   tesselctl host net [via=auto|quic|ws] [relay=n0|none|https://…] [lookup=on|off]
                                             how sandboxes are reached (Settings › Hosts)
   tesselctl host setup|update HOST          again: brings tessel there up to date

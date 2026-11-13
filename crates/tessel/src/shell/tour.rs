@@ -47,7 +47,7 @@ const STEPS: [Step; 9] = [
         try_it: None,
     },
     Step {
-        title: "What needs you comes first",
+        title: "Agents waiting on you come first",
         body: "Chats waiting on an answer or a permission collect at the top of the sidebar, and ⌘J goes to the next one. On a MacBook with a notch, they show around the camera too, whatever app you're in.",
         spot: Spot::Left,
         try_it: None,

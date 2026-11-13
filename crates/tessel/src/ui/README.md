@@ -449,6 +449,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `host.use` | Show this Mac |  | host: a host's id or name (Settings › Hosts), or mac. the window shows that machine's chats |
 | `host.add` | Add a dev box… |  | opens Settings › Hosts to add one (`tesselctl host add` does it without the window) |
 | `host.list` | Every host |  |  |
+| `host.bring` | Bring your Claude to a host… |  | host: id or name. its sign-in, CLAUDE.md, settings, skills, git identity: picked in the setup flow |
 | `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |
@@ -456,7 +457,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `layout.reset` | Reset the layout |  |  |
 | `layout.get` | The layout file (ui.json) |  |  |
 | `layout.set` | Replace the layout file |  | json: the whole ui.json; answers with what check.txt says |
-| `ui.ls` | What the window shows |  |  |
+| `ui.ls` | Window contents |  |  |
 | `commands.list` | Every command |  |  |
 
 ## Guardrails

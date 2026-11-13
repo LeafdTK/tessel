@@ -40,6 +40,16 @@ fn main() -> anyhow::Result<()> {
         Err(_) => None,
     };
     let paths = Paths::from_env();
+    // sign-ins a mac brought here (`tesselctl remote bring`), for what the daemon runs.
+    // set before anything else runs: nothing reads the environment yet.
+    for (name, file) in [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token"), ("GH_TOKEN", "gh-token")] {
+        if std::env::var_os(name).is_none()
+            && let Ok(t) = std::fs::read_to_string(paths.home.join("remote").join(file))
+            && !t.trim().is_empty()
+        {
+            unsafe { std::env::set_var(name, t.trim()) };
+        }
+    }
     tessel_proto::local::move_from_photon(&paths.home).map_err(anyhow::Error::msg)?;
     let mut cfg = Config::new(paths);
     if let Some(stamp) = std::env::current_exe().ok().and_then(|me| tessel_proto::local::binary_stamp(&me)) {

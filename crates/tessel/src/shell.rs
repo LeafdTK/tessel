@@ -14,7 +14,7 @@ mod exec;
 mod mentions;
 mod backdrop;
 mod browser;
-pub(crate) use browser::floating_at;
+pub(crate) use browser::{floating_at, view_of};
 mod chats;
 mod desktops;
 pub(crate) mod dictate;
@@ -27,6 +27,7 @@ mod kube;
 mod procs;
 pub(crate) mod hosts;
 mod avatar;
+mod setup_flow;
 mod palette;
 mod panel;
 mod panes;
@@ -2696,6 +2697,7 @@ impl Render for Shell {
             .when(self.palette_ui.open, |d| d.child(self.palette_layer(window, cx)))
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))
+            .when(self.flow_open(), |d| d.child(self.setup_flow_layer(cx)))
             // TESSEL_FRAME_LOG: painted last, so it sees the whole frame's cost.
             .when(std::env::var_os("TESSEL_FRAME_LOG").is_some(), |d| {
                 d.child(

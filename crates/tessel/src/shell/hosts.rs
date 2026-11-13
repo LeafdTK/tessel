@@ -43,6 +43,10 @@ pub(crate) struct HostsView {
     pub(crate) relay_input: Option<Entity<InputState>>,
     /// "your own" was picked with no address yet: the field shows, waiting for one.
     pub(crate) relay_own_next: bool,
+    /// the setup flow, when it's open.
+    pub(crate) flow: Option<super::setup_flow::Flow>,
+    /// open the flow at the next frame (asked for where there was no window): for a new box, or this one.
+    pub(crate) flow_next: Option<Option<String>>,
 }
 
 /// setting a host up, as it goes.
@@ -59,11 +63,10 @@ pub(crate) struct SetupRun {
 pub(crate) struct HostForm {
     /// a vercel sandbox, not a machine reached over ssh.
     vercel: bool,
-    name: Entity<InputState>,
-    ssh: Entity<InputState>,
-    key: Entity<InputState>,
+    pub(crate) name: Entity<InputState>,
+    pub(crate) ssh: Entity<InputState>,
+    pub(crate) key: Entity<InputState>,
     port: Entity<InputState>,
-    claude: bool,
     vcpus: u32,
     /// a vercel token, when the keychain has none yet.
     token: Entity<InputState>,
@@ -71,6 +74,40 @@ pub(crate) struct HostForm {
     project: Entity<InputState>,
     /// the keychain has a vercel token already (asked once, when the form opens).
     has_token: bool,
+}
+
+impl HostForm {
+    pub(crate) fn set_vercel(&mut self, on: bool) {
+        self.vercel = on;
+    }
+
+    pub(crate) fn is_vercel(&self) -> bool {
+        self.vercel
+    }
+
+    pub(crate) fn vcpus(&self) -> u32 {
+        self.vcpus
+    }
+
+    pub(crate) fn set_vcpus(&mut self, n: u32) {
+        self.vcpus = n;
+    }
+
+    pub(crate) fn has_token(&self) -> bool {
+        self.has_token
+    }
+
+    pub(crate) fn token_input(&self) -> &Entity<InputState> {
+        &self.token
+    }
+
+    pub(crate) fn team_input(&self) -> &Entity<InputState> {
+        &self.team
+    }
+
+    pub(crate) fn project_input(&self) -> &Entity<InputState> {
+        &self.project
+    }
 }
 
 enum Progress {
@@ -298,6 +335,12 @@ impl Shell {
                 s
             }));
         }
+        if let Some(which) = self.hosts.flow_next.take() {
+            match which {
+                Some(id) => self.setup_flow_bring(id, window, cx),
+                None => self.setup_flow_new(window, cx),
+            }
+        }
         if !self.hosts.adding || self.hosts.form.is_some() {
             return;
         }
@@ -317,7 +360,6 @@ impl Shell {
             ssh: field("you@devbox.example.com, or a Host from ~/.ssh/config", "", window, cx),
             key: field("~/.ssh/id_ed25519", "", window, cx),
             port: field("7731", &tessel_remote::quic::DEFAULT_PORT.to_string(), window, cx),
-            claude: true,
             vcpus: 2,
             token: cx.new(|cx| InputState::new(window, cx).placeholder("vcp_…").masked(true)),
             team: field("team_…", saved["team"].as_str().unwrap_or(""), window, cx),
@@ -329,76 +371,46 @@ impl Shell {
         }
     }
 
+    /// the setup flow, for a new box (opened at the next frame, which has the window).
     pub(crate) fn add_host_open(&mut self, cx: &mut Context<Self>) {
-        self.settings_section = "hosts";
-        self.hosts.adding = true;
-        self.hosts.form = None;
-        self.open_settings(cx);
+        self.hosts.flow_next = Some(None);
+        cx.notify();
     }
 
-    fn host_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(f) = self.hosts.form.as_ref() else { return };
+    /// the box the form describes, checked (and its vercel token and project
+    /// kept, if it's a sandbox): with its udp port. what's wrong, if anything is.
+    pub(crate) fn form_host(&mut self, cx: &mut Context<Self>) -> Result<(Host, u16), String> {
+        let Some(f) = self.hosts.form.as_ref() else { return Err("…".into()) };
         let text = |e: &Entity<InputState>, cx: &App| e.read(cx).value().trim().to_owned();
-        let (name, claude) = (text(&f.name, cx), f.claude);
-        let (host, port) = if f.vercel {
+        let name = text(&f.name, cx);
+        if f.vercel {
             if name.is_empty() {
-                self.error = Some("Name the sandbox: it's how vercel knows it, and how it's found again.".into());
-                cx.notify();
-                return;
+                return Err("Name the sandbox: it's how Vercel knows it, and how it's found again.".into());
             }
             let token = text(&f.token, cx);
-            if !token.is_empty()
-                && let Err(e) = tessel_remote::vercel::save_token(&token)
-            {
-                self.error = Some(format!("Couldn't keep the token in the keychain: {e}"));
-                cx.notify();
-                return;
+            if !token.is_empty() {
+                tessel_remote::vercel::save_token(&token).map_err(|e| format!("Couldn't keep the token in the keychain: {e}"))?;
             }
             if !f.has_token && token.is_empty() {
-                self.error = Some("Paste a Vercel token (vercel.com › Account Settings › Tokens).".into());
-                cx.notify();
-                return;
+                return Err("Paste a Vercel token (vercel.com › Account Settings › Tokens).".into());
             }
             let (team, project) = (text(&f.team, cx), text(&f.project, cx));
             if team.is_empty() || project.is_empty() {
-                self.error = Some("Say which Vercel team and project the sandbox goes in.".into());
-                cx.notify();
-                return;
+                return Err("Say which Vercel team and project the sandbox goes in.".into());
             }
             let cfg = serde_json::json!({"team": team, "project": project});
-            if let Err(e) = std::fs::write(tessel_remote::vercel::config(&self.hosts.home), serde_json::to_vec_pretty(&cfg).unwrap_or_default()) {
-                self.error = Some(format!("Couldn't save the team and project: {e}"));
-                cx.notify();
-                return;
-            }
-            (Host::sandbox(&name, f.vcpus), tessel_remote::quic::DEFAULT_PORT)
+            std::fs::write(tessel_remote::vercel::config(&self.hosts.home), serde_json::to_vec_pretty(&cfg).unwrap_or_default()).map_err(|e| format!("Couldn't save the team and project: {e}"))?;
+            Ok((Host::sandbox(&name, f.vcpus), tessel_remote::quic::DEFAULT_PORT))
         } else {
             let (ssh, port) = (text(&f.ssh, cx), text(&f.port, cx));
             if ssh.is_empty() {
-                self.error = Some("Say how ssh reaches it: you@host, or a Host from your ~/.ssh/config.".into());
-                cx.notify();
-                return;
+                return Err("Say how ssh reaches it: you@host, or a Host from your ~/.ssh/config.".into());
             }
-            let Ok(port) = (if port.is_empty() { Ok(tessel_remote::quic::DEFAULT_PORT) } else { port.parse::<u16>() }) else {
-                self.error = Some(format!("{port} isn't a port."));
-                cx.notify();
-                return;
-            };
+            let port = if port.is_empty() { tessel_remote::quic::DEFAULT_PORT } else { port.parse::<u16>().map_err(|_| format!("{port} isn't a port."))? };
             let mut host = Host::new(&name, &ssh);
             host.key = Some(text(&f.key, cx)).filter(|k| !k.is_empty());
-            (host, port)
-        };
-        let mut list = Hosts::load(&self.hosts.home);
-        let id = list.add(host);
-        if let Err(e) = list.save(&self.hosts.home) {
-            self.error = Some(format!("Couldn't save the host: {e}"));
-            return;
+            Ok((host, port))
         }
-        self.hosts.adding = false;
-        self.hosts.form = None;
-        self.error = None;
-        self.hosts_reload();
-        self.host_setup(id, Options { port, claude }, true, window, cx);
     }
 
     /// stop a sandbox now, off the ui thread (it would stop by itself soon after nothing shows it).
@@ -659,6 +671,10 @@ impl Shell {
             if showing {
                 r = r.child(theme::button(&p, "host-sign-in", "Sign in to Claude", Some("log-in"), ButtonKind::Ghost).test_support().on_click(cx.listener(|this, _, window, cx| this.host_sign_in(window, cx))));
             }
+            if h.ready() {
+                let id5 = h.id.clone();
+                r = r.child(theme::button(&p, SharedString::from(format!("host-bring-{}", h.id)), "Bring", Some("package"), ButtonKind::Ghost).test_support().on_click(cx.listener(move |this, _, window, cx| this.setup_flow_bring(id5.clone(), window, cx))));
+            }
             if h.vercel.is_some() && h.ready() {
                 let id4 = h.id.clone();
                 r = r.child(theme::button(&p, SharedString::from(format!("host-stop-{}", h.id)), "Stop", None, ButtonKind::Ghost).test_support().on_click(cx.listener(move |this, _, window, cx| this.host_stop(&id4, window, cx))));
@@ -806,83 +822,12 @@ impl Shell {
 
     fn add_host_el(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
-        let Some(f) = self.hosts.form.as_ref().filter(|_| self.hosts.adding) else {
-            return v_flex().border_t_1().border_color(p.separator).px_4().py_3().gap_2().child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .set(Type::Subheadline)
-                            .text_color(p.secondary)
-                            .child("A Linux machine you can ssh into with your key: a cloud VM, a box at home. Tessel copies itself there and runs a small QUIC service (UDP 7731) in front of its own daemon, so chats, terminals and git run there."),
-                    )
-                    .child(theme::button(&p, "host-add-open", "Add a Dev Box", Some("plus"), ButtonKind::Primary).test_support().on_click(cx.listener(|this, _, _, cx| {
-                        this.hosts.adding = true;
-                        cx.notify();
-                    }))),
-            );
-        };
-        let field = |label: &'static str, hint: &'static str, input: &Entity<InputState>, id: &'static str| {
-            v_flex()
-                .gap(px(4.))
-                .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child(label))
-                .child(div().rounded(px(theme::R_TILE)).border_1().border_color(p.separator).bg(p.raised).px_2().py_1().child(div().id(id).test_support().child(Input::new(input).appearance(false))))
-                .when(!hint.is_empty(), |d| d.child(div().set(Type::Subheadline).text_color(p.tertiary).child(hint)))
-        };
-        let claude = f.claude;
-        let kind = self.segmented("host-form-kind", &[("ssh", "A machine over ssh"), ("vercel", "A Vercel sandbox")], if f.vercel { "vercel" } else { "ssh" }, cx, |this, v, _, cx| {
-            if let Some(f) = this.hosts.form.as_mut() {
-                f.vercel = v == "vercel";
-            }
-            cx.notify();
-        });
-        let mut form = v_flex().border_t_1().border_color(p.separator).px_4().py_3().gap_3().child(h_flex().gap_3().child(div().flex_1().set(Type::Headline).child("Add a dev box")).child(kind));
-        if f.vercel {
-            let vcpus = f.vcpus.to_string();
-            let size = self.segmented("host-form-vcpus", &[("2", "2 CPUs"), ("4", "4 CPUs"), ("8", "8 CPUs")], &vcpus, cx, |this, v, _, cx| {
-                if let Some(f) = this.hosts.form.as_mut() {
-                    f.vcpus = v.parse().unwrap_or(2);
-                }
-                cx.notify();
-            });
-            form = form
-                .child(div().set(Type::Subheadline).text_color(p.secondary).child("A Linux VM Vercel keeps for you. It runs while the window shows it (Vercel bills the CPU it uses), stops by itself a few minutes after, and keeps its disk: showing it again picks up where it was."))
-                .child(h_flex().gap_3().items_end().child(div().flex_1().child(field("Name", "How Vercel knows it.", &f.name, "host-form-name"))).child(v_flex().gap(px(4.)).pb(px(18.)).child(size)))
-                .child(if f.has_token {
-                    div().set(Type::Callout).text_color(p.secondary).child("Vercel token: in this Mac's keychain.").into_any_element()
-                } else {
-                    field("Vercel token", "vercel.com › Account Settings › Tokens. Kept in this Mac's keychain.", &f.token, "host-form-token").into_any_element()
-                })
-                .child(h_flex().gap_3().child(div().flex_1().child(field("Team", "", &f.team, "host-form-team"))).child(div().flex_1().child(field("Project", "", &f.project, "host-form-project"))));
-        } else {
-            form = form
-                .child(field("ssh", "How you'd ssh to it. Your keys and ~/.ssh/config are used; there's no password prompt.", &f.ssh, "host-form-ssh"))
-                .child(field("ssh key", "Only if ssh wouldn't pick it by itself.", &f.key, "host-form-key"))
-                .child(h_flex().gap_3().child(div().flex_1().child(field("Name", "", &f.name, "host-form-name"))).child(div().w(px(110.)).child(field("UDP port", "", &f.port, "host-form-port"))));
-        }
-        form
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(Switch::new("host-form-claude").checked(claude).on_click(cx.listener(|this, on: &bool, _, cx| {
-                        if let Some(f) = this.hosts.form.as_mut() {
-                            f.claude = *on;
-                        }
-                        cx.notify();
-                    })))
-                    .child(div().set(Type::Callout).child("Install Claude Code there if it isn't")),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(theme::button(&p, "host-form-cancel", "Cancel", None, ButtonKind::Ghost).test_support().on_click(cx.listener(|this, _, _, cx| {
-                        this.hosts.adding = false;
-                        this.hosts.form = None;
-                        cx.notify();
-                    })))
-                    .child(theme::button(&p, "host-form-go", "Set Up", Some("server"), ButtonKind::Primary).test_support().on_click(cx.listener(|this, _, window, cx| this.host_add(window, cx)))),
-            )
+        v_flex().border_t_1().border_color(p.separator).px_4().py_3().gap_2().child(
+            h_flex()
+                .gap_3()
+                .child(div().flex_1().set(Type::Subheadline).text_color(p.secondary).child("A Linux machine you can ssh into, or a Vercel sandbox. Tessel copies itself there, brings your Claude if you like, and the chats, terminals and git run there."))
+                .child(theme::button(&p, "host-add-open", "Add a Dev Box", Some("plus"), ButtonKind::Primary).test_support().on_click(cx.listener(|this, _, window, cx| this.setup_flow_new(window, cx)))),
+        )
     }
+
 }

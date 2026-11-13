@@ -147,6 +147,7 @@ pub static COMMANDS: &[Spec] = &[
     c("host.use", "Show this Mac", "laptop", None, r#"{"host":"mac"}"#, "host: a host's id or name (Settings › Hosts), or mac. the window shows that machine's chats"),
     c("host.add", "Add a dev box…", "server", None, "{}", "opens Settings › Hosts to add one (`tesselctl host add` does it without the window)"),
     q("host.list", "Every host", ""),
+    q("host.bring", "Bring your Claude to a host…", "host: id or name. its sign-in, CLAUDE.md, settings, skills, git identity: picked in the setup flow"),
     c("app.notch", "Notch: Show agents", "panel-top", None, r#"{"show":true}"#, "show: true|false. the agents at work, around the camera"),
     c("app.notch", "Notch: Hide", "panel-top-close", None, r#"{"show":false}"#, ""),
     c("backdrop.next", "Next space photo", "refresh-cw", None, "{}", "another photograph from NASA's library, for the Space backdrop"),
@@ -166,7 +167,7 @@ pub static COMMANDS: &[Spec] = &[
     q("layout.get", "The layout file (ui.json)", ""),
     q("layout.set", "Replace the layout file", "json: the whole ui.json; answers with what check.txt says"),
     // looking
-    q("ui.ls", "What the window shows", ""),
+    q("ui.ls", "Window contents", ""),
     q("commands.list", "Every command", ""),
 ];
 

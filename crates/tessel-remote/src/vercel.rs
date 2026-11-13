@@ -398,6 +398,26 @@ fn lease(session: impl std::future::Future<Output = anyhow::Result<String>> + Se
     Arc::new(Lease(task.abort_handle()))
 }
 
+/// what was gathered on the mac, brought into the host's sandbox (woken if it had stopped).
+pub async fn bring(home: &Path, host: &Host, tgz: Vec<u8>, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
+    let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
+    let acct = Account::load(home, &sb)?;
+    let session = acct.wake(&sb).await?.context("the sandbox isn't there any more")?;
+    let there = host.home.clone().unwrap_or_else(|| THERE.to_owned());
+    let (code, out) = acct.run(&session.id, "sh", &["-c", "rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\""], &[]).await?;
+    anyhow::ensure!(code == 0, "bringing your claude: {out}");
+    acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz).await?;
+    let mut env = service_env(&there, sb.path.as_deref());
+    env.push(crate::net::Net::load(home).to_env());
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, out) = acct.run(&session.id, "sh", &["-c", crate::setup::BRING], &env).await?;
+    anyhow::ensure!(code == 0, "bringing your claude: {out}");
+    for line in out.lines().filter(|l| !l.trim().is_empty()) {
+        say(Said::Note(line.trim().to_owned()));
+    }
+    Ok(())
+}
+
 /// tell a running sandbox's service the settings as they are now (its relay,
 /// its lookup): it starts again with them. a stopped one gets them when it next starts.
 pub async fn reconfigure(home: &Path, host: &Host) -> anyhow::Result<bool> {
@@ -487,6 +507,19 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
         let (code, out) = acct.run(&session.id, "sh", &["-c", "curl -fsSL https://claude.ai/install.sh | bash"], &[]).await?;
         if code != 0 {
             say(Said::Note(format!("couldn't install it ({}); install claude there yourself", out.trim().lines().last().unwrap_or("it failed"))));
+        }
+    }
+
+    if let Some(tgz) = crate::setup::packed(opts, say)? {
+        let (code, out) = acct.run(&session.id, "sh", &["-c", "rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\""], &[]).await?;
+        anyhow::ensure!(code == 0, "bringing your claude: {out}");
+        acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz).await?;
+        let env = service_env(&there, sb.path.as_deref());
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, out) = acct.run(&session.id, "sh", &["-c", crate::setup::BRING], &env).await?;
+        anyhow::ensure!(code == 0, "bringing your claude: {out}");
+        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+            say(Said::Note(line.trim().to_owned()));
         }
     }
 

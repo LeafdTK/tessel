@@ -7,6 +7,8 @@
 //! ssh) and speaks the daemon's protocol exactly as it does locally. every
 //! feature is already a daemon request, so everything works there.
 
+pub mod carry;
+pub mod claude_login;
 pub mod forward;
 pub mod hosts;
 pub mod identity;

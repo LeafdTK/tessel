@@ -22,13 +22,33 @@ pub struct Options {
     pub port: u16,
     /// install claude code there if it isn't.
     pub claude: bool,
+    /// what to bring from this mac (see `carry`).
+    pub carry: Option<crate::carry::Carry>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { port: crate::quic::DEFAULT_PORT, claude: true }
+        Self { port: crate::quic::DEFAULT_PORT, claude: true, carry: None }
     }
 }
+
+/// what was picked, gathered here and packed to travel. none if nothing was.
+pub(crate) fn packed(opts: &Options, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<Option<Vec<u8>>> {
+    let Some(c) = opts.carry.as_ref().filter(|c| !c.is_empty()) else { return Ok(None) };
+    say(Said::Step("Bringing your Claude".into()));
+    let dir = std::env::temp_dir().join(format!("tessel-bring-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    crate::carry::gather(c, &dir)?;
+    let tgz = crate::carry::pack(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let tgz = tgz?;
+    say(Said::Note(format!("{:.1} MB", tgz.len() as f64 / 1_048_576.0)));
+    Ok(Some(tgz))
+}
+
+/// the host's script once what was brought is unpacked: put in place, then
+/// the daemon (if running) handed over, so what it runs gets the new sign-ins.
+pub(crate) const BRING: &str = "\"$HOME/.tessel/bin/tesselctl\" remote bring \"$HOME/.tessel/bring\" && if [ -S \"$HOME/.tessel/tesseld.sock\" ]; then \"$HOME/.tessel/bin/tesselctl\" daemon restart --now >/dev/null 2>&1 || true; fi";
 
 const PROBE: &str = r#"uname -sm
 printf '%s\n' "$HOME"
@@ -103,6 +123,15 @@ pub async fn setup(local_home: &Path, host: &mut Host, opts: &Options, say: &mut
         let r = ssh::run(&dest, "curl -fsSL https://claude.ai/install.sh | bash\n", Duration::from_secs(600)).await?;
         if !r.ok {
             say(Said::Note(format!("couldn't install it ({}); install claude there yourself", r.err.trim().lines().last().unwrap_or("it failed"))));
+        }
+    }
+
+    if let Some(tgz) = packed(opts, say)? {
+        let script = format!("sh -c 'rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\" && tar xzf - -C \"$HOME/.tessel/bring\" && {}'", BRING.replace('\'', ""));
+        let r = ssh::run_with(&dest, &script, &tgz, Duration::from_secs(300)).await?;
+        anyhow::ensure!(r.ok, "bringing your claude: {}", r.err.trim());
+        for line in r.out.lines().filter(|l| !l.trim().is_empty()) {
+            say(Said::Note(line.trim().to_owned()));
         }
     }
 
@@ -185,6 +214,24 @@ fn bracket(host: &str) -> String {
 
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// bring things to a host that's set up already (what the setup flow's
+/// "bring your claude" does on its own).
+pub async fn bring(local_home: &Path, host: &Host, carry: crate::carry::Carry, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
+    let opts = Options { carry: Some(carry), ..Options::default() };
+    let Some(tgz) = packed(&opts, say)? else { return Ok(()) };
+    if host.vercel.is_some() {
+        return crate::vercel::bring(local_home, host, tgz, say).await;
+    }
+    let dest = ssh::To::of(host);
+    let script = format!("sh -c 'rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\" && tar xzf - -C \"$HOME/.tessel/bring\" && {}'", BRING.replace('\'', ""));
+    let r = ssh::run_with(&dest, &script, &tgz, Duration::from_secs(300)).await?;
+    anyhow::ensure!(r.ok, "bringing your claude: {}", r.err.trim());
+    for line in r.out.lines().filter(|l| !l.trim().is_empty()) {
+        say(Said::Note(line.trim().to_owned()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

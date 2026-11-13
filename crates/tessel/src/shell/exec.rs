@@ -339,6 +339,14 @@ impl Shell {
                 self.add_host_open(cx);
                 done
             }
+            "host.bring" => {
+                let which = arg(args, "host").ok_or("host: a host's id or name")?;
+                self.hosts_reload();
+                let id = self.hosts.list.find(which).ok_or_else(|| format!("there's no host {which}"))?.id.clone();
+                self.hosts.flow_next = Some(Some(id));
+                cx.notify();
+                done
+            }
             "host.list" => {
                 self.hosts_reload();
                 let current = self.hosts.list.current.clone();

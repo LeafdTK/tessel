@@ -28,6 +28,14 @@ pub async fn remote(home: &Path, args: &mut Args) -> anyhow::Result<()> {
             });
             tessel_remote::ws::serve(home, port).await
         }
+        "bring" => {
+            // what a mac brought (its claude, git identity, sign-ins), put in place here.
+            let from = args.next("the folder it was unpacked in")?;
+            for did in tessel_remote::carry::bring(std::path::Path::new(&from), home)? {
+                println!("brought {did}");
+            }
+            Ok(())
+        }
         "iroh-id" => {
             println!("{}", tessel_remote::p2p::host_id(home)?);
             Ok(())
@@ -124,6 +132,24 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
                 }
             }
             println!("via {:?}, relay {}, lookup {}", net.via, match &net.relay { Relay::N0 => "n0 (iroh's public relays)".to_owned(), Relay::None => "none".to_owned(), Relay::Own(u) => u.clone() }, if net.lookup { "on" } else { "off" });
+            Ok(())
+        }
+        "bring" => {
+            // bring your claude (and git identity, and sign-ins) to a host: what the setup flow offers.
+            let which = args.next("which host")?;
+            let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
+            let inv = tessel_remote::carry::inventory();
+            let mut carry = carry_from(&inv, args)?;
+            if args.flag("--sign-in") {
+                carry.claude_token = Some(tessel_remote::claude_login::interactive().await?);
+            }
+            anyhow::ensure!(!carry.is_empty(), "nothing to bring: --what claude-md,settings,skills,commands,agents,mcp,git,gh, or --sign-in");
+            let mut say = |s: Said| match s {
+                Said::Step(s) => println!("· {s}"),
+                Said::Note(n) => println!("    {n}"),
+            };
+            tessel_remote::setup::bring(home, &host, carry, &mut say).await?;
+            println!("brought to {}", host.name);
             Ok(())
         }
         "ping" => {
@@ -239,4 +265,30 @@ async fn set_up(home: &Path, id: &str, args: &mut Args) -> anyhow::Result<()> {
         host.id
     );
     Ok(())
+}
+
+/// what to bring, from `--what a,b,c` (else what's suggested for what's there).
+fn carry_from(inv: &tessel_remote::carry::Inventory, args: &mut Args) -> anyhow::Result<tessel_remote::carry::Carry> {
+    let Some(what) = args.opt("--what")? else { return Ok(tessel_remote::carry::Carry::suggested(inv)) };
+    let mut c = tessel_remote::carry::Carry::default();
+    for w in what.split(',').map(str::trim).filter(|w| !w.is_empty()) {
+        match w {
+            "all" => {
+                c = tessel_remote::carry::Carry::suggested(inv);
+                c.mcp = inv.mcp > 0;
+                c.gh = inv.gh;
+            }
+            "none" => c = tessel_remote::carry::Carry::default(),
+            "claude-md" => c.claude_md = true,
+            "settings" => c.settings = true,
+            "skills" => c.skills = true,
+            "commands" => c.commands = true,
+            "agents" => c.agents = true,
+            "mcp" => c.mcp = true,
+            "git" => c.git = true,
+            "gh" => c.gh = true,
+            other => bail!("--what: no {other} (claude-md, settings, skills, commands, agents, mcp, git, gh, all, none)"),
+        }
+    }
+    Ok(c)
 }

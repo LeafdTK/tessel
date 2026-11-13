@@ -26,6 +26,16 @@ pub(crate) struct Key {
     pub bg: [u8; 3],
     /// felt rather than the dithered band.
     pub felt: bool,
+    /// the meadow the setup flow is drawn on (see `draw_meadow`), at frame `frame`.
+    pub meadow: bool,
+    pub frame: u32,
+    /// frosted glass over the meadow: this image is a pane of it, at (`ox`, `oy`)
+    /// in a field `fw` × `fh` (device pixels), the field seen through frosted glass.
+    pub frost: bool,
+    pub ox: u32,
+    pub oy: u32,
+    pub fw: u32,
+    pub fh: u32,
 }
 
 #[derive(Default)]
@@ -40,8 +50,7 @@ pub(crate) type Shared = Rc<RefCell<State>>;
 
 /// the ordered-dither threshold for a dot, from an 8×8 bayer matrix, in 0..1.
 /// (the backdrop dithers by noise now: a bayer grid on dots this size reads
-/// as a pattern. kept for surfaces that want the ordered look.)
-#[allow(dead_code)]
+/// as a pattern. the setup flow's meadow wants the ordered look.)
 fn bayer(x: u32, y: u32) -> f32 {
     let (mut v, mut x, mut y) = (0u32, x & 7, y & 7);
     for _ in 0..3 {
@@ -113,8 +122,88 @@ fn draw_felt(key: &Key) -> Vec<u8> {
     out
 }
 
+/// the landing page's meadow: a glow coming up from one corner and sinking
+/// into navy, like a field at dusk, ordered-dithered onto eight colours in
+/// square dots with a dark grid between them. it drifts a little each frame.
+fn draw_meadow(key: &Key) -> Vec<u8> {
+    const PALETTE: [u32; 8] = [0x04060c, 0x0a1430, 0x0f2b4a, 0x16505a, 0x2f7d5a, 0x7eb04a, 0xc6d94e, 0xe6ec86];
+    let colors = PALETTE.map(|c| [((c >> 16) & 255) as f32, ((c >> 8) & 255) as f32, (c & 255) as f32]);
+    let (w, h, cell) = (key.w as usize, key.h as usize, key.cell.max(2) as usize);
+    // the whole field this image is part of (all of it, unless it's a frosted pane).
+    let (fw, fh) = if key.frost { (key.fw.max(1) as f32, key.fh.max(1) as f32) } else { (w as f32, h as f32) };
+    let (fcols, frows) = ((fw / cell as f32).ceil(), (fh / cell as f32).ceil());
+    let t = key.frame as f32 * 0.25;
+    let hash = |x: i32, y: i32| {
+        let mut h = x.wrapping_mul(374_761_393).wrapping_add(y.wrapping_mul(668_265_263));
+        h = (h ^ (h >> 13)).wrapping_mul(1_274_126_177);
+        ((h ^ (h >> 16)) as u32) as f32 / 4_294_967_295.0
+    };
+    let smooth = |t: f32| t * t * (3.0 - 2.0 * t);
+    let noise = |x: f32, y: f32| {
+        let (xi, yi) = (x.floor() as i32, y.floor() as i32);
+        let (xf, yf) = (smooth(x - x.floor()), smooth(y - y.floor()));
+        let (a, b, c, d) = (hash(xi, yi), hash(xi + 1, yi), hash(xi, yi + 1), hash(xi + 1, yi + 1));
+        a + (b - a) * xf + (c - a) * yf + (a - b - c + d) * xf * yf
+    };
+    // the field at a point (0..1 across the whole of it): the landing page's meadow.
+    let field = |gx: f32, gy: f32| {
+        let dx = gx - 0.82 - 0.04 * (t * 0.2).sin();
+        let dy = (gy - 0.02) * 1.25;
+        let blob = (-(dx * dx + dy * dy) * 2.6).exp();
+        let n = noise(gx * 3.0 + t * 0.05, gy * 3.0) - 0.5;
+        (0.08 + 0.6 * blob + 0.32 * (1.0 - gy) * (0.5 + gx * 0.5) + 0.18 * n - 0.15 * gy).clamp(0.0, 1.0)
+    };
+    let mut out = vec![0u8; w * h * 4];
+    if key.frost {
+        // through frosted glass the dots melt into their colours, dimmed by the
+        // glass's own dark, with a fine grain so it reads as a material.
+        for y in 0..h {
+            for x in 0..w {
+                let (gx, gy) = ((key.ox as f32 + x as f32) / fw, (key.oy as f32 + y as f32) / fh);
+                let s = field(gx, gy) * 7.0;
+                let i = (s as usize).min(6);
+                let f = s - i as f32;
+                let c = [0, 1, 2].map(|k| colors[i][k] + (colors[i + 1][k] - colors[i][k]) * f);
+                let grain = (hash(x as i32, y as i32) - 0.5) * 7.0;
+                let glass = [13.0, 15.0, 16.0];
+                let p = [0, 1, 2].map(|k| (glass[k] * 0.62 + c[k] * 0.38 + grain).clamp(0.0, 255.0) as u8);
+                let at = (y * w + x) * 4;
+                out[at..at + 4].copy_from_slice(&[p[2], p[1], p[0], 255]);
+            }
+        }
+        return out;
+    }
+    let (cols, rows) = (w.div_ceil(cell), h.div_ceil(cell));
+    // a dot is most of its cell; the rest is the grid, darker than the dot.
+    let dot = ((cell as f32) * 0.78).round().max(1.0) as usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let v = field(col as f32 / fcols, row as f32 / frows);
+            let s = v * 7.0;
+            let mut i = s as usize;
+            if s - i as f32 > bayer(col as u32, row as u32) {
+                i += 1;
+            }
+            let c = colors[i.min(7)].map(|x| x as u8);
+            let gap = c.map(|x| (x as f32 * 0.42) as u8);
+            for py in row * cell..((row + 1) * cell).min(h) {
+                for px in col * cell..((col + 1) * cell).min(w) {
+                    let inside = py - row * cell < dot && px - col * cell < dot;
+                    let p = if inside { c } else { gap };
+                    let at = (py * w + px) * 4;
+                    out[at..at + 4].copy_from_slice(&[p[2], p[1], p[0], 255]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// an image's pixels, bgra, `key.w` × `key.h`.
 pub(crate) fn draw(key: &Key) -> Vec<u8> {
+    if key.meadow {
+        return draw_meadow(key);
+    }
     if key.felt {
         return draw_felt(key);
     }
@@ -211,7 +300,7 @@ impl Shell {
         let bg = rgb8(p.window);
         // a dot of about two points, whatever the screen, drawn 1:1 so its edges stay sharp.
         image_el(self.backdrop.clone(), cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
-            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false })
+            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 })
         })
     }
 
@@ -227,7 +316,7 @@ impl Shell {
         let bg = rgb8(p.sidebar.opacity(1.0));
         let dark = p.dark;
         // a point per pixel: the gpu's smoothing softens the grain, as cloth is soft.
-        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true }))
+        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 }))
     }
 }
 
@@ -239,11 +328,22 @@ fn rgb8(c: Hsla) -> [u8; 3] {
 /// an image drawn off the ui thread for the size it's shown at, handed to the
 /// gpu once, and painted every frame as one sprite. `key_for` names the image
 /// for a size in points and a scale; a different key draws a new one.
-fn image_el(state: Shared, me: WeakEntity<Shell>, radius: f32, key_for: impl Fn(f32, f32, f32) -> Option<Key> + 'static) -> AnyElement {
+pub(crate) fn image_el(state: Shared, me: WeakEntity<Shell>, radius: f32, key_for: impl Fn(f32, f32, f32) -> Option<Key> + 'static) -> AnyElement {
+    image_el_corners(state, me, Corners::all(px(radius)), key_for)
+}
+
+/// the same, its corners rounded each its own way.
+pub(crate) fn image_el_corners(state: Shared, me: WeakEntity<Shell>, corners: Corners<Pixels>, key_for: impl Fn(f32, f32, f32) -> Option<Key> + 'static) -> AnyElement {
+    image_el_at(state, me, corners, move |b, scale| key_for(f32::from(b.size.width), f32::from(b.size.height), scale))
+}
+
+/// the same, its key made knowing where on the window it's painted (a frosted
+/// pane needs to know which part of the field is behind it).
+pub(crate) fn image_el_at(state: Shared, me: WeakEntity<Shell>, corners: Corners<Pixels>, key_for: impl Fn(Bounds<Pixels>, f32) -> Option<Key> + 'static) -> AnyElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, cx| {
-            let Some(key) = key_for(f32::from(bounds.size.width), f32::from(bounds.size.height), window.scale_factor()) else { return };
+            let Some(key) = key_for(bounds, window.scale_factor()) else { return };
             if key.w == 0 || key.h == 0 {
                 return;
             }
@@ -273,7 +373,7 @@ fn image_el(state: Shared, me: WeakEntity<Shell>, radius: f32, key_for: impl Fn(
                 .detach();
             }
             if let Some((_, t)) = st.texture.clone() {
-                let _ = window.paint_image(bounds, bounds, Corners::all(px(radius)), t, 0, false);
+                let _ = window.paint_image(bounds, bounds, corners, t, 0, false);
             }
         },
     )
@@ -314,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_backdrop_is_dots_with_gaps_and_cheap_to_draw() {
-        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false };
+        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 2880 * 1800 * 4);
         // the last column and row of every dot are the gap, all one colour.
@@ -329,7 +429,7 @@ mod tests {
 
     #[test]
     fn felt_stays_close_to_its_colour_and_is_cheap_to_draw() {
-        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true };
+        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 1440 * 900 * 4);
         // grain, not pattern: every pixel within a few steps of the cloth's colour.
