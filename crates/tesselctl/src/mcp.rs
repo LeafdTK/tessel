@@ -72,8 +72,8 @@ The reference for the format is ui/README.md in tessel's home.",
         },
         {
             "name": "tessel_terminal",
-            "description": "Terminals tessel runs, in this session's folder, that the person can watch in a pane. Use Bash for one-off commands; \
-use this for things that keep running or that the person should see: dev servers, watchers, REPLs, interactive programs. \
+            "description": "Terminals of the person's own, in this session's folder, kept in panes: only when they ask for one (a shell to use, a server they want in a pane). \
+For running commands yourself, builds and dev servers included, use Bash (run_in_background for what keeps running). \
 ops: open (command: what to run, or leave out for a shell; show: put it in a new pane, only when the person asked for one, default false) -> its id; \
 run (term, command: typed, then return); send (term, text: typed as is; \\u0003 is ctrl-c); \
 read (term, history: also what scrolled away) -> its text; wait (term, text: until the screen shows it, or leave out to wait for it to exit; timeout seconds, default 30); \

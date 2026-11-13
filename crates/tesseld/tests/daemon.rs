@@ -1150,9 +1150,9 @@ async fn a_terminal_runs_in_the_daemon_and_any_client_can_watch_type_read_and_wa
     })
     .await;
 
-    // waiting for what never comes ends with why.
-    let err = c.request(Request::TermWait { term: info.id, text: Some("never".into()), timeout_ms: 50 }).await.unwrap_err();
-    assert!(err.to_string().contains("timed out"), "{err}");
+    // waiting for what never comes ends with why: here, at once, as its program has ended.
+    let err = c.request(Request::TermWait { term: info.id, text: Some("never".into()), timeout_ms: 5000 }).await.unwrap_err();
+    assert!(err.to_string().contains("without showing \"never\""), "{err}");
 
     // an exited terminal stays until closed, so its output can still be read.
     let listed = match c.request(Request::TermList).await.unwrap() {
@@ -1524,4 +1524,16 @@ async fn a_request_after_the_daemon_has_gone_is_refused_at_once_not_left_waiting
         assert!(matches!(answer, Ok(Err(_))), "refused at once, not waited on: {answer:?}");
     }
     assert!(c.is_closed(), "and it says so, for whoever holds it to connect again");
+}
+
+#[tokio::test]
+async fn waiting_for_text_a_finished_program_never_showed_ends_at_once() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let Response::Term { info } = c.request(Request::TermOpen { session: None, cwd: Some(d.cwd()), command: vec!["echo Dev server running".into()], cols: 80, rows: 24, agent: false }).await.unwrap() else { panic!() };
+    let started = std::time::Instant::now();
+    let waited = c.request(Request::TermWait { term: info.id, text: Some("Local:".into()), timeout_ms: 30_000 }).await;
+    let err = waited.unwrap_err().to_string();
+    assert!(started.elapsed() < Duration::from_secs(5), "not the whole 30s");
+    assert!(err.contains("without showing") && err.contains("Dev server running"), "says so, and what it shows instead: {err}");
 }

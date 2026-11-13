@@ -362,6 +362,13 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
                     Some(t) => screen.as_deref().is_some_and(|s| s.contains(t.as_str())),
                     None => exited && program,
                 };
+                // the text was awaited, and the program has ended without showing it: it never will.
+                if !done && w.text.is_some() && exited && program {
+                    let what = w.text.as_deref().unwrap_or_default();
+                    let code = info.exited.map_or(String::new(), |c| format!(" (exit {c})"));
+                    reply(&hub, w.client, w.id, Err(RpcError::new(ErrorCode::Conflict, format!("terminal {} ended{code} without showing {what:?}; it shows:\n{}", info.id, last_lines(screen.as_deref().unwrap_or_default(), 8)))));
+                    return false;
+                }
                 if done {
                     let r = match &w.text {
                         Some(_) => Response::TermText { text: screen.clone().unwrap_or_default() },
@@ -410,6 +417,12 @@ fn run(mut info: TermInfo, master: OwnedFd, wake: OwnedFd, mut child: Option<Chi
     for w in waiters {
         reply(&hub, w.client, w.id, Err(RpcError::new(ErrorCode::NotFound, format!("terminal {} was closed", info.id))));
     }
+}
+
+/// the last `n` lines with anything on them, for saying what a terminal shows.
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 /// the program in front on a pty: its process group's leader, what it runs, and where.
