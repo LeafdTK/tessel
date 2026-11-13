@@ -4,8 +4,9 @@
 //! it sends what it was running: each terminal's pty (its program never sees
 //! a hangup) with everything that was on it, and each idle agent's pipes. the
 //! files themselves go across as file descriptors (`SCM_RIGHTS`); a short
-//! description of each goes first, as JSON. then the old daemon lets go of
-//! its socket and lock and leaves, and the new one takes them and carries on.
+//! description of each goes first, as JSON, and the instance lock goes last.
+//! then the old daemon leaves, and the new one carries on, holding the lock
+//! all along and serving on the socket path (the old one leaves it be).
 //!
 //! an agent in the middle of a turn holds state that only exists in the old
 //! daemon's memory (what it's streaming, a question waiting on you), so a
@@ -29,6 +30,11 @@ pub struct Manifest {
     pub terms: Vec<Term>,
     pub agents: Vec<Agent>,
     pub next_term: u64,
+    /// the single-instance lock comes too, as the last descriptor. it's held
+    /// by the open file, so the new daemon has it before the old one lets go:
+    /// there's no moment with no daemon for something else to start into.
+    #[serde(default)]
+    pub lock: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -31,6 +31,13 @@ pub struct InstanceLock {
     _file: std::fs::File,
 }
 
+impl InstanceLock {
+    /// the descriptor it's held by.
+    pub fn fd(&self) -> std::os::fd::RawFd {
+        self._file.as_raw_fd()
+    }
+}
+
 /// take the lock that says "i am the daemon for this home". fails if another
 /// daemon already holds it. the lock dies with the process, so a crashed
 /// daemon never leaves a stale one behind.
@@ -59,10 +66,21 @@ pub type Handoff = (handoff::Manifest, Vec<std::os::fd::OwnedFd>);
 
 /// start, carrying on with what the previous daemon handed over: once it has
 /// let go of the lock, and before anyone can connect.
-pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, taken: Option<Handoff>) -> anyhow::Result<Running> {
-    let lock = match &taken {
-        None => lock_instance(&cfg.paths)?,
-        Some(_) => {
+pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, mut taken: Option<Handoff>) -> anyhow::Result<Running> {
+    // the lock, handed over with everything else: already ours.
+    let passed = match &mut taken {
+        Some((m, fds)) if m.lock => fds.pop().map(|fd| {
+            let file = std::fs::File::from(fd);
+            // the same open file the old daemon locked: locking it again just confirms it.
+            let held = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
+            (file, held)
+        }),
+        _ => None,
+    };
+    let lock = match (&taken, passed) {
+        (_, Some((file, true))) => InstanceLock { _file: file },
+        (None, _) => lock_instance(&cfg.paths)?,
+        (Some(_), _) => {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
             loop {
                 match lock_instance(&cfg.paths) {
@@ -76,6 +94,8 @@ pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, taken: 
     if let Some((m, _)) = &taken {
         cfg.adopted = m.agents.iter().map(|a| a.session).collect();
     }
+    cfg.lock_fd = Some(lock._file.as_raw_fd());
+    let handed_over = cfg.handed_over.clone();
     let socket = cfg.paths.socket();
     paths::check_socket_path(&socket)?;
     // we hold the lock, so any socket file here was left by a daemon that is gone.
@@ -92,7 +112,10 @@ pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, taken: 
     let done = tokio::spawn(async move {
         hub.run(rx).await;
         server.abort();
-        let _ = std::fs::remove_file(socket);
+        // handed over: the path is the new daemon's socket now.
+        if !handed_over.load(std::sync::atomic::Ordering::SeqCst) {
+            let _ = std::fs::remove_file(socket);
+        }
     });
     Ok(Running { hub: tx, done, _lock: lock })
 }

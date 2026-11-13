@@ -46,6 +46,10 @@ pub struct Config {
     pub tools_bin: Option<std::path::PathBuf>,
     /// sessions whose agents the previous daemon handed over: theirs aren't leftovers to stop.
     pub adopted: HashSet<SessionId>,
+    /// the descriptor the instance lock is held by, to hand over with everything else.
+    pub lock_fd: Option<i32>,
+    /// set once everything has been handed over: the socket path is the new daemon's now.
+    pub handed_over: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Config {
@@ -58,6 +62,8 @@ impl Config {
             tick: Duration::from_millis(500),
             tools_bin: None,
             adopted: HashSet::new(),
+            lock_fd: None,
+            handed_over: Default::default(),
         }
     }
 }
@@ -406,10 +412,21 @@ impl Hub {
             self.store.save(live.state.persisted(), Vec::new());
         }
         self.store.flush().await;
+        // the lock, last: the new daemon holds it before this one lets go.
+        if let Some(fd) = self.cfg.lock_fd {
+            let dup = unsafe { libc::dup(fd) };
+            if dup >= 0 {
+                fds.push(unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(dup) });
+                manifest.lock = true;
+            }
+        }
         let (terminals, agents) = (manifest.terms.len() as u32, manifest.agents.len() as u32);
         let sent = tokio::task::spawn_blocking(move || crate::handoff::send(&ours, &manifest, &fds).map(|()| ours)).await;
         match sent {
-            Ok(Ok(_sock)) => eprintln!("tesseld: handed {terminals} terminal(s) and {agents} agent(s) to pid {pid}"),
+            Ok(Ok(_sock)) => {
+                self.cfg.handed_over.store(true, std::sync::atomic::Ordering::SeqCst);
+                eprintln!("tesseld: handed {terminals} terminal(s) and {agents} agent(s) to pid {pid}")
+            }
             Ok(Err(e)) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
             Err(e) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
         }

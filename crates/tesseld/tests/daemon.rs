@@ -1489,3 +1489,24 @@ async fn a_new_workspace_gets_its_files_its_setup_its_ports_and_its_buttons() {
     let env = d.backend.spawned.lock().unwrap()[0].env.clone();
     assert!(env.contains(&("TESSEL_PORT".into(), port.to_string())) && env.contains(&("TESSEL_WORKSPACE_PATH".into(), s.cwd.clone())), "{env:?}");
 }
+
+#[tokio::test]
+async fn a_restart_hands_over_the_lock_so_nothing_can_start_in_between() {
+    use std::os::fd::FromRawFd;
+    let tmp = tempfile::Builder::new().prefix("ph").tempdir_in("/tmp").unwrap();
+    let paths = Paths::at(tmp.path());
+    // the old daemon's lock, and a copy of it, as a restart sends it.
+    let old = tesseld::lock_instance(&paths).unwrap();
+    let copy = unsafe { std::os::fd::OwnedFd::from_raw_fd(libc::dup(old.fd())) };
+    let manifest = tesseld::handoff::Manifest { lock: true, ..Default::default() };
+    let backend = Arc::new(ReplayBackend::new(vec![fixture("plain")]));
+    // the new daemon starts at once, though the old one hasn't let go yet.
+    let started = tokio::time::timeout(Duration::from_secs(2), tesseld::start_with(Config::new(paths.clone()), backend, Some((manifest, vec![copy])))).await;
+    let running = started.expect("it didn't wait for the old daemon to leave").unwrap();
+    // and at no moment can a third take over: not now, nor once the old one is gone.
+    assert!(tesseld::lock_instance(&paths).is_err());
+    drop(old);
+    assert!(tesseld::lock_instance(&paths).is_err(), "the new daemon holds it");
+    running.hub.send(HubMsg::Stop).ok();
+    let _ = tokio::time::timeout(Duration::from_secs(5), running.done).await;
+}
