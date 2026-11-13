@@ -19,6 +19,7 @@ pub mod rpc;
 pub mod state;
 pub mod surface;
 pub mod term;
+pub mod voice;
 pub mod workspace;
 
 pub use agent::*;
@@ -31,7 +32,7 @@ pub use workspace::*;
 
 /// bump major on a breaking wire change, minor on an additive one.
 pub const PROTO_MAJOR: u16 = 0;
-pub const PROTO_MINOR: u16 = 25;
+pub const PROTO_MINOR: u16 = 26;
 
 /// milliseconds since the unix epoch.
 pub type Millis = u64;

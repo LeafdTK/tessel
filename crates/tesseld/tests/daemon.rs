@@ -1537,3 +1537,11 @@ async fn waiting_for_text_a_finished_program_never_showed_ends_at_once() {
     assert!(started.elapsed() < Duration::from_secs(5), "not the whole 30s");
     assert!(err.contains("without showing") && err.contains("Dev server running"), "says so, and what it shows instead: {err}");
 }
+
+#[tokio::test]
+async fn a_short_dictation_is_tidied_without_a_model() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let Response::Tidied { text, by } = c.request(Request::VoiceTidy { session: None, text: "um, ship it.".into() }).await.unwrap() else { panic!() };
+    assert_eq!((text.as_str(), by.as_str()), ("Ship it.", "filter"), "a couple of words: the noises go, nothing more is asked");
+}

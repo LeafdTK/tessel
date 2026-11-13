@@ -1033,6 +1033,7 @@ impl Shell {
             UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
+            UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
             UiEvent::Answer { tag: "folder.info", result } => {
@@ -2528,6 +2529,7 @@ impl Render for Shell {
         self.step_bench_term(window, cx);
         self.sync_git_message(window, cx);
         self.sync_desk(window, cx);
+        self.sync_dictation(window, cx);
         if std::mem::take(&mut self.clear_new_prompt) {
             self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
         }

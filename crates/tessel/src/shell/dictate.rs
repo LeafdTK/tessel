@@ -82,6 +82,10 @@ pub(crate) struct Dictation {
     link: Option<std::process::ChildStdin>,
     /// the helper's pid: stopped if it ever stops answering.
     pid: Option<u32>,
+    /// what went in the box, being tidied by a model.
+    pub(crate) tidying: Option<String>,
+    /// a tidied version, and what it takes the place of: done at the next frame.
+    swap: Option<(String, String)>,
     /// what the helper was told, in a test (there's no helper there).
     #[cfg(test)]
     pub(crate) told: Vec<String>,
@@ -100,6 +104,8 @@ impl Dictation {
             chord_down: false,
             link: None,
             pid: None,
+            tidying: None,
+            swap: None,
             #[cfg(test)]
             told: Vec::new(),
         }
@@ -317,17 +323,54 @@ impl Shell {
     }
 
     /// what was said goes in the box at the cursor, a space from what's beside it.
-    fn dictated(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
-        let text = text.trim();
-        if text.is_empty() {
+    /// at once with the noises left out; then, once a model has tidied it,
+    /// swapped for the tidied version, unless it's been changed meanwhile.
+    fn dictated(&mut self, said: String, window: &mut Window, cx: &mut Context<Self>) {
+        let plain = tessel_proto::voice::strip_noises(said.trim());
+        if plain.is_empty() {
             return;
         }
         let before = self.composer.read(cx).value().to_string();
         let gap = if before.is_empty() || before.ends_with(char::is_whitespace) { "" } else { " " };
-        let words = format!("{gap}{text}");
+        // carrying on a sentence already started: no capital at its first word.
+        let mid_sentence = !before.trim_end().is_empty() && !before.trim_end().ends_with(['.', '?', '!', '\n', ':']);
+        let plain = if mid_sentence { lower_first(&plain) } else { plain };
+        let words = format!("{gap}{plain}");
         self.composer.update(cx, |c, cx| {
             c.insert(words, window, cx);
             c.focus(window, cx);
+        });
+        if plain.split_whitespace().count() >= 4 {
+            self.dictation.tidying = Some(plain);
+            let session = self.model.open_summary().filter(|_| !self.show_new).map(|s| s.id);
+            self.cmd(Cmd::Ask { tag: "voice.tidy", req: tessel_proto::Request::VoiceTidy { session, text: said } });
+        }
+    }
+
+    /// the tidied version is here: it takes the place of what went in, if that's still there as it was.
+    pub(crate) fn voice_answer(&mut self, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        let Some(plain) = self.dictation.tidying.take() else { return };
+        if let Ok(tessel_proto::Response::Tidied { text, by }) = result {
+            voice_log(&format!("tidied by {by}"));
+            if text.trim() != plain {
+                self.dictation.swap = Some((plain, text.trim().to_owned()));
+            }
+        }
+        cx.notify();
+    }
+
+    /// once a frame (setting the box's text needs the window): a tidied version in its place.
+    pub(crate) fn sync_dictation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((plain, tidied)) = self.dictation.swap.take() else { return };
+        let now = self.composer.read(cx).value().to_string();
+        // the last place it went in; if it's been edited away, what's there stays.
+        let Some(at) = now.rfind(&plain) else { return };
+        let next = format!("{}{tidied}{}", &now[..at], &now[at + plain.len()..]);
+        let lines = next.split('\n').count().saturating_sub(1) as u32;
+        let last = next.rsplit('\n').next().map_or(0, |l| l.chars().count() as u32);
+        self.composer.update(cx, |c, cx| {
+            c.set_value(next, window, cx);
+            c.set_cursor_position(gpui_kit::component::input::Position { line: lines, character: last }, window, cx);
         });
     }
 
@@ -406,7 +449,19 @@ impl Shell {
     pub(crate) fn dictation_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let d = &self.dictation;
         if !d.active() {
-            return None;
+            let p = self.palette.get();
+            return d.tidying.as_ref().map(|_| {
+                h_flex()
+                    .id("dictation-tidying")
+                    .test_support()
+                    .pb(theme::z(6.))
+                    .gap(theme::z(6.))
+                    .set(Type::Subheadline)
+                    .text_color(p.tertiary)
+                    .child(gpui_kit::component::Icon::empty().path("icons/sparkles.svg").size(theme::z(12.)))
+                    .child("Tidying what you said…")
+                    .into_any_element()
+            });
         }
         let p = self.palette.get();
         let levels: Vec<f32> = d.levels.iter().copied().collect();
@@ -487,6 +542,17 @@ impl Shell {
     }
 }
 
+/// the first word without its capital, unless it's always written so ("I", "API").
+fn lower_first(s: &str) -> String {
+    let first = s.split_whitespace().next().unwrap_or_default();
+    let shouty = first.chars().filter(|c| c.is_alphabetic()).count() > 1 && first.chars().filter(|c| c.is_alphabetic()).all(char::is_uppercase);
+    if first == "I" || first.starts_with("I'") || shouty {
+        return s.to_owned();
+    }
+    let mut c = s.chars();
+    c.next().map_or_else(String::new, |f| f.to_lowercase().collect::<String>() + c.as_str())
+}
+
 /// the end of a long line, where the newest words are.
 fn tail(s: &str, n: usize) -> String {
     let chars: Vec<char> = s.trim().chars().collect();
@@ -507,6 +573,13 @@ mod tests {
         assert_eq!(heard(r#"{"ev":"preparing","what":"Downloading","progress":0.25}"#), Some(Heard::Preparing("Downloading".into(), 0.25)));
         assert_eq!(heard(r#"{"ev":"somethingnew"}"#), None, "what a newer helper says that this doesn't know is left alone");
         assert_eq!(heard("not json"), None);
+    }
+
+    #[test]
+    fn carrying_on_a_sentence_keeps_its_words_lowercase() {
+        assert_eq!(super::lower_first("And the login"), "and the login");
+        assert_eq!(super::lower_first("I think so"), "I think so");
+        assert_eq!(super::lower_first("API keys too"), "API keys too");
     }
 
     #[test]

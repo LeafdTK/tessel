@@ -282,6 +282,15 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    // ---- voice -------------------------------------------------------------------
+    /// what was dictated, made into what was meant: noises, false starts and
+    /// punctuation fixed, the chat's names spelled right. never fails: at worst
+    /// it answers with the noises left out.
+    VoiceTidy {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        text: String,
+    },
     // ---- kubernetes (through the person's kubectl) ----------------------------
     /// the kubeconfig's contexts, and which one is current.
     KubeContexts,
@@ -704,6 +713,11 @@ pub enum Response {
     },
     GitLog {
         log: crate::GitLog,
+    },
+    Tidied {
+        text: String,
+        /// what did it: "groq", "haiku" or "filter" (the noises only).
+        by: String,
     },
     KubeContexts {
         #[serde(default, skip_serializing_if = "Option::is_none")]

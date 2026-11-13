@@ -950,6 +950,18 @@ impl Hub {
                     Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
                 });
             }
+            Request::VoiceTidy { session, text } => {
+                let backend = self.backend.clone();
+                let at = session.and_then(|s| self.sessions.get(&s)).map(|l| (std::path::PathBuf::from(&l.state.meta.cwd), l.state.meta.goal.clone()));
+                return self.later(client, id, async move {
+                    let context = match &at {
+                        Some((dir, goal)) => crate::voice::context(dir, goal).await,
+                        None => String::new(),
+                    };
+                    let (text, by) = crate::voice::tidy(backend, text, context).await;
+                    Ok(Response::Tidied { text, by: by.to_owned() })
+                });
+            }
             Request::KubeContexts => {
                 return self.later(client, id, async { crate::kube::contexts().await.map(|(current, contexts)| Response::KubeContexts { current, contexts }) });
             }

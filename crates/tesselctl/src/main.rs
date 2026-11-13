@@ -40,6 +40,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl models                          the models the agent offers
   tesselctl kube [pods|deployments|services|nodes] [-n NS] [--context C] [--json]
   tesselctl kube contexts|namespaces        what the kubernetes module shows, through your kubectl
+  tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
+  tesselctl secret groq [--remove]          keep your Groq key in the keychain: dictation is tidied by groq (fast)
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
                                             --wait returns once each is closed (0 saved or
@@ -222,6 +224,25 @@ async fn run() -> anyhow::Result<()> {
             },
             other => bail!("unknown daemon command {other}"),
         };
+    }
+
+    // a key for a service tessel uses, kept in this Mac's keychain: asked for by
+    // macOS itself (hidden as it's typed), so it's in no argument, file or log.
+    if args.rest.first().map(String::as_str) == Some("secret") {
+        args.rest.remove(0);
+        let name = args.next("which: groq")?;
+        anyhow::ensure!(name == "groq", "the keys tessel keeps: groq");
+        let remove = args.flag("--remove");
+        let status = if remove {
+            std::process::Command::new("security").args(["delete-generic-password", "-s", "tessel", "-a", &name]).status()?
+        } else {
+            println!("paste your {name} key and press return (it isn't shown):");
+            // -w last, with no value: security asks for it.
+            std::process::Command::new("security").args(["add-generic-password", "-U", "-s", "tessel", "-a", &name, "-l", &format!("tessel: {name} key"), "-w"]).status()?
+        };
+        anyhow::ensure!(status.success(), "the keychain said no");
+        println!("{}", if remove { format!("{name} key removed") } else { format!("{name} key saved; talking in the message box is tidied by it now") });
+        return Ok(());
     }
 
     let (client, mut events, welcome) = if no_start {
@@ -466,6 +487,22 @@ async fn run() -> anyhow::Result<()> {
         "link" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionLinkDir { cmd_id: Uuid::new_v4(), session, path: args.next("a folder")? }).await?;
+        }
+        "voice" => {
+            let what = args.next("tidy")?;
+            anyhow::ensure!(what == "tidy", "tesselctl voice tidy TEXT… [--session S]");
+            let session = match args.opt("--session")? {
+                Some(s) => Some(resolve(&client, &s).await?),
+                None => None,
+            };
+            let text = args.rest.join(" ");
+            match client.request(Request::VoiceTidy { session, text }).await? {
+                Response::Tidied { text, by } => {
+                    eprintln!("({by})");
+                    println!("{text}");
+                }
+                other => bail!("unexpected reply: {other:?}"),
+            }
         }
         "kube" => {
             let context = args.opt("--context")?;

@@ -2678,9 +2678,16 @@ fn talking_puts_words_in_the_box_by_mic_or_by_holding_option(cx: &mut TestAppCon
     assert!(rig.exists(cx, "dictation"), "what's heard shows while talking");
     rig.click(cx, "mic");
     assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")));
-    hear(&mut rig, cx, Heard::Final("fix the flaky test".into()));
+    rig.asked();
+    hear(&mut rig, cx, Heard::Final("um, fix the flaky test".into()));
     assert!(!rig.exists(cx, "dictation"));
-    assert_eq!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)), "please fix the flaky test", "at the cursor, a space from what's there; not sent");
+    assert_eq!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)), "please fix the flaky test", "at once, its noises gone: at the cursor, a space from what's there, carrying on its sentence; not sent");
+    // then tidied by a model, in its place.
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::VoiceTidy { text, .. }, .. } if text == "um, fix the flaky test")));
+    assert!(rig.exists(cx, "dictation-tidying"));
+    rig.feed(cx, vec![UiEvent::Answer { tag: "voice.tidy", result: Ok(Response::Tidied { text: "fix the flaky test, please".into(), by: "haiku".into() }) }]);
+    assert_eq!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)), "please fix the flaky test, please", "the tidied version, in its place");
+    assert!(!rig.exists(cx, "dictation-tidying"));
 
     // holding ⌥ on its own: talking until it's let go.
     use gpui_kit::Modifiers;
@@ -2697,7 +2704,7 @@ fn talking_puts_words_in_the_box_by_mic_or_by_holding_option(cx: &mut TestAppCon
     modifiers(&mut rig, cx, none);
     assert!(told(&rig, cx).iter().any(|t| t.contains("\"op\":\"stop\"")), "let go: finished");
     hear(&mut rig, cx, Heard::Final("and the login".into()));
-    assert!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)).ends_with("flaky test and the login"));
+    assert!(rig.shell.read_with(cx, |s, cx| s.composer_text(cx)).ends_with("flaky test, please and the login"));
 
     // ⌥ with a key is a ⌥ combination, never talking.
     modifiers(&mut rig, cx, alt);
