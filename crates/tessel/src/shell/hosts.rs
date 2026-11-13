@@ -498,7 +498,7 @@ impl Shell {
         };
         let seed = self.hosts.list.current.clone().unwrap_or_else(|| "this-mac".into());
         let icon = machine_icon(self.hosts.list.current());
-        Popover::new("host-picker-popover")
+        let picker = Popover::new("host-picker-popover")
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(
@@ -508,7 +508,7 @@ impl Shell {
                     .h(px(PICKER_H))
                     .px(px(8.))
                     .rounded(px(theme::R_CARD))
-                    .bg(p.fill.opacity(0.6))
+                    .when(!crate::glass::liquid(), |b| b.bg(p.fill.opacity(0.6)))
                     .border_1()
                     .border_color(p.separator)
                     .tooltip("Which machine the window shows")
@@ -608,8 +608,9 @@ impl Shell {
                 .child(theme::float_sep(&p))
                 .child(theme::float_item(&p, "host-manage", Some("settings-2"), "Manage hosts…", None, false).test_support().on_click(settings(false)))
                 .into_any_element()
-            })
-            .into_any_element()
+            });
+        // a pane of glass of its own, in liquid glass.
+        div().relative().child(super::glass_spot(theme::R_CARD)).child(picker).into_any_element()
     }
 
     /// Settings › Hosts.

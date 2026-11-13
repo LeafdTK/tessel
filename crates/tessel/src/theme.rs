@@ -319,11 +319,11 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
         (true, false) => gpui_kit::WindowBackgroundAppearance::Blurred,
         _ => gpui_kit::WindowBackgroundAppearance::Opaque,
     });
+    crate::glass::set_liquid(glass && liquid, dark);
     if glass && liquid {
-        // liquid glass reads as a material: the frame is mostly glass, and the
-        // panes are frosted over it, solid enough that text always reads.
-        palette.sidebar = palette.sidebar.opacity(0.18);
-        palette.window = palette.window.opacity(0.8);
+        // liquid glass: the frame is glass, and the panes and the message box are
+        // panes of glass of their own (see `glass::spot`), drawn on clear.
+        palette.sidebar = palette.sidebar.opacity(0.0);
     } else if glass {
         palette.sidebar = palette.sidebar.opacity(0.45);
     }

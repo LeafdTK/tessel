@@ -1871,14 +1871,15 @@ impl Shell {
                 })
         };
         let card = v_flex()
+            .relative()
             .w_full()
             .p_3()
             .gap_3()
             .rounded(px(theme::R_CARD))
             .border_1()
             .border_color(p.separator)
-            .bg(p.raised)
-            .shadow_md()
+            .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_md())
+            .when(crate::glass::liquid(), |d| d.child(glass_spot(theme::R_CARD)))
             .children(chips)
             .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false).on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)))
             .child(
@@ -2698,6 +2699,8 @@ impl Render for Shell {
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))
             .when(self.flow_open(), |d| d.child(self.setup_flow_layer(cx)))
+            // painted last: the liquid glass under the surfaces painted this frame.
+            .child(canvas(|_, _, _| {}, |_, _, window, _| crate::glass::sync(view_of(window).unwrap_or(0))).absolute().size_0())
             // TESSEL_FRAME_LOG: painted last, so it sees the whole frame's cost.
             .when(std::env::var_os("TESSEL_FRAME_LOG").is_some(), |d| {
                 d.child(
@@ -3201,4 +3204,20 @@ impl Render for TurnTip {
         }
         card
     }
+}
+
+/// where a surface of liquid glass is: put inside it (filling it), it notes
+/// its place each frame, and a native pane of glass is laid under it (see
+/// `glass`). nothing at all without liquid glass.
+pub(crate) fn glass_spot(radius: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |b, _, _, _| {
+            if crate::glass::liquid() {
+                crate::glass::spot(crate::glass::Spot { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height), radius });
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
 }

@@ -626,7 +626,9 @@ impl Shell {
                     this.focus_chat_pane(&fid, cx);
                 }
             }))
-            .when(!open_sky, |d| d.bg(p.window))
+            // liquid glass: the pane is a pane of glass, drawn on clear.
+            .when(!open_sky && !crate::glass::liquid(), |d| d.bg(p.window))
+            .when(!open_sky && crate::glass::liquid() && !compact, |d| d.relative().child(super::glass_spot(theme::R_PANEL)))
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
@@ -766,8 +768,8 @@ impl Shell {
             .rounded(theme::z(theme::R_CARD + 4.))
             .border_1()
             .border_color(p.separator)
-            .bg(p.raised)
-            .shadow_md()
+            .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_md())
+            .when(crate::glass::liquid(), |d| d.child(super::glass_spot(f32::from(theme::z(theme::R_CARD + 4.)))))
             // while a menu is up, its keys are its own.
             .children(self.mention_menu(cx))
             .children(self.attachment_chips(cx))
