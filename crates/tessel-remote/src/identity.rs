@@ -95,7 +95,7 @@ pub fn allowed(dir: &Path) -> Vec<Allowed> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
             let (fp, name) = l.split_once(char::is_whitespace).unwrap_or((l, ""));
-            fp.starts_with("SHA256:").then(|| Allowed { fingerprint: fp.to_owned(), name: name.trim().to_owned() })
+            (fp.starts_with("SHA256:") || fp.starts_with("iroh:")).then(|| Allowed { fingerprint: fp.to_owned(), name: name.trim().to_owned() })
         })
         .collect()
 }
@@ -106,7 +106,7 @@ pub fn is_allowed(dir: &Path, fingerprint: &str) -> bool {
 
 /// let a machine in (again: its name is updated).
 pub fn allow(dir: &Path, fingerprint: &str, name: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(fingerprint.starts_with("SHA256:") && fingerprint.len() > 20, "{fingerprint} isn't a fingerprint (SHA256:…)");
+    anyhow::ensure!((fingerprint.starts_with("SHA256:") || fingerprint.starts_with("iroh:")) && fingerprint.len() > 20, "{fingerprint} isn't a fingerprint (SHA256:… or iroh:…)");
     let mut list: Vec<Allowed> = allowed(dir).into_iter().filter(|a| a.fingerprint != fingerprint).collect();
     list.push(Allowed { fingerprint: fingerprint.to_owned(), name: name.split_whitespace().collect::<Vec<_>>().join(" ") });
     save(dir, &list)

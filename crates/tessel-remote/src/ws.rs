@@ -196,8 +196,8 @@ impl Link {
     }
 
     /// the same link, keeping `lease` for as long as it (or a clone) lives.
-    pub fn held_by(mut self, lease: crate::vercel::Lease) -> Self {
-        self._lease = Some(Arc::new(lease));
+    pub fn held_by_arc(mut self, lease: Arc<crate::vercel::Lease>) -> Self {
+        self._lease = Some(lease);
         self
     }
 

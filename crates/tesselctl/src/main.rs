@@ -114,6 +114,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             team and project: ~/.tessel/vercel.json). it runs while
                                             shown, stops by itself after, and keeps its disk
   tesselctl host stop HOST                  stop a sandbox now
+  tesselctl host ping HOST                  how fast it is: connecting, the path, round trips
   tesselctl host setup|update HOST          again: brings tessel there up to date
   tesselctl host use HOST|mac               which one the window shows
   tesselctl host rm HOST

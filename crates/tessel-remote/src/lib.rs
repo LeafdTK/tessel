@@ -11,6 +11,7 @@ pub mod forward;
 pub mod hosts;
 pub mod identity;
 pub mod link;
+pub mod p2p;
 pub mod quic;
 pub mod service;
 pub mod setup;
@@ -43,7 +44,7 @@ pub async fn connect(local_home: &Path, host: &Host, name: &str) -> anyhow::Resu
             let stream = link.open("tessel").await?;
             let (client, events, welcome) =
                 tokio::time::timeout(std::time::Duration::from_secs(20), Client::over(stream, name)).await.context("the daemon didn't answer")?.map_err(|e| anyhow::anyhow!("{e}"))?;
-            Ok(Connected { client, events, welcome, link: Some(Link::Ws(link)) })
+            Ok(Connected { client, events, welcome, link: Some(link) })
         }
         Transport::Ssh => {
             let stream = ssh::bridge(&ssh::To::of(host))?;

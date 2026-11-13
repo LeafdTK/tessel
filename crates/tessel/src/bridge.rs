@@ -232,7 +232,12 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
     let mut cmds = Cmds { rx: cmds, held: Default::default() };
     let mut open = Following::default();
     let mut backoff = Duration::from_millis(100);
-    let mut host = tessel_remote::hosts::Hosts::load(&home).current;
+    let hosts = tessel_remote::hosts::Hosts::load(&home);
+    // a host dialed by key is quickest from an endpoint that's already up (its relay, its addresses).
+    if hosts.hosts.iter().any(|h| h.iroh.is_some()) {
+        tessel_remote::p2p::warm(&home);
+    }
+    let mut host = hosts.current;
     loop {
         match reach(&home, host.as_deref()).await {
             Err((e, slow)) => {
@@ -266,6 +271,15 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                 // the box's ports, for the browser: kept across a reconnect to it.
                 FORWARDS.set(link.clone(), tokio::runtime::Handle::current());
                 let mac = host.is_some().then(|| tokio::spawn(mac_window(home.clone(), ui.clone())));
+                // dialed by key, it starts on the relay and moves to a direct path within a
+                // second or two: say so once it has.
+                if let Some(l) = link.clone() {
+                    let (ui, h) = (ui.clone(), host.clone());
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = ui.send(UiEvent::On { host: h, via: format!("{}, {} ms", l.kind(), l.rtt().as_millis()) });
+                    });
+                }
                 // the daemon on disk is newer than the one running: it takes over,
                 // with every terminal and agent carrying on, once no turn is mid-way.
                 // (a host's daemon is brought up to date by setting it up again.)

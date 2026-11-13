@@ -38,6 +38,9 @@ pub struct Host {
     pub fingerprint: Option<String>,
     #[serde(default)]
     pub transport: Transport,
+    /// its iroh id (`iroh:…`): dialed by key, through any nat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iroh: Option<String>,
     /// a vercel sandbox, not a machine ssh reaches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vercel: Option<crate::vercel::Sandbox>,
@@ -63,6 +66,7 @@ impl Host {
             fingerprint: None,
             transport: Transport::Quic,
             vercel: None,
+            iroh: None,
             arch: None,
             home: None,
             build: None,

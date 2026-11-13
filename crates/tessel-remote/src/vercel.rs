@@ -169,6 +169,8 @@ fn rand_u64() -> u64 {
 #[derive(Clone, Debug)]
 pub struct Session {
     pub id: String,
+    /// it had stopped, and was started from its snapshot just now: nothing runs in it yet.
+    pub resumed: bool,
     /// where its websocket service is reached (its route for `ws::PORT`).
     pub url: Option<String>,
     pub arch: String,
@@ -178,7 +180,7 @@ fn session_of(v: &Value) -> anyhow::Result<Session> {
     let id = v["session"]["id"].as_str().context("vercel didn't say which session")?.to_owned();
     let url = v["routes"].as_array().and_then(|rs| rs.iter().find(|r| r["port"].as_u64() == Some(u64::from(crate::ws::PORT)))).and_then(|r| r["url"].as_str()).map(str::to_owned);
     let arch = v["sandbox"]["architecture"].as_str().or(v["session"]["architecture"].as_str()).unwrap_or("amd64").to_owned();
-    Ok(Session { id, url, arch })
+    Ok(Session { id, url, arch, resumed: v["resumed"].as_bool().unwrap_or(false) })
 }
 
 impl Account {
@@ -290,43 +292,101 @@ impl Drop for Lease {
     }
 }
 
-/// the host's sandbox, running and reachable: resumed if it had stopped, its
-/// service started if this is a fresh session, and kept running as long as
-/// the link is held.
-pub async fn connect(home: &Path, host: &Host) -> anyhow::Result<crate::ws::Link> {
+/// the host's sandbox, running and reachable, as fast as it can be: dialed
+/// by key at once (a sandbox that's running answers straight away), while
+/// it's woken through the api in case it isn't. once woken, its service is
+/// started if this is a fresh session, and it's dialed again. websockets,
+/// through its https route, if quic by key can't get through at all. it's
+/// kept running for as long as the link is held.
+pub async fn connect(home: &Path, host: &Host) -> anyhow::Result<crate::Link> {
     let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
     let acct = Arc::new(Account::load(home, &sb)?);
-    let session = acct.wake(&sb).await?.with_context(|| format!("there's no sandbox {} in the project any more (set it up again)", sb.name))?;
-    let url = session.url.clone().context("the sandbox has no route for tessel's port")?;
     let token = read_token(home, &host.id)?;
     let there = host.home.clone().unwrap_or_else(|| THERE.to_owned());
-    let link = match crate::ws::Link::connect(&url, &token).await {
-        Ok(l) => l,
-        // resumed: nothing runs in it yet.
-        Err(_) => {
-            start_service(&acct, &session.id, &there, sb.path.as_deref()).await?;
+    let mut woken = {
+        let (acct, sb) = (acct.clone(), sb.clone());
+        tokio::spawn(async move { acct.wake(&sb).await })
+    };
+    let dial = |within: Duration| {
+        let (home, id) = (home.to_owned(), host.iroh.clone());
+        async move {
+            match id {
+                Some(id) => crate::p2p::Link::connect(&home, &id, within).await,
+                None => bail!("it has no iroh id (set it up again)"),
+            }
+        }
+    };
+    // running already: it answers by key in well under a second, and the
+    // wake only matters for keeping it running, which can catch up. stopped:
+    // the wake says it resumed it, and waiting on the dial is no use.
+    let first = dial(Duration::from_secs(3));
+    tokio::pin!(first);
+    // the dial, already over (and failed): it isn't waited on again.
+    let mut dialled = false;
+    let woke = tokio::select! {
+        r = &mut first => match r {
+            Ok(l) => {
+                let lease = lease(async move { Ok(woken.await??.context("the sandbox went")?.id) }, acct.clone());
+                return Ok(crate::Link::P2p(l, Some(lease)));
+            }
+            Err(_) => {
+                dialled = true;
+                woken.await
+            }
+        },
+        w = &mut woken => w,
+    };
+    let session = woke??.with_context(|| format!("there's no sandbox {} in the project any more (set it up again)", sb.name))?;
+    // it was running all along: the dial is the way in, once it lands.
+    if !session.resumed
+        && !dialled
+        && let Ok(l) = first.await
+    {
+        let id = session.id.clone();
+        return Ok(crate::Link::P2p(l, Some(lease(async move { Ok(id) }, acct))));
+    }
+    let url = session.url.clone().context("the sandbox has no route for tessel's port")?;
+    // woken just now (or its service had stopped): nothing listens yet.
+    if session.resumed || crate::ws::Link::connect(&url, &token).await.is_err() {
+        start_service(&acct, &session.id, &there, sb.path.as_deref()).await?;
+    }
+    let id = session.id.clone();
+    let lease = lease(async move { Ok(id) }, acct);
+    match dial(Duration::from_secs(12)).await {
+        Ok(l) => Ok(crate::Link::P2p(l, Some(lease))),
+        Err(e) => {
+            eprintln!("tessel: quic by key didn't get through ({e:#}); using websockets");
             let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
             loop {
                 match crate::ws::Link::connect(&url, &token).await {
-                    Ok(l) => break l,
+                    Ok(l) => break Ok(crate::Link::Ws(l.held_by_arc(lease))),
                     Err(e) if tokio::time::Instant::now() >= deadline => return Err(e.context("tessel's service there didn't come up")),
                     Err(_) => tokio::time::sleep(Duration::from_millis(500)).await,
                 }
             }
         }
-    };
-    // as long as the link is held, the sandbox keeps running.
-    let (acct2, id) = (acct.clone(), session.id.clone());
-    let _ = acct.extend(&session.id, LEASE).await;
+    }
+}
+
+/// keep a sandbox running while this is held: its timeout pushed out now,
+/// and again every few minutes. `session` says which, when it knows.
+fn lease(session: impl std::future::Future<Output = anyhow::Result<String>> + Send + 'static, acct: Arc<Account>) -> Arc<Lease> {
     let task = tokio::spawn(async move {
+        let id = match session.await {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("tessel: keeping the sandbox running: {e:#}");
+                return;
+            }
+        };
         loop {
-            tokio::time::sleep(RENEW).await;
-            if let Err(e) = acct2.extend(&id, LEASE).await {
+            if let Err(e) = acct.extend(&id, LEASE).await {
                 eprintln!("tessel: keeping the sandbox running: {e:#}");
             }
+            tokio::time::sleep(RENEW).await;
         }
     });
-    Ok(link.held_by(Lease(task.abort_handle())))
+    Arc::new(Lease(task.abort_handle()))
 }
 
 /// stop the host's sandbox now (it would by itself, soon after nothing shows it).
@@ -389,6 +449,13 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
         let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(token_path(home, &host.id))?;
         f.write_all(token.as_bytes())?;
     }
+    // and by key, for quic through the nats: its id, and this mac's let in.
+    let env = service_env(&there, sb.path.as_deref());
+    let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let me = crate::p2p::client_id(home)?;
+    let (code, out) = acct.run(&session.id, "sh", &["-c", "tesselctl remote allow \"$MAC\" \"$NAME\" >/dev/null && tesselctl remote iroh-id"], &[env.as_slice(), &[("MAC", me.as_str()), ("NAME", crate::setup::machine_name().as_str())]].concat()).await?;
+    anyhow::ensure!(code == 0, "letting this mac in by key: {out}");
+    host.iroh = out.lines().map(str::trim).find(|l| l.starts_with("iroh:")).map(str::to_owned);
 
     if !has_claude && opts.claude {
         say(Said::Step("Installing Claude Code".into()));

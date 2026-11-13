@@ -17,8 +17,20 @@ pub async fn remote(home: &Path, args: &mut Args) -> anyhow::Result<()> {
             tessel_remote::service::serve(home, port).await
         }
         "serve-ws" => {
+            // a sandbox's service: websockets through its https route, and quic by key
+            // (iroh) beside them, which macs prefer. websockets carry on if udp can't.
             let port = args.opt("--port")?.map(|p| p.parse()).transpose()?.unwrap_or(tessel_remote::ws::PORT);
+            let h = home.to_owned();
+            tokio::spawn(async move {
+                if let Err(e) = tessel_remote::p2p::serve(&h).await {
+                    eprintln!("tessel remote: iroh stopped: {e:#}");
+                }
+            });
             tessel_remote::ws::serve(home, port).await
+        }
+        "iroh-id" => {
+            println!("{}", tessel_remote::p2p::host_id(home)?);
+            Ok(())
         }
         "install" => {
             let port = args.opt("--port")?.map(|p| p.parse()).transpose()?.unwrap_or(tessel_remote::quic::DEFAULT_PORT);
@@ -86,6 +98,35 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             hosts.save(home)?;
             println!("added {id}");
             set_up(home, &id, args).await
+        }
+        "ping" => {
+            // how fast it is: reaching it, the path, and a few requests there and back.
+            let which = args.next("which host")?;
+            let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
+            let t = std::time::Instant::now();
+            let c = tessel_remote::connect(home, &host, "tesselctl").await?;
+            let reached = t.elapsed();
+            let via = c.link.as_ref().map_or("ssh", |l| l.kind());
+            println!("{}: connected in {} ms, {via}", host.name, reached.as_millis());
+            // a direct path is usually found within a second of connecting.
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            if let Some(l) = &c.link {
+                println!("  path now: {}, rtt {} ms", l.kind(), l.rtt().as_millis());
+            }
+            let mut times = Vec::new();
+            for _ in 0..10 {
+                let t = std::time::Instant::now();
+                c.client.request(tessel_proto::Request::TermList).await?;
+                times.push(t.elapsed().as_secs_f64() * 1000.0);
+            }
+            times.sort_by(|a, b| a.total_cmp(b));
+            println!("  requests: median {:.0} ms, best {:.0} ms, worst {:.0} ms", times[5], times[0], times[9]);
+            // again, as the window does when it reconnects: everything already warm.
+            drop(c);
+            let t = std::time::Instant::now();
+            let c = tessel_remote::connect(home, &host, "tesselctl").await?;
+            println!("  connecting again: {} ms, {}", t.elapsed().as_millis(), c.link.as_ref().map_or("ssh", |l| l.kind()));
+            Ok(())
         }
         "stop" => {
             let which = args.next("which host")?;
