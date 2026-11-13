@@ -1749,6 +1749,10 @@ fn a_subagents_report_is_told_apart_from_what_a_person_wrote() {
     assert_eq!(crate::shell::handback_for_test(wrapped).as_deref(), Some("alive and wagging\nsecond line"));
     assert_eq!(crate::shell::handback_for_test("just a test"), None);
     assert_eq!(crate::shell::handback_for_test("what does <agent-message> mean?"), None);
+    // as claude code sends it now: a line saying where it's from, first.
+    let introduced = format!("Another Claude session sent a message:\n{wrapped}");
+    assert_eq!(crate::shell::handback_for_test(&introduced).as_deref(), Some("alive and wagging\nsecond line"));
+    assert_eq!(crate::shell::handback_for_test("look at this:\nand this too:\n<agent-message from=\"x\">hi</agent-message>"), None, "more than a line before it is someone writing");
 }
 
 #[gpui_kit::test]

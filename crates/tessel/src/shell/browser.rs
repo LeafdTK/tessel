@@ -70,6 +70,9 @@ pub(crate) struct PageView {
     native: Option<Rc<Native>>,
     /// asking the page what was picked, so it isn't asked twice at once.
     pick_asking: bool,
+    /// the page, small and soft: drawn in its place while it has to step
+    /// aside (mid-swipe between desktops), instead of white.
+    pub(crate) veil: Option<Arc<RenderImage>>,
 }
 
 pub(crate) type Pages = HashMap<SessionId, Rc<RefCell<PageView>>>;
@@ -128,6 +131,49 @@ impl Shell {
     /// the open chat is `session`, in visual mode: the person asked to watch it work.
     fn watching(&self, session: SessionId) -> bool {
         self.model.open.as_ref().is_some_and(|o| o.id == session) && self.model.open_summary().is_some_and(|s| s.visual)
+    }
+
+    /// a soft picture of the open chat's page, for standing in for it while it
+    /// steps aside: for its pane mid-swipe, and on this desktop's picture.
+    pub(crate) fn veil_page(&mut self, cx: &mut Context<Self>) {
+        let Some(session) = self.model.open.as_ref().map(|o| o.id) else { return };
+        if !self.browser_visible() {
+            return;
+        }
+        let Some(page) = self.pages.get(&session).cloned() else { return };
+        let (native, bounds) = {
+            let mut v = page.borrow_mut();
+            v.veil = None;
+            (v.native.clone(), v.bounds)
+        };
+        let (Some(native), Some(bounds), Some(area)) = (native, bounds, self.pane_area.get()) else { return };
+        let at = [f32::from(bounds.origin.x - area.origin.x), f32::from(bounds.origin.y - area.origin.y), f32::from(bounds.size.width), f32::from(bounds.size.height)];
+        let key = super::desktops::desktop_key(&self.ui);
+        self.desk.veiling = Some(Instant::now());
+        let picture = native.web.snapshot(None);
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(png)) = picture.await else { return };
+            let small = cx
+                .background_executor()
+                .spawn(async move {
+                    let img = image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
+                    // a sixteenth of the size, drawn back at full size: soft, not sharp.
+                    let (w, h) = ((img.width() / 16).max(1), (img.height() / 16).max(1));
+                    let mut small = image::imageops::resize(&img.to_rgba8(), w, h, image::imageops::FilterType::Triangle);
+                    for px in small.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                    Some(Arc::new(RenderImage::new(vec![image::Frame::new(small)])))
+                })
+                .await;
+            let Some(veil) = small else { return };
+            let _ = this.update(cx, |this, cx| {
+                page.borrow_mut().veil = Some(veil.clone());
+                this.desk.veils.insert(key, (veil, at));
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(crate) fn browser_visible(&self) -> bool {
@@ -289,8 +335,10 @@ impl Shell {
 
     /// what covers the whole window now: a page steps aside for it.
     pub(crate) fn page_covered(&self) -> bool {
-        // a native page can't be clipped or moved with the panes mid-swipe: it waits.
-        self.tour.is_some() || self.palette_ui.open || self.sheet.is_some() || self.settings_open || self.overview_shown() || self.desk.active()
+        // a native page can't be clipped or moved with the panes mid-swipe: it
+        // steps aside, once its blur is there to stand in for it.
+        let veiled = self.model.open.as_ref().and_then(|o| self.pages.get(&o.id)).is_some_and(|p| p.borrow().veil.is_some());
+        self.tour.is_some() || self.palette_ui.open || self.sheet.is_some() || self.settings_open || self.overview_shown() || (self.desk.active() && self.desk.veil_ready(veiled))
     }
 
     fn make_page(&mut self, session: SessionId, start: Option<String>) -> Result<(), String> {
@@ -469,6 +517,7 @@ impl Shell {
             }));
         let me = cx.entity().downgrade();
         let covered = self.page_covered();
+        let swiping = self.desk.active();
         // the pane's corners, inside its border, unless panes sit flush.
         let radius = if self.ui.theme.compact.unwrap_or(false) { 0.0 } else { f64::from(theme::R_PANEL) - 1.0 };
         let view = page.clone();
@@ -487,6 +536,12 @@ impl Shell {
                     let o = bounds.origin;
                     n.web.place(f64::from(f32::from(o.x)), f64::from(f32::from(o.y)), f64::from(f32::from(bounds.size.width)), f64::from(f32::from(bounds.size.height)), radius);
                     n.web.show(!covered && !float_over(&bounds));
+                    // stepped aside mid-swipe: the page, blurred, goes with the panes.
+                    if covered && swiping && let Some(veil) = v.veil.clone() {
+                        let r = px(radius as f32);
+                        let corners = Corners { top_left: px(0.), top_right: px(0.), bottom_left: r, bottom_right: r };
+                        let _ = window.paint_image(bounds, bounds, corners, veil, 0, false);
+                    }
                     return;
                 }
                 if let Some((bytes, w, h)) = v.next.take()

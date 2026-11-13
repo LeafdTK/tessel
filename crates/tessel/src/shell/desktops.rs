@@ -57,16 +57,29 @@ pub(crate) struct DeskDrag {
     /// each desktop's panes as they looked when it was last left, by desktop id:
     /// what slides in, so arriving changes nothing you can see.
     pub(crate) shots: HashMap<String, std::sync::Arc<RenderImage>>,
+    /// the browser's page, blurred, by desktop id, and where on its picture it goes:
+    /// a native page isn't in a picture of the window, and white reads as broken.
+    pub(crate) veils: HashMap<String, (std::sync::Arc<RenderImage>, [f32; 4])>,
+    /// since when the page's blur has been asked for: the page stays up until it's here (or a moment has passed).
+    pub(crate) veiling: Option<std::time::Instant>,
+    /// where each desktop's tab, and the row of them, were drawn: the
+    /// highlight goes from one tab to the next as the swipe does.
+    pub(crate) tabs: std::rc::Rc<std::cell::RefCell<(Option<Bounds<Pixels>>, Vec<Option<Bounds<Pixels>>>)>>,
 }
 
 impl DeskDrag {
     pub(crate) fn new() -> Self {
-        Self { x: Spring::points(0.0), shift: Default::default(), peek: None, commit: None, gone: (0.0, 0.0), sideways: None, touching: false, speed: 0.0, last: None, lifted: None, shots: HashMap::new() }
+        Self { x: Spring::points(0.0), shift: Default::default(), peek: None, commit: None, gone: (0.0, 0.0), sideways: None, touching: false, speed: 0.0, last: None, lifted: None, shots: HashMap::new(), veils: HashMap::new(), veiling: None, tabs: Default::default() }
     }
 
     /// something to draw: the panes are off their place, or a desktop is coming in.
     pub(crate) fn active(&self) -> bool {
         self.peek.is_some() || self.x.value().abs() > 0.25 || self.x.is_moving()
+    }
+
+    /// the native page can step aside now: its blur is in its place, or it took too long.
+    pub(crate) fn veil_ready(&self, have: bool) -> bool {
+        have || self.veiling.is_none_or(|t| t.elapsed() > std::time::Duration::from_millis(150))
     }
 }
 
@@ -209,9 +222,44 @@ impl Shell {
         if self.ui.desktops.len() < 2 {
             return h_flex().id("desktops").test_support().justify_end().child(add).into_any_element();
         }
-        let mut row = h_flex().id("desktops").test_support().gap(theme::z(2.)).items_center().overflow_x_scroll();
+        let tabs = self.desk.tabs.clone();
+        tabs.borrow_mut().1.resize(self.ui.desktops.len(), None);
+        // the highlight: on the desktop showing, or partway to the one a swipe is bringing in.
+        let lit = {
+            let t = tabs.borrow();
+            let at = |i: usize| t.1.get(i).copied().flatten();
+            let (row, from) = (t.0, at(self.ui.desktop));
+            let width = self.pane_area.get().map_or(800.0, |b| f32::from(b.size.width)).max(1.0);
+            let to = self.desk.peek.as_ref().and_then(|(n, _)| at(*n));
+            let k = (self.desk.x.value().abs() / width).clamp(0.0, 1.0);
+            row.zip(from).map(|(row, from)| {
+                let lerp = |a: Pixels, b: Pixels| a + (b - a) * k;
+                let b = match to {
+                    Some(to) => Bounds::new(point(lerp(from.origin.x, to.origin.x), from.origin.y), size(lerp(from.size.width, to.size.width), from.size.height)),
+                    None => from,
+                };
+                (b.origin.x - row.origin.x, b.origin.y - row.origin.y, b.size.width, b.size.height)
+            })
+        };
+        // which tab reads as the one showing: the nearer end of the swipe.
+        let lead = match &self.desk.peek {
+            Some((n, _)) if self.desk.x.value().abs() > self.pane_area.get().map_or(800.0, |b| f32::from(b.size.width)) / 2.0 => *n,
+            _ => self.ui.desktop,
+        };
+        let row_cell = tabs.clone();
+        let mut row = h_flex()
+            .id("desktops")
+            .test_support()
+            .relative()
+            .gap(theme::z(2.))
+            .items_center()
+            .overflow_x_scroll()
+            .child(canvas(move |b, _, _| row_cell.borrow_mut().0 = Some(b), |_, _, _, _| {}).absolute().inset_0())
+            .children(lit.map(|(x, y, w, h)| div().absolute().left(x).top(y).w(w).h(h).rounded(theme::z(theme::R_CONTROL)).bg(p.selection)));
         for (i, d) in self.ui.desktops.iter().enumerate() {
-            let on = i == self.ui.desktop;
+            let on = i == lead;
+            let measured = lit.is_some();
+            let cell = tabs.clone();
             if self.renaming_desktop == Some(i) {
                 row = row.child(div().w(theme::z(120.)).child(gpui_kit::component::input::Input::new(&self.desktop_rename).small()));
                 continue;
@@ -231,8 +279,12 @@ impl Shell {
                     .rounded(theme::z(theme::R_CONTROL))
                     .cursor_pointer()
                     .set(Type::Callout)
-                    .when(on, |d| d.bg(p.selection).text_color(p.label))
+                    .relative()
+                    // until the tabs have been measured once, the one showing carries its own highlight.
+                    .when(on && !measured, |d| d.bg(p.selection))
+                    .when(on, |d| d.text_color(p.label))
                     .when(!on, |d| d.text_color(p.secondary).hover(|d| d.bg(p.hover).text_color(p.label)))
+                    .child(canvas(move |b, _, _| { if let Some(slot) = cell.borrow_mut().1.get_mut(i) { *slot = Some(b); } }, |_, _, _, _| {}).absolute().inset_0())
                     .child(div().max_w(theme::z(96.)).truncate().child(d.name.clone()))
                     // something on it wants you: the blue every "waiting" in tessel is.
                     .when(wants, |d| d.child(div().size(px(6.)).flex_shrink_0().rounded_full().bg(theme::info(&p))))
@@ -487,9 +539,10 @@ impl Shell {
         self.desk.x.snap(x);
         self.desk.shift.set(x);
         let wanted = toward.filter(|_| x.abs() > 0.5);
-        // leaving from rest: this desktop as it is, for coming back to.
+        // leaving from rest: this desktop as it is, for coming back to, and its page, blurred.
         if self.desk.peek.is_none() && wanted.is_some() && self.desk.commit.is_none() {
             self.shoot_desktop(window);
+            self.veil_page(cx);
         }
         if self.desk.peek.as_ref().map(|p| p.0) != wanted {
             self.desk.peek = wanted.map(|n| (n, self.desk_panes(n)));
@@ -550,11 +603,15 @@ impl Shell {
                 g.x.snap(0.0);
                 g.shift.set(0.0);
                 g.peek = None;
+                g.veiling = None;
                 self.desktop_slide.snap(0.0);
                 self.settle_panes();
                 cx.notify();
             }
-            None if self.desk.x.value() == 0.0 && self.desk.peek.is_some() => self.desk.peek = None,
+            None if self.desk.x.value() == 0.0 && self.desk.peek.is_some() => {
+                self.desk.peek = None;
+                self.desk.veiling = None;
+            }
             None => {}
         }
     }
@@ -603,8 +660,16 @@ impl Shell {
         let mut layer = div().absolute().top(px(pad_top)).left(px(left)).w(px(w)).h(px(h));
         // as it looked when it was left: exactly what arriving will show.
         if let Some(shot) = self.ui.desktops.get(*n).and_then(|d| self.desk.shots.get(&d.id)).cloned() {
+            let veil = self.ui.desktops.get(*n).and_then(|d| self.desk.veils.get(&d.id)).cloned();
             let pic = canvas(|_, _, _| (), move |bounds, (), window, _| {
                 let _ = window.paint_image(bounds, bounds, Corners::default(), shot.clone(), 0, false);
+                // its page, blurred, where the picture has only the white behind it.
+                if let Some((veil, [x, y, w, h])) = &veil {
+                    let at = Bounds::new(point(bounds.origin.x + px(*x), bounds.origin.y + px(*y)), size(px(*w), px(*h)));
+                    let r = px(crate::theme::R_PANEL - 1.0);
+                    let corners = Corners { top_left: px(0.), top_right: px(0.), bottom_left: r, bottom_right: r };
+                    let _ = window.paint_image(at, at, corners, veil.clone(), 0, false);
+                }
             })
             .size_full();
             return Some(layer.child(pic).into_any_element());
