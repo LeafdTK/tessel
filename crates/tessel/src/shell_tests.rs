@@ -2809,14 +2809,14 @@ fn a_dev_box_is_picked_and_added_from_settings(cx: &mut TestAppContext) {
     rig.settle(cx);
     assert!(rig.exists(cx, "host-row-mac") && rig.exists(cx, "host-row-dev-box"), "this mac and the dev box are listed");
     rig.asked();
-    rig.click(cx, "host-show-dev-box");
+    rig.click(cx, "host-row-dev-box");
     assert!(matches!(rig.asked().as_slice(), [Cmd::Host(Some(id))] if id == "dev-box"), "showing it connects to it");
     assert_eq!(Hosts::load(&home).current.as_deref(), Some("dev-box"), "and it's remembered");
     assert!(rig.shell.read_with(cx, |s, _| s.model.sessions.is_empty()), "this mac's chats aren't the dev box's");
     rig.feed(cx, vec![UiEvent::On { host: Some("dev-box".into()), via: "quic, 4 ms".into() }, UiEvent::Connected, UiEvent::Sessions(vec![session(9, "On the box", RunState::Idle, None)])]);
     assert!(rig.exists(cx, sid(9).0), "its own chats");
     rig.asked();
-    rig.click(cx, "host-show-mac");
+    rig.click(cx, "host-row-mac");
     let asked = rig.asked();
     assert!(asked.iter().any(|c| matches!(c, Cmd::Host(None))), "and back: {asked:?}");
     // adding one: the form, then setting it up.

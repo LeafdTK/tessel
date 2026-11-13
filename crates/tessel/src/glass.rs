@@ -100,3 +100,4 @@ pub fn set(view: usize, on: bool, dark: bool) -> bool {
 pub fn set(_view: usize, _on: bool, _dark: bool) -> bool {
     false
 }
+

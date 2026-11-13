@@ -553,7 +553,12 @@ impl Shell {
                                 // a scrolling column: what's in it keeps its height, or it would
                                 // squeeze into the window and clip instead of scrolling.
                                 .child(div().flex_shrink_0().px_1().set(Type::Headline).child(title))
-                                .child(v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden().child(div().mt(px(-1.)).child(rows))),
+                                // a page that lays out cards of its own (hosts) gets no card around it.
+                                .child(if current == "hosts" {
+                                    div().flex_shrink_0().child(rows).into_any_element()
+                                } else {
+                                    v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden().child(div().mt(px(-1.)).child(rows)).into_any_element()
+                                }),
                         ),
                     ),
             )

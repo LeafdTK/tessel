@@ -313,6 +313,7 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     // apple's liquid glass where the system has it (macOS 26 on); the plain blur where it doesn't.
     let view = crate::shell::view_of(window).unwrap_or(0);
     let liquid = crate::glass::set(view, glass, dark);
+
     window.set_background_appearance(match (glass, liquid) {
         (true, true) => gpui_kit::WindowBackgroundAppearance::Transparent,
         (true, false) => gpui_kit::WindowBackgroundAppearance::Blurred,

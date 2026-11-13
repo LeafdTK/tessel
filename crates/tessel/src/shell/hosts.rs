@@ -616,87 +616,143 @@ impl Shell {
     pub(crate) fn hosts_settings(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
         let current = self.hosts.list.current.clone();
-        let row = |id: SharedString, icon: &'static str, name: String, about: String, showing: bool| {
+        let card = || v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden();
+        let connected = |id: &str| self.hosts.on.as_deref() == Some(id) && matches!(self.model.connection, crate::model::Connection::Connected);
+
+        // this mac, then each host: what it is, how it's doing, and one menu.
+        let mut machines = card().child(self.machine_row("mac", "this-mac", "laptop", "This Mac".into(), "Chats and agents on this Mac".into(), current.is_none(), None, cx));
+        for h in &self.hosts.list.hosts {
+            let showing = current.as_deref() == Some(h.id.as_str());
+            let mut about = if !h.ready() {
+                "Not set up yet".to_owned()
+            } else {
+                match (&h.vercel, h.transport) {
+                    (Some(v), _) => format!("Vercel sandbox · {} CPUs", v.vcpus),
+                    (None, Transport::Ssh) => format!("{} · through ssh", h.ssh),
+                    (None, _) => format!("{} · QUIC", h.ssh),
+                }
+            };
+            if showing && connected(&h.id) {
+                about = format!("{about} · {}", self.hosts.via);
+            }
+            let icon = if h.vercel.is_some() { "cloud" } else { "server" };
+            machines = machines.child(self.machine_row(&h.id, &h.id, icon, h.name.clone(), about, showing, Some(h), cx));
+            if let Some(run) = self.hosts.run.as_ref().filter(|r| r.host == h.id) {
+                machines = machines.child(self.setup_steps(run));
+            }
+        }
+        machines = machines.child(
             h_flex()
-                .id(id)
+                .id("host-add-open")
                 .test_support()
-                .min_h(px(52.))
+                .h(px(56.))
                 .px_4()
-                .py_2()
                 .gap_3()
                 .border_t_1()
                 .border_color(p.separator)
-                .child(Icon::empty().path(format!("icons/{icon}.svg")).size(z(16.)).text_color(if showing { p.accent } else { p.secondary }))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(2.))
-                        .child(h_flex().gap_2().child(div().set(Type::Body).child(name)).when(showing, |d| d.child(theme::count_pill(&p, "Showing".to_owned(), false))))
-                        .child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(about)),
-                )
-        };
-        let mut rows = v_flex().child(
-            row("host-row-mac".into(), "laptop", "This Mac".into(), "Chats, terminals and agents run here.".into(), current.is_none()).when(current.is_some(), |r| {
-                r.child(theme::button(&p, "host-show-mac", "Show", None, ButtonKind::Secondary).test_support().on_click(cx.listener(|this, _, _, cx| this.switch_host(None, cx))))
-            }),
+                .hover(|d| d.bg(p.hover))
+                .on_click(cx.listener(|this, _, window, cx| this.setup_flow_new(window, cx)))
+                .child(div().size(px(30.)).flex_shrink_0().flex().items_center().justify_center().rounded(px(8.)).bg(p.fill).child(Icon::empty().path("icons/plus.svg").size(z(15.)).text_color(p.label)))
+                .child(v_flex().child(div().set(Type::Body).child("Add a dev box")).child(div().set(Type::Subheadline).text_color(p.secondary).child("A machine over ssh, or a Vercel sandbox"))),
         );
-        rows = rows.child(self.net_settings(cx));
-        let busy = self.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
-        for h in &self.hosts.list.hosts {
-            let showing = current.as_deref() == Some(h.id.as_str());
-            let reach = h.vercel.as_ref().map_or_else(|| h.ssh.clone(), |v| format!("vercel: {}", v.name));
-            let about = if !h.ready() {
-                format!("{reach} · not set up yet")
-            } else {
-                let how = match h.transport {
-                    Transport::Quic => format!("quic to {}", h.address.as_deref().unwrap_or("?")),
-                    Transport::Ssh => "through ssh: udp is closed, open it for quic".to_owned(),
-                    Transport::Vercel => "a vercel sandbox: runs while shown, keeps its disk".to_owned(),
-                };
-                let arch = h.arch.as_deref().map(|a| format!(" · linux {a}")).unwrap_or_default();
-                let live = if showing && self.hosts.on.as_deref() == Some(h.id.as_str()) && matches!(self.model.connection, crate::model::Connection::Connected) {
-                    format!(" · {}", self.hosts.via)
-                } else {
-                    String::new()
-                };
-                format!("{reach} · {how}{arch}{live}")
-            };
-            let (id, id2, id3) = (h.id.clone(), h.id.clone(), h.id.clone());
-            let armed = self.hosts.confirm_remove.as_deref() == Some(h.id.as_str());
-            let mut r = row(SharedString::from(format!("host-row-{}", h.id)), "server", h.name.clone(), about, showing);
-            if !showing && h.ready() {
-                r = r.child(theme::button(&p, SharedString::from(format!("host-show-{}", h.id)), "Show", None, ButtonKind::Secondary).test_support().on_click(cx.listener(move |this, _, _, cx| this.switch_host(Some(id.clone()), cx))));
-            }
-            if showing {
-                r = r.child(theme::button(&p, "host-sign-in", "Sign in to Claude", Some("log-in"), ButtonKind::Ghost).test_support().on_click(cx.listener(|this, _, window, cx| this.host_sign_in(window, cx))));
-            }
-            if h.ready() {
-                let id5 = h.id.clone();
-                r = r.child(theme::button(&p, SharedString::from(format!("host-bring-{}", h.id)), "Bring", Some("package"), ButtonKind::Ghost).test_support().on_click(cx.listener(move |this, _, window, cx| this.setup_flow_bring(id5.clone(), window, cx))));
-            }
-            if h.vercel.is_some() && h.ready() {
-                let id4 = h.id.clone();
-                r = r.child(theme::button(&p, SharedString::from(format!("host-stop-{}", h.id)), "Stop", None, ButtonKind::Ghost).test_support().on_click(cx.listener(move |this, _, window, cx| this.host_stop(&id4, window, cx))));
-            }
-            r = r
-                .child(
-                    theme::button(&p, SharedString::from(format!("host-setup-{}", h.id)), if h.ready() { "Update" } else { "Set Up" }, None, ButtonKind::Ghost)
-                        .test_support()
-                        .when(busy, |b| b.opacity(0.5))
-                        .on_click(cx.listener(move |this, _, window, cx| this.host_setup(id2.clone(), Options::default(), false, window, cx))),
-                )
-                .child(
-                    theme::button(&p, SharedString::from(format!("host-remove-{}", h.id)), if armed { "Remove it" } else { "Remove" }, None, if armed { ButtonKind::Primary } else { ButtonKind::Ghost })
-                        .test_support()
-                        .on_click(cx.listener(move |this, _, _, cx| this.host_remove(&id3, cx))),
-                );
-            rows = rows.child(r);
-            if let Some(run) = self.hosts.run.as_ref().filter(|r| r.host == h.id) {
-                rows = rows.child(self.setup_steps(run));
-            }
-        }
-        rows.children(self.hosts.said.clone().map(|t| div().px_4().py_2().border_t_1().border_color(p.separator).set(Type::Callout).text_color(p.secondary).child(t))).child(self.add_host_el(cx))
+        v_flex()
+            .gap_3()
+            .child(machines)
+            .children(self.hosts.said.clone().map(|t| div().px_1().set(Type::Callout).text_color(p.secondary).child(t)))
+            .child(div().pt_2().px_1().set(Type::Headline).child("Connections"))
+            .child(card().child(div().mt(px(-1.)).child(self.net_settings(cx))))
+    }
+
+    /// one machine in Settings › Hosts: its tile, name and state; clicking shows it.
+    #[allow(clippy::too_many_arguments)]
+    fn machine_row(&self, id: &str, seed: &str, icon: &'static str, name: String, about: String, showing: bool, host: Option<&Host>, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let to = host.map(|h| h.id.clone());
+        let ready = host.is_none_or(Host::ready);
+        let group = SharedString::from(format!("host-row-{id}"));
+        h_flex()
+            .id(group.clone())
+            .test_support()
+            .group(group.clone())
+            .h(px(56.))
+            .px_4()
+            .gap_3()
+            .when(host.is_some(), |d| d.border_t_1().border_color(p.separator))
+            .when(!showing && ready, |d| {
+                let to = to.clone();
+                d.hover(|d| d.bg(p.hover)).on_click(cx.listener(move |this, _, _, cx| this.switch_host(to.clone(), cx)))
+            })
+            .child(super::avatar::machine(seed, icon, 30., 8.))
+            .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(name)).child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(about)))
+            .when(showing, |d| d.child(h_flex().gap_1().child(Icon::empty().path("icons/check.svg").size(z(13.)).text_color(p.accent)).child(div().set(Type::Subheadline).text_color(p.secondary).child("Showing"))))
+            .children(host.map(|h| self.host_menu(h, showing, cx)))
+            .into_any_element()
+    }
+
+    /// what can be done to a host, in one menu.
+    fn host_menu(&self, h: &Host, showing: bool, cx: &mut Context<Self>) -> AnyElement {
+        let me = cx.entity().downgrade();
+        let (id, ready, sandbox) = (h.id.clone(), h.ready(), h.vercel.is_some());
+        div()
+            .id(SharedString::from(format!("host-{id}-menu-zone")))
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                Popover::new(SharedString::from(format!("host-{id}-menu")))
+                    .p_0()
+                    .anchor(Anchor::TopRight)
+                    .trigger(Button::new(SharedString::from(format!("host-{id}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
+                    .content(move |_, _, cx| {
+                        let popover = cx.entity();
+                        let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                        let this = shell.read(cx);
+                        let p = this.palette.get();
+                        let armed = this.hosts.confirm_remove.as_deref() == Some(id.as_str());
+                        let busy = this.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
+                        let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>, close: bool| {
+                            let (me, popover) = (me.clone(), popover.clone());
+                            move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                                if close {
+                                    popover.update(cx, |st, cx| st.dismiss(window, cx));
+                                }
+                                let _ = me.update(cx, |this, cx| f(this, window, cx));
+                            }
+                        };
+                        let i = |s: &str| SharedString::from(format!("host-{id}-{s}"));
+                        let mut list = theme::float_list(&p).w(px(232.));
+                        if ready && !showing {
+                            let to = id.clone();
+                            list = list.child(theme::float_item(&p, i("show"), Some("monitor"), "Show", None, false).test_support().on_click(act(Box::new(move |this, _, cx| this.switch_host(Some(to.clone()), cx)), true)));
+                        }
+                        if ready {
+                            let to = id.clone();
+                            list = list.child(theme::float_item(&p, i("bring"), Some("package"), "Bring your Claude…", None, false).test_support().on_click(act(Box::new(move |this, w, cx| this.setup_flow_bring(to.clone(), w, cx)), true)));
+                        }
+                        if showing {
+                            list = list.child(theme::float_item(&p, i("sign-in"), Some("log-in"), "Sign in to Claude there", None, false).test_support().on_click(act(Box::new(|this, w, cx| this.host_sign_in(w, cx)), true)));
+                        }
+                        if !busy {
+                            let to = id.clone();
+                            list = list.child(
+                                theme::float_item(&p, i("setup"), Some("refresh-cw"), if ready { "Update tessel there" } else { "Set up" }, None, false)
+                                    .test_support()
+                                    .on_click(act(Box::new(move |this, w, cx| this.host_setup(to.clone(), Options::default(), false, w, cx)), true)),
+                            );
+                        }
+                        if sandbox && ready {
+                            let to = id.clone();
+                            list = list.child(theme::float_item(&p, i("stop"), Some("square"), "Stop the sandbox", None, false).test_support().on_click(act(Box::new(move |this, w, cx| this.host_stop(&to, w, cx)), true)));
+                        }
+                        let to = id.clone();
+                        list.child(theme::float_sep(&p))
+                            .child(
+                                theme::float_danger(&p, i("remove"), Some("trash"), if armed { "Click again to remove" } else { "Remove" }, armed.then_some("Tessel stays installed there"))
+                                    .test_support()
+                                    .on_click(act(Box::new(move |this, _, cx| this.host_remove(&to, cx)), armed)),
+                            )
+                            .into_any_element()
+                    }),
+            )
+            .into_any_element()
     }
 
     /// Settings › Hosts › Sandbox connections: how sandboxes are reached.
@@ -710,9 +766,9 @@ impl Shell {
             Via::Ws => "ws",
         };
         let via_about = match net.via {
-            Via::Auto => "QUIC by key, punched straight through both NATs; WebSockets through Vercel when it can't get through.",
-            Via::Quic => "QUIC by key only: it fails rather than going slow.",
-            Via::Ws => "WebSockets through the sandbox's HTTPS address: no UDP, no relay, no lookup. Every request goes through Vercel's proxy, about a third slower.",
+            Via::Auto => "QUIC straight to the sandbox, WebSockets if that can't get through.",
+            Via::Quic => "QUIC only: it fails rather than going slow.",
+            Via::Ws => "Through Vercel's HTTPS address. No UDP or relay, about a third slower.",
         };
         let relay = match &net.relay {
             Relay::N0 => "n0",
@@ -720,15 +776,12 @@ impl Shell {
             Relay::None => "none",
         };
         let relay_about = match &net.relay {
-            Relay::N0 => "iroh's public relays, run by n0: they carry the first second of a connection, and what can't go direct. They see which keys talk, never what's said.",
-            Relay::Own(_) => "Your own iroh-relay: nothing goes through anyone else's servers.",
-            Relay::None => "No relay: direct paths only. Connecting takes longer, and fails where the NATs can't be punched.",
+            Relay::N0 => "iroh's public relays carry the first moment of a connection. They never see what's said.",
+            Relay::Own(_) => "Your own relay: nothing goes through anyone else's servers.",
+            Relay::None => "Direct only: slower to connect, and fails behind strict networks.",
         };
         let quic = net.via != Via::Ws;
         let mut block = v_flex()
-            .border_t_1()
-            .border_color(p.separator)
-            .child(div().px_4().pt_3().pb_1().set(Type::Headline).child("Sandbox connections"))
             .child(self.setting_row(
                 "Connect by",
                 via_about,
@@ -781,7 +834,7 @@ impl Shell {
             let lookup = net.lookup;
             block = block.child(self.setting_row(
                 "Public lookup",
-                if own { "Where each key is, published at n0's dns.iroh.link. Off, sandboxes are found at your relay, and nothing is published anywhere." } else { "Where each key is, published at n0's dns.iroh.link. It can only be off with a relay of your own." },
+                if own { "Finds a sandbox by its key at dns.iroh.link. Off, it's found at your relay." } else { "Finds a sandbox by its key at dns.iroh.link. Turning it off needs your own relay." },
                 Switch::new("net-lookup").checked(lookup).disabled(!own).on_click(cx.listener(|this, on: &bool, window, cx| {
                     let on = *on;
                     this.set_net(|n| n.lookup = on, window, cx);
@@ -820,14 +873,5 @@ impl Shell {
         }
     }
 
-    fn add_host_el(&self, cx: &mut Context<Self>) -> Div {
-        let p = self.palette.get();
-        v_flex().border_t_1().border_color(p.separator).px_4().py_3().gap_2().child(
-            h_flex()
-                .gap_3()
-                .child(div().flex_1().set(Type::Subheadline).text_color(p.secondary).child("A Linux machine you can ssh into, or a Vercel sandbox. Tessel copies itself there, brings your Claude if you like, and the chats, terminals and git run there."))
-                .child(theme::button(&p, "host-add-open", "Add a Dev Box", Some("plus"), ButtonKind::Primary).test_support().on_click(cx.listener(|this, _, window, cx| this.setup_flow_new(window, cx)))),
-        )
-    }
 
 }
