@@ -7606,6 +7606,7 @@ dependencies = [
  "serde_json",
  "tessel-client",
  "tessel-proto",
+ "tessel-remote",
  "tessel-rich",
  "tessel-term",
  "tokio",
