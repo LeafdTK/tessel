@@ -136,7 +136,7 @@ impl Shell {
     pub(crate) fn setup_scripts_with_ai(&mut self, cx: &mut Context<Self>) {
         let Some(cwd) = self.model.open_summary().map(|s| s.cwd.clone()) else { return };
         self.show_new = false;
-        self.cmd(Cmd::Create { cwd, worktree: false, prompt: SETUP_PROMPT.to_owned() });
+        self.cmd(Cmd::Create { cwd, worktree: false, prompt: SETUP_PROMPT.to_owned(), attachments: Vec::new() });
         // what it writes shows up the next time the menu is opened.
         self.scripts.remove(&self.model.open_summary().map(|s| s.cwd.clone()).unwrap_or_default());
         cx.notify();

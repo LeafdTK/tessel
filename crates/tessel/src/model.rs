@@ -442,22 +442,50 @@ impl SidebarLayout {
         {
             entries.push(Entry::Header(prev));
         }
-        // newcomers keep the header they have in `next`, at the end.
+        // newcomers go under their header: the one already here (first in it,
+        // newest first, as they'll stay), else a new one at the end. a project
+        // listed twice reads as two projects.
         let mut header: Option<&String> = None;
         let mut opened: Option<&String> = None;
+        // where the newcomer's own subagent rows go after it.
+        let mut at: Option<usize> = None;
         for e in &next.entries {
             match e {
                 Entry::Header(h) => header = Some(h),
                 Entry::Row(id) if !here.contains(id) => {
-                    if opened != header
-                        && let Some(h) = header
-                    {
-                        entries.push(Entry::Header(h.clone()));
-                        opened = header;
+                    let existing = header.and_then(|h| entries.iter().position(|x| matches!(x, Entry::Header(x) if x == h)));
+                    match existing {
+                        Some(i) if opened != header || at.is_some() => {
+                            // after the header and any newcomers already put under it.
+                            let mut j = i + 1;
+                            while let Some(Entry::Row(r) | Entry::Sub(r, _)) = entries.get(j) {
+                                if here.contains(r) {
+                                    break;
+                                }
+                                j += 1;
+                            }
+                            entries.insert(j, Entry::Row(*id));
+                            at = Some(j + 1);
+                        }
+                        _ => {
+                            if opened != header
+                                && let Some(h) = header
+                            {
+                                entries.push(Entry::Header(h.clone()));
+                            }
+                            entries.push(Entry::Row(*id));
+                            at = None;
+                        }
                     }
-                    entries.push(Entry::Row(*id));
+                    opened = header;
                 }
-                Entry::Sub(id, _) if !here.contains(id) => entries.push(e.clone()),
+                Entry::Sub(id, _) if !here.contains(id) => match at {
+                    Some(j) => {
+                        entries.insert(j, e.clone());
+                        at = Some(j + 1);
+                    }
+                    None => entries.push(e.clone()),
+                },
                 Entry::Row(_) | Entry::Sub(..) => {}
             }
         }
@@ -850,6 +878,14 @@ mod tests {
         let moves: HashMap<_, _> = held.moves_to(&real).into_iter().collect();
         assert_eq!(moves[&id(1)], (HEADER_H + ROW_H) - HEADER_H, "1 travels up into the queue");
         assert!(moves.contains_key(&id(4)) && moves.contains_key(&id(2)));
+    }
+
+    #[test]
+    fn under_a_resting_pointer_a_new_session_joins_its_project_instead_of_listing_it_twice() {
+        let shown = layout(vec![in_project(1, "/w/api", None), in_project(3, "/w/web", None)]);
+        let real = layout(vec![in_project(1, "/w/api", None), in_project(3, "/w/web", None), in_project(6, "/w/api", None), in_project(7, "/w/api", None)]);
+        assert_eq!(shape(&real), ["[api]", "7", "6", "1", "[web]", "3"]);
+        assert_eq!(shape(&shown.held(&real)), ["[api]", "7", "6", "1", "[web]", "3"], "one api, the new ones first in it, as they'll stay");
     }
 
     #[test]

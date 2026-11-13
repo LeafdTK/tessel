@@ -125,10 +125,16 @@ impl Shell {
     /// it; anything else is named in the text, for the agent to open itself.
     pub(crate) fn attach_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         self.error = None;
+        // the box being written in: a new session's, or the open chat's.
+        let new = self.show_new;
         for path in paths {
             if media_type(&path).is_none() {
                 let mention = format!("`{}` ", path.to_string_lossy());
-                self.composer.update(cx, |c, cx| c.insert(mention, window, cx));
+                if new {
+                    self.new_prompt.update(cx, |c, cx| c.insert(mention, window, cx));
+                } else {
+                    self.composer.update(cx, |c, cx| c.insert(mention, window, cx));
+                }
                 continue;
             }
             match load_attachment(&path) {
@@ -136,7 +142,11 @@ impl Shell {
                 Err(why) => self.error = Some(why),
             }
         }
-        self.composer.update(cx, |c, cx| c.focus(window, cx));
+        if new {
+            self.new_prompt.update(cx, |c, cx| c.focus(window, cx));
+        } else {
+            self.composer.update(cx, |c, cx| c.focus(window, cx));
+        }
         cx.notify();
     }
 

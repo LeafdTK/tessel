@@ -80,7 +80,7 @@ impl Daemon {
 
 async fn create(c: &Client, cwd: &str, prompt: Option<&str>) -> SessionSummary {
     let req = Request::SessionCreate {
-        cmd_id: Uuid::new_v4(), cwd: cwd.into(), worktree: None, goal: None, prompt: prompt.map(str::to_owned), model: None, parent: None,
+        cmd_id: Uuid::new_v4(), cwd: cwd.into(), worktree: None, goal: None, prompt: prompt.map(str::to_owned), model: None, parent: None, attachments: vec![]
     };
     match c.request(req).await.unwrap() {
         Response::Session { summary } => summary,
@@ -378,7 +378,7 @@ async fn a_resent_command_does_not_happen_twice() {
     let d = Daemon::start(&["plain"]).await;
     let (c, _) = d.client().await;
     let cmd_id = Uuid::new_v4();
-    let req = Request::SessionCreate { cmd_id, cwd: d.cwd(), worktree: None, goal: Some("once".into()), prompt: Some("hi".into()), model: None, parent: None };
+    let req = Request::SessionCreate { cmd_id, cwd: d.cwd(), worktree: None, goal: Some("once".into()), prompt: Some("hi".into()), model: None, parent: None, attachments: vec![] };
     let Response::Session { summary: first } = c.request(req.clone()).await.unwrap() else { panic!() };
     let Response::Session { summary: second } = c.request(req).await.unwrap() else { panic!() };
     assert_eq!(first.id, second.id);
@@ -405,9 +405,9 @@ async fn bad_requests_get_clear_errors() {
     assert_eq!(code(c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: ghost, text: "x".into(), attachments: vec![] }).await), ErrorCode::NotFound);
     assert_eq!(code(c.request(Request::Subscribe { summary: false, detail: Some(ghost), tail: 1 }).await), ErrorCode::NotFound);
     assert_eq!(code(c.request(Request::MarkSeen { session: ghost, seq: 1 }).await), ErrorCode::NotFound);
-    let no_dir = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: "/definitely/not/here".into(), worktree: None, goal: None, prompt: None, model: None, parent: None };
+    let no_dir = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: "/definitely/not/here".into(), worktree: None, goal: None, prompt: None, model: None, parent: None, attachments: vec![] };
     assert_eq!(code(c.request(no_dir).await), ErrorCode::Invalid);
-    let orphan = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: d.cwd(), worktree: None, goal: None, prompt: None, model: None, parent: Some(ghost) };
+    let orphan = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: d.cwd(), worktree: None, goal: None, prompt: None, model: None, parent: Some(ghost), attachments: vec![] };
     assert_eq!(code(c.request(orphan).await), ErrorCode::NotFound);
     let s = create(&c, &d.cwd(), None).await;
     assert_eq!(code(c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "   ".into(), attachments: vec![] }).await), ErrorCode::Invalid);
@@ -535,7 +535,7 @@ async fn a_session_can_be_given_its_own_worktree_and_is_otherwise_the_same_thing
     let (c, _) = d.client().await;
     let req = |name: &str| Request::SessionCreate {
         cmd_id: Uuid::new_v4(), cwd: repo.to_string_lossy().into_owned(), worktree: Some(WorktreeSpec { base: None, name: Some(name.into()) }),
-        goal: Some("isolated".into()), prompt: Some("hi".into()), model: None, parent: None,
+        goal: Some("isolated".into()), prompt: Some("hi".into()), model: None, parent: None, attachments: vec![],
     };
     let Response::Session { summary: s } = c.request(req("feature-x")).await.unwrap() else { panic!() };
     let wt = s.worktree.clone().expect("has a worktree");
@@ -804,6 +804,23 @@ async fn a_screenshot_goes_to_the_agent_with_the_message_and_other_files_are_ref
     assert_eq!(sent[1], serde_json::json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}));
     let snap = snapshot(&c, s.id).await;
     assert!(matches!(&snap.items[0].body, ItemBody::User { text, attachments } if text == "what is this?" && attachments == &["shot.png".to_owned()]));
+}
+
+#[tokio::test]
+async fn a_new_session_can_start_with_a_picture() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    let shot = Attachment { name: "shot.png".into(), media_type: "image/png".into(), data: "AAAA".into(), element: None };
+    let req = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: d.cwd(), worktree: None, goal: None, prompt: Some("fix this".into()), model: None, parent: None, attachments: vec![shot.clone()] };
+    c.request(req).await.unwrap();
+    let sent = &d.written()[0]["message"]["content"];
+    assert_eq!(sent[1]["source"]["data"], "AAAA", "the picture goes with the first message");
+    // what can't be attached is refused before anything is made.
+    let zip = Attachment { name: "logs.zip".into(), media_type: "application/zip".into(), ..shot };
+    let bad = Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: d.cwd(), worktree: None, goal: None, prompt: Some("x".into()), model: None, parent: None, attachments: vec![zip] };
+    assert!(c.request(bad).await.is_err());
+    let Response::Sessions { sessions } = c.request(Request::SessionList).await.unwrap() else { panic!() };
+    assert_eq!(sessions.len(), 1);
 }
 
 #[tokio::test]
@@ -1447,7 +1464,7 @@ async fn a_new_workspace_gets_its_files_its_setup_its_ports_and_its_buttons() {
     let (c, _) = d.client().await;
     let create = Request::SessionCreate {
         cmd_id: Uuid::new_v4(), cwd: repo.to_string_lossy().into_owned(), worktree: Some(WorktreeSpec { base: None, name: Some("ws".into()) }),
-        goal: Some("w".into()), prompt: Some("hi".into()), model: None, parent: None,
+        goal: Some("w".into()), prompt: Some("hi".into()), model: None, parent: None, attachments: vec![],
     };
     let Response::Session { summary: s } = c.request(create).await.unwrap() else { panic!() };
     let ws = PathBuf::from(&s.cwd);

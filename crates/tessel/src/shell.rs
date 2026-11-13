@@ -124,6 +124,8 @@ pub struct Shell {
     pub(crate) new_project: Option<String>,
     new_prompt: Entity<InputState>,
     pub(crate) new_worktree: bool,
+    /// Start was pressed: the session is being made (a worktree can take a while).
+    pub(crate) creating: Option<Instant>,
     /// whether a folder is in a git repository, as the daemon said; `None`
     /// while it's being asked. a folder that isn't one can't have a worktree.
     pub(crate) folder_git: std::cell::RefCell<HashMap<String, Option<bool>>>,
@@ -264,6 +266,8 @@ pub struct Shell {
     theme_preview_by_palette: bool,
     /// the commit went in: the message box empties (it needs a window to).
     git_clear_message: bool,
+    /// the new-session box empties once its session exists (that needs a window).
+    clear_new_prompt: bool,
     /// a message written for what's staged, for the message box.
     git_suggestion: Option<String>,
     pub(crate) palette_ui: palette::PaletteState,
@@ -614,6 +618,7 @@ impl Shell {
             new_prompt,
             // each session in a workspace of its own, where the folder allows.
             new_worktree: true,
+            creating: None,
             folder_git: Default::default(),
             folder_asked: Default::default(),
             show_new: true,
@@ -697,6 +702,7 @@ impl Shell {
             theme_preview: None,
             theme_preview_by_palette: false,
             git_clear_message: false,
+            clear_new_prompt: false,
             git_suggestion: None,
             palette_ui,
             rail_open: false,
@@ -1041,8 +1047,15 @@ impl Shell {
             UiEvent::Created => {
                 self.show_new = false;
                 self.error = None;
+                if self.creating.take().is_some() {
+                    self.attachments.clear();
+                    self.clear_new_prompt = true;
+                }
             }
-            UiEvent::Error(msg) => self.error = Some(msg),
+            UiEvent::Error(msg) => {
+                self.creating = None;
+                self.error = Some(msg);
+            }
         }
     }
 
@@ -1329,9 +1342,17 @@ impl Shell {
             cx.notify();
             return;
         };
+        if self.creating.is_some() {
+            return;
+        }
         let worktree = self.new_worktree && self.folder_is_git(&cwd) != Some(false);
-        self.cmd(Cmd::Create { cwd, worktree, prompt });
-        self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
+        // what was written and attached stays until the session exists, so a
+        // failure to make it loses nothing.
+        self.cmd(Cmd::Create { cwd, worktree, prompt, attachments: self.attachments.clone() });
+        self.creating = Some(Instant::now());
+        self.error = None;
+        let _ = window;
+        cx.notify();
     }
 
     /// allow or refuse a session's waiting "may I?", open or not.
@@ -1807,6 +1828,8 @@ impl Shell {
         let plain = folder.as_deref().and_then(|f| self.folder_is_git(f)) == Some(false);
         let worktree = self.new_worktree && !plain;
         let picker = self.project_picker(cx);
+        let chips = self.attachment_chips(cx);
+        let paste = cx.entity().downgrade();
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
             let disabled = set && plain;
             theme::segment(&p, id, label, on)
@@ -1829,7 +1852,8 @@ impl Shell {
             .border_color(p.separator)
             .bg(p.raised)
             .shadow_md()
-            .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false))
+            .children(chips)
+            .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false).on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)))
             .child(
                 h_flex()
                     .flex_wrap()
@@ -1838,11 +1862,30 @@ impl Shell {
                     .child(theme::tray(&p).child(segment("in-place", "In place", !worktree, false)).child(segment("worktree-toggle", "New worktree", worktree, true)))
                     .child(div().flex_1().min_w(px(0.)))
                     .child(
-                        theme::button(&p, "create", "Start", None, theme::ButtonKind::Primary)
+                        Button::new("new-attach")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::component::Icon::empty().path("icons/paperclip.svg"))
+                            .tooltip("Attach pictures or PDFs (or paste, or drop them here)")
+                            .on_click(cx.listener(|this, _, window, cx| this.choose_attachments(window, cx))),
+                    )
+                    .child({
+                        // pressed: it says what's happening, and how long it's been.
+                        let label = match self.creating {
+                            None => "Start".to_owned(),
+                            Some(t) => {
+                                let secs = t.elapsed().as_secs();
+                                let what = if worktree { "Making a worktree" } else { "Starting" };
+                                if secs >= 2 { format!("{what}… {secs}s") } else { format!("{what}…") }
+                            }
+                        };
+                        let busy = self.creating.is_some();
+                        theme::button(&p, "create", label, busy.then_some("loader-circle"), theme::ButtonKind::Primary)
                             .test_support()
-                            .aria_label("Start")
-                            .on_click(cx.listener(|this, _, window, cx| this.create(window, cx))),
-                    ),
+                            .aria_label(if busy { "Starting" } else { "Start" })
+                            .when(busy, |b| b.opacity(0.8).cursor_default())
+                            .on_click(cx.listener(|this, _, window, cx| this.create(window, cx)))
+                    }),
             );
         v_flex().size_full().items_center().justify_center().px_4().pb(px(48.)).child(
             v_flex()
@@ -2451,6 +2494,9 @@ impl Render for Shell {
         self.sync_terminals(window, cx);
         self.step_bench_term(window, cx);
         self.sync_git_message(window, cx);
+        if std::mem::take(&mut self.clear_new_prompt) {
+            self.new_prompt.update(cx, |s, cx| s.set_value("", window, cx));
+        }
         // an `@` wants the session's files.
         if mentions::mention_at_end(&self.composer.read(cx).value()).is_some_and(|(k, ..)| k == mentions::Mention::File) {
             self.want_files();

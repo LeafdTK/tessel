@@ -91,6 +91,7 @@ pub struct Create {
     cwd: String,
     goal: Option<String>,
     prompt: Option<String>,
+    attachments: Vec<tessel_proto::Attachment>,
     model: Option<String>,
     parent: Option<SessionId>,
     fork: Option<Fork>,
@@ -635,7 +636,7 @@ impl Hub {
                 }
             }
             Request::SessionList => Ok(Response::Sessions { sessions: self.summaries() }),
-            Request::SessionCreate { cmd_id, cwd, worktree, goal, prompt, model, parent } => {
+            Request::SessionCreate { cmd_id, cwd, worktree, goal, prompt, model, parent, attachments } => {
                 if let Some(prev) = self.done.get(&cmd_id) {
                     return Some(Ok(prev.clone()));
                 }
@@ -647,7 +648,11 @@ impl Hub {
                 {
                     return Some(Err(RpcError::new(ErrorCode::NotFound, format!("parent session {p} does not exist"))));
                 }
-                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, model, parent, fork: None };
+                // refused before anything is made, as a message would be.
+                if let Some(bad) = attachments.iter().find(|a| !a.is_supported()) {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{} can't be attached ({}). images and pdfs can; for anything else, mention its path", bad.name, bad.media_type))));
+                }
+                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, attachments, model, parent, fork: None };
                 match worktree {
                     None => self.create_session(create, cwd, None),
                     Some(spec) => {
@@ -899,7 +904,7 @@ impl Hub {
                     permission_mode: st.permission_mode.clone(),
                     repo: st.meta.worktree.as_ref().map(|w| w.repo.clone()),
                 };
-                let create = Create { cmd_id, cwd: st.meta.cwd.clone(), goal: Some(format!("{} (fork)", st.meta.goal)), prompt: None, model: st.model.clone(), parent: None, fork: Some(fork) };
+                let create = Create { cmd_id, cwd: st.meta.cwd.clone(), goal: Some(format!("{} (fork)", st.meta.goal)), prompt: None, attachments: Vec::new(), model: st.model.clone(), parent: None, fork: Some(fork) };
                 if workspace {
                     // a worktree branched from where this one is now: its commit, not the repo's default.
                     let spec = WorktreeSpec { base: Some("HEAD".into()), name: None };
@@ -1586,9 +1591,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from },
         );
         self.publish_summary(id, now);
-        if let Some(prompt) = c.prompt.filter(|p| !p.trim().is_empty()) {
+        let prompt = c.prompt.unwrap_or_default();
+        if !prompt.trim().is_empty() || !c.attachments.is_empty() {
             // the session exists either way; a failed first send is reported in it.
-            if let Err(e) = self.send_user(id, c.cmd_id, prompt, Vec::new()) {
+            if let Err(e) = self.send_user(id, c.cmd_id, prompt, c.attachments) {
                 eprintln!("tesseld: first message for {id}: {e}");
             }
         }

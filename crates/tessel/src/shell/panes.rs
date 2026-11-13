@@ -1488,7 +1488,7 @@ impl Shell {
     pub(crate) fn new_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(cwd) = self.model.open_summary().map(|s| s.cwd.clone()) else { return };
         self.show_new = false;
-        self.cmd(Cmd::Create { cwd, worktree: false, prompt: String::new() });
+        self.cmd(Cmd::Create { cwd, worktree: false, prompt: String::new(), attachments: Vec::new() });
         self.composer.update(cx, |c, cx| c.focus(window, cx));
         cx.notify();
     }

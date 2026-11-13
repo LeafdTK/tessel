@@ -178,7 +178,7 @@ impl Shell {
                 Some(prompt) => {
                     let cwd = arg(args, "cwd").map(str::to_owned).or_else(|| self.new_folder()).ok_or("no project to start in: give cwd")?;
                     let worktree = args.get("worktree").and_then(Value::as_bool).unwrap_or(false);
-                    self.cmd(Cmd::Create { cwd, worktree, prompt: prompt.to_owned() });
+                    self.cmd(Cmd::Create { cwd, worktree, prompt: prompt.to_owned(), attachments: Vec::new() });
                     done
                 }
                 None => {

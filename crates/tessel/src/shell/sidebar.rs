@@ -76,7 +76,8 @@ impl Shell {
                 .group_hover(group.clone(), |s| s.visible())
                 .child(Button::new(SharedString::from(format!("project-{title}-new"))).ghost().small().rounded(px(5.5)).icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session Here").on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.new_worktree = false;
+                    // a workspace of its own unless asked otherwise (a plain folder can't have one).
+                    this.new_worktree = true;
                     this.start_in(f1.clone(), window, cx);
                 })))
                 .child(
@@ -101,7 +102,7 @@ impl Shell {
                             let (f1, f2, f3, f4, n) = (folder.clone(), folder.clone(), folder.clone(), folder.clone(), name.clone());
                             theme::float_list(&p)
                                 .w(px(240.))
-                                .child(theme::float_item(&p, "project-menu-new", Some("plus"), "New session", None, false).on_click(act(Box::new(move |this, w, cx| {
+                                .child(theme::float_item(&p, "project-menu-new", Some("plus"), "New session, in place", None, false).on_click(act(Box::new(move |this, w, cx| {
                                     this.new_worktree = false;
                                     this.start_in(f1.clone(), w, cx);
                                 }))))

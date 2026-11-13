@@ -256,7 +256,7 @@ impl Shell {
                 match result {
                     Ok((dir, prompt)) => {
                         this.sheet = None;
-                        this.cmd(Cmd::Create { cwd: dir.to_string_lossy().into_owned(), worktree: false, prompt });
+                        this.cmd(Cmd::Create { cwd: dir.to_string_lossy().into_owned(), worktree: false, prompt, attachments: Vec::new() });
                     }
                     Err(e) => this.sheet_error = Some(e),
                 }

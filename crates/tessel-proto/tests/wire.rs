@@ -128,6 +128,7 @@ fn every_request_round_trips() {
             prompt: Some("p".into()),
             model: None,
             parent: Some(sid()),
+            attachments: vec![],
         },
         Request::SessionSend { cmd_id, session: sid(), text: "hi".into(), attachments: vec![] },
         Request::SessionInterrupt { cmd_id, session: sid() },

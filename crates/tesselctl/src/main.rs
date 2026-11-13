@@ -267,7 +267,7 @@ async fn run() -> anyhow::Result<()> {
                 goal,
                 prompt,
                 model,
-                parent: None,
+                parent: None, attachments: vec![]
             };
             let Response::Session { summary } = client.request(req).await? else { bail!("unexpected reply") };
             if json {

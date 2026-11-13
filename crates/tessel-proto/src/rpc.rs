@@ -67,6 +67,9 @@ pub enum Request {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent: Option<SessionId>,
+        /// files that go with the first message (pictures, pdfs).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<crate::Attachment>,
     },
     SessionSend {
         cmd_id: Uuid,

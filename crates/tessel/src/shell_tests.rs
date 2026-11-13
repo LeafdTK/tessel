@@ -416,7 +416,7 @@ fn a_new_session_is_created_from_the_form(cx: &mut TestAppContext) {
     rig.click(cx, "worktree-toggle");
     rig.click(cx, "create");
     match rig.asked().as_slice() {
-        [Cmd::Create { cwd, worktree: true, prompt }] => assert_eq!((cwd.as_str(), prompt.as_str()), ("/work/web", "fix the flaky test")),
+        [Cmd::Create { cwd, worktree: true, prompt, .. }] => assert_eq!((cwd.as_str(), prompt.as_str()), ("/work/web", "fix the flaky test")),
         other => panic!("{other:?}"),
     }
     // command-n brings the form back from a session.
@@ -1213,7 +1213,7 @@ fn the_new_session_form_picks_in_place_or_a_worktree(cx: &mut TestAppContext) {
     rig.click(cx, "new-prompt");
     rig.typed(cx, "tidy the readme");
     rig.click(cx, "create");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { worktree: false, prompt, cwd }] if prompt == "tidy the readme" && cwd == "/work/api"), "the latest project, unasked");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { worktree: false, prompt, cwd, .. }] if prompt == "tidy the readme" && cwd == "/work/api"), "the latest project, unasked");
 }
 
 #[gpui_kit::test]
@@ -1419,6 +1419,10 @@ fn a_new_session_gets_a_worktree_unless_its_folder_isnt_a_repository(cx: &mut Te
     let asked = rig.asked();
     let known = rig.shell.read_with(cx, |s, _| format!("{:?}", s.folder_git.borrow()));
     assert!(matches!(asked.as_slice(), [Cmd::Create { worktree: false, .. }]), "a plain folder works in place: {asked:?} {known}");
+    // pressed again while it's being made: nothing more is asked.
+    rig.click(cx, "create");
+    assert!(rig.asked().is_empty(), "one press, one session");
+    rig.feed(cx, vec![UiEvent::Created]);
     // a repository: a workspace of its own, unasked.
     rig.shell.update(cx, |s, _| {
         s.folder_git.borrow_mut().insert("/work/api".into(), Some(true));
@@ -1494,7 +1498,7 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
 
     // + is a new chat at once: the same folder, in place, no form.
     rig.click(cx, "tab-new");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { cwd, worktree: false, prompt }] if *cwd == a.cwd && prompt.is_empty()));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { cwd, worktree: false, prompt, .. }] if *cwd == a.cwd && prompt.is_empty()));
     assert!(!rig.exists(cx, "create"), "no new-session form");
 
     // a turn's menu forks the conversation.
@@ -2328,7 +2332,7 @@ fn the_run_button_starts_the_dev_script_and_stops_it(cx: &mut TestAppContext) {
     rig.feed(cx, vec![UiEvent::Answer { tag: "scripts", result: Ok(Response::Scripts { scripts: tessel_proto::WorkspaceScripts::default(), port: 41000 }) }]);
     rig.click(cx, "run-default");
     match rig.asked().as_slice() {
-        [Cmd::Create { cwd, worktree: false, prompt }] => assert!(*cwd == a.cwd && prompt.contains(".tessel/settings.toml") && prompt.contains("$TESSEL_PORT")),
+        [Cmd::Create { cwd, worktree: false, prompt, .. }] => assert!(*cwd == a.cwd && prompt.contains(".tessel/settings.toml") && prompt.contains("$TESSEL_PORT")),
         other => panic!("{other:?}"),
     }
 
@@ -2404,7 +2408,11 @@ fn the_browser_pane_shows_the_chats_page_and_a_pick_goes_in_your_message(cx: &mu
         _ => None,
     };
 
-    // the agent uses the browser: a pane comes up, and the page is opened and watched.
+    // the agent uses the browser: the layout is the person's, and stays.
+    rig.feed(cx, vec![UiEvent::BrowserActivity { session: a.id, what: "clicked Sign in".into(), at: Some((40.0, 20.0)) }]);
+    assert!(!rig.shell.read_with(cx, |s, _| s.browser_visible()), "no pane comes up uninvited");
+    // watching it work (visual mode): a pane comes up, and the page is opened and watched.
+    rig.feed(cx, vec![UiEvent::Session(SessionSummary { visual: true, ..a.clone() })]);
     rig.feed(cx, vec![UiEvent::BrowserActivity { session: a.id, what: "clicked Sign in".into(), at: Some((40.0, 20.0)) }]);
     assert!(rig.shell.read_with(cx, |s, _| s.browser_visible()), "the agent's browsing is shown");
     let acts: Vec<BrowserAct> = rig.asked().iter().filter_map(browser).collect();
@@ -2590,4 +2598,25 @@ fn the_kubernetes_pane_lists_a_cluster_and_opens_logs_and_deletes_only_when_sure
     rig.feed(cx, vec![UiEvent::Answer { tag: "kube.list", result: Ok(Response::KubeObjects { of: KubeKind::Pods, objects: vec![], metrics: false }) }]);
     assert!(ask(&rig.asked(), |r| matches!(r, Request::KubeList { kind: KubeKind::Deployments, .. })), "the pods' answer came late: deployments are asked for");
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui_kit::test]
+fn a_new_session_can_start_with_a_picture_and_says_its_starting_until_it_has(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    rig.feed(cx, vec![UiEvent::Connected, UiEvent::Sessions(vec![session(1, "Fix login", RunState::Idle, None)])]);
+    rig.press(cx, "cmd-n");
+    rig.click(cx, "new-prompt");
+    rig.typed(cx, "make it look like this");
+    let pasted = ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, vec![9, 9]));
+    let took = cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.paste(&pasted, window, cx))).unwrap();
+    rig.settle(cx);
+    assert!(took && rig.exists(cx, ("detach", 0usize)), "the picture shows in the new session's box");
+    rig.asked();
+    rig.click(cx, "create");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Create { prompt, attachments, .. }] if prompt == "make it look like this" && attachments.len() == 1));
+    let label = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.creating.is_some());
+    assert!(label(&rig, cx), "it says it's being made");
+    assert!(rig.exists(cx, ("detach", 0usize)), "and keeps what's in the box until it is");
+    rig.feed(cx, vec![UiEvent::Created]);
+    assert!(!label(&rig, cx) && rig.shell.read_with(cx, |s, _| s.attachments.is_empty()), "made: the box is emptied");
 }
