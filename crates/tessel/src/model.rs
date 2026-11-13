@@ -318,15 +318,10 @@ impl SidebarLayout {
             }
         }
         let shown = |s: &SessionSummary| stand_in.get(s.cwd.as_str()).is_some_and(|r| r.id == s.id);
-        let queue: Vec<&SessionSummary> = model.attention_queue().into_iter().filter(|s| shown(s)).collect();
-        if !queue.is_empty() {
-            entries.push(Entry::Header(QUEUE_TITLE.to_owned()));
-            for s in &queue {
-                entries.push(Entry::Row(s.id));
-                entries.extend(subs(s));
-            }
-        }
-        let mut rest: Vec<&SessionSummary> = model.sessions.iter().filter(|s| s.attention.is_none() && shown(s)).collect();
+        // every session stays under its project, whatever it's doing: what wants
+        // you says so with its mark (and the count at the top), rather than
+        // moving to a section of its own and back, under your pointer.
+        let mut rest: Vec<&SessionSummary> = model.sessions.iter().filter(|s| shown(s)).collect();
         rest.sort_by(|a, b| project_name(a).cmp(&project_name(b)).then(b.created_ms.cmp(&a.created_ms)).then(a.id.cmp(&b.id)));
         let mut current: Option<String> = None;
         for s in rest {
@@ -764,7 +759,7 @@ mod tests {
         let tab = |n: u128, updated: Millis, attention: Option<(AttentionReason, Millis)>| SessionSummary { cwd: "/w/api".into(), updated_ms: updated, ..session(n, attention) };
         let names = |l: &SidebarLayout| l.entries.iter().map(|e| match e { Entry::Header(h) => format!("[{h}]"), Entry::Row(id) => id.0.as_u128().to_string(), Entry::Sub(..) => "sub".into() }).collect::<Vec<_>>();
         assert_eq!(names(&layout(vec![tab(1, 10, None), tab(2, 30, None), tab(3, 20, None)])), ["[api]", "2"], "the one busy most recently");
-        assert_eq!(names(&layout(vec![tab(1, 10, Some((AttentionReason::NeedsPermission, 5))), tab(2, 30, None)])), [format!("[{QUEUE_TITLE}]"), "1".into()], "the one that wants you");
+        assert_eq!(names(&layout(vec![tab(1, 10, Some((AttentionReason::NeedsPermission, 5))), tab(2, 30, None)])), ["[api]", "1"], "the one that wants you, in its project");
     }
 
     fn layout(sessions: Vec<SessionSummary>) -> SidebarLayout {
@@ -785,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sidebar_is_the_queue_then_projects_and_each_session_appears_once() {
+    fn the_sidebar_is_projects_and_each_session_stays_in_its_own_whatever_it_is_doing() {
         let l = layout(vec![
             in_project(1, "/work/api", None),
             in_project(2, "/work/api", Some((AttentionReason::Finished, 50))),
@@ -793,13 +788,12 @@ mod tests {
             in_project(4, "/work/api", None),
             in_project(5, "/work/web", Some((AttentionReason::NeedsPermission, 900))),
         ]);
-        assert_eq!(shape(&l), ["[Needs You]", "5", "2", "[api]", "4", "1", "[web]", "3"], "blocked first; projects by name; newest first within");
+        assert_eq!(shape(&l), ["[api]", "4", "2", "1", "[web]", "5", "3"], "projects by name; newest first within; no section of their own for what wants you");
         assert_eq!(l.rows().count(), 5);
-        assert_eq!(l.height(), 3.0 * HEADER_H + 5.0 * ROW_H);
+        assert_eq!(l.height(), 2.0 * HEADER_H + 5.0 * ROW_H);
         let tops = l.row_tops();
-        assert_eq!(tops[&id(5)], HEADER_H);
-        assert_eq!(tops[&id(2)], HEADER_H + ROW_H);
-        assert_eq!(tops[&id(4)], 2.0 * HEADER_H + 2.0 * ROW_H);
+        assert_eq!(tops[&id(4)], HEADER_H);
+        assert_eq!(tops[&id(5)], 2.0 * HEADER_H + 3.0 * ROW_H);
     }
 
     #[test]
@@ -813,23 +807,11 @@ mod tests {
     }
 
     #[test]
-    fn a_session_that_starts_needing_you_travels_up_and_the_rest_make_room() {
+    fn a_session_that_starts_needing_you_stays_where_it_is() {
         let before = layout(vec![in_project(1, "/w/api", None), in_project(2, "/w/api", None), in_project(3, "/w/api", None)]);
-        assert_eq!(shape(&before), ["[api]", "3", "2", "1"]);
         let after = layout(vec![in_project(1, "/w/api", Some((AttentionReason::NeedsPermission, 10))), in_project(2, "/w/api", None), in_project(3, "/w/api", None)]);
-        assert_eq!(shape(&after), ["[Needs You]", "1", "[api]", "3", "2"]);
-
-        let moves: HashMap<_, _> = before.moves_to(&after).into_iter().collect();
-        // session 1 was the third row under one header; now it is the first row under one header.
-        assert_eq!(moves[&id(1)], 2.0 * ROW_H, "it appears to start two rows lower, where it was");
-        // the others were pushed down by the new header and row.
-        assert_eq!(moves[&id(3)], -(HEADER_H + ROW_H));
-        assert_eq!(moves[&id(2)], -(HEADER_H + ROW_H));
-
-        // and back again is exactly the reverse.
-        let back: HashMap<_, _> = after.moves_to(&before).into_iter().collect();
-        assert_eq!(back[&id(1)], -2.0 * ROW_H);
-        assert_eq!(back[&id(3)], HEADER_H + ROW_H);
+        assert_eq!(shape(&after), shape(&before), "nothing moves: its mark says it wants you");
+        assert!(before.moves_to(&after).is_empty());
     }
 
     #[test]
@@ -874,17 +856,13 @@ mod tests {
             in_project(4, "/w/api", Some((AttentionReason::Finished, 20))),
             in_project(5, "/w/ops", None),
         ]);
-        assert_eq!(shape(&real), ["[Needs You]", "1", "4", "[api]", "2", "[ops]", "5"]);
+        assert_eq!(shape(&real), ["[api]", "4", "2", "1", "[ops]", "5"]);
 
         let held = shown.held(&real);
-        assert_eq!(shape(&held), ["[api]", "2", "1", "[Needs You]", "4", "[ops]", "5"], "existing rows did not move; the deleted one and its empty header are gone; newcomers are at the end");
-        assert!(shown.moves_to(&held).iter().all(|(sid, _)| *sid == id(4) || *sid == id(5)), "only newcomers animate while held");
+        assert_eq!(shape(&held), ["[api]", "4", "2", "1", "[ops]", "5"], "existing rows did not move; the deleted one and its empty header are gone; a newcomer joins its project");
+        assert!(shown.moves_to(&held).iter().all(|(sid, _)| *sid == id(4) || *sid == id(5) || *sid == id(2) || *sid == id(1)), "only what makes room for newcomers moves");
         assert_eq!(held.rows().count(), real.rows().count(), "nothing is hidden, only unsorted");
-
-        // once the pointer leaves, everything settles into the real order.
-        let moves: HashMap<_, _> = held.moves_to(&real).into_iter().collect();
-        assert_eq!(moves[&id(1)], (HEADER_H + ROW_H) - HEADER_H, "1 travels up into the queue");
-        assert!(moves.contains_key(&id(4)) && moves.contains_key(&id(2)));
+        assert!(held.moves_to(&real).is_empty(), "and once the pointer leaves, nothing has to move");
     }
 
     #[test]

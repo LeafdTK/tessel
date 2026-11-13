@@ -447,10 +447,10 @@ fn rows_hold_their_places_under_the_pointer_and_settle_when_it_leaves(cx: &mut T
     rig.click(cx, sid(2).0);
     assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
 
-    // the pointer leaves the list: now the queue forms.
+    // the pointer leaves the list: still nothing moves; its mark says it wants you.
     cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-overview", cx)).unwrap();
     rig.settle(cx);
-    assert_eq!(order(&rig, cx), [1, 3, 2], "the session that needs you is on top");
+    assert_eq!(order(&rig, cx), [3, 2, 1], "it stays in its place in its project");
 }
 
 #[gpui_kit::test]
@@ -2778,4 +2778,10 @@ fn the_processes_pane_shows_what_agents_left_and_stops_it_when_sure(cx: &mut Tes
     }).collect();
     assert_eq!(stops, [4242]);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_subagent_asked_a_whole_script_is_one_line_in_the_sidebar() {
+    assert_eq!(crate::shell::one_line("python3 -I - <<'EOF'\np='install/install.sh'\ns=open(p)"), "python3 -I - <<'EOF' …");
+    assert_eq!(crate::shell::one_line("  start   the dev server "), "start the dev server");
 }

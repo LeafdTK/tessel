@@ -1545,7 +1545,8 @@ impl Shell {
                     let Some(s) = self.model.summary(*id) else { continue };
                     // a line held in place under the pointer may outlive what it described.
                     let running = s.tasks.iter().find(|t| &t.id == task);
-                    let text = running.map_or_else(|| "Finished".to_owned(), |t| sentence(&t.description));
+                    // one line, however much it was asked: a command's whole script stays in the chat.
+                    let text = running.map_or_else(|| "Finished".to_owned(), |t| sentence(&one_line(&t.description)));
                     let kind = if running.is_some_and(|t| t.background) { "In the background" } else { "Subagent" };
                     let sid = *id;
                     let dy = self.row_fx.value(id);
@@ -3020,6 +3021,13 @@ pub(crate) fn handback_for_test(text: &str) -> Option<String> {
 #[cfg(test)]
 pub(crate) fn task_note_for_test(text: &str) -> Option<(String, bool)> {
     task_note(text)
+}
+
+/// the first line with something on it, its spaces collapsed: for a row with room for one.
+pub(crate) fn one_line(s: &str) -> String {
+    let first = s.lines().find(|l| !l.trim().is_empty()).unwrap_or_default();
+    let line = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.trim().lines().count() > 1 { format!("{line} …") } else { line }
 }
 
 /// first letter capitalised. activity lines from the daemon are lowercase fragments.
