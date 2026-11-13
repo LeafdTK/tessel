@@ -33,7 +33,7 @@ fn find(name: &str, path: &str) -> Option<PathBuf> {
 /// PATH as a login shell sets it. a shell that hangs isn't waited on for long.
 fn login_path() -> Option<String> {
     const MARK: &str = "__tessel_path__";
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let shell = tessel_proto::local::user_shell();
     let mut child = std::process::Command::new(shell)
         .args(["-ilc", &format!("printf '{MARK}%s' \"$PATH\"")])
         .stdin(std::process::Stdio::null())

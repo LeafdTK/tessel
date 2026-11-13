@@ -373,9 +373,13 @@ impl Backend for ClaudeBackend {
             cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         }
         cmd.envs(opts.env.iter().map(|(k, v)| (k, v)));
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("could not start {} in {}", self.program.display(), opts.cwd.display()))?;
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && opts.cwd.is_dir() => {
+                anyhow::bail!("claude code isn't installed on this machine (`curl -fsSL https://claude.ai/install.sh | bash` installs it)")
+            }
+            Err(e) => return Err(e).with_context(|| format!("could not start {} in {}", self.program.display(), opts.cwd.display())),
+        };
         let pid = child.id();
         let child_stdin = child.stdin.take().context("no stdin")?;
         let child_stdout = child.stdout.take().context("no stdout")?;

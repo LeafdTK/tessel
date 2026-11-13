@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 tessel-proto.workspace = true
 tessel-client = { path = "../tessel-client" }
+tessel-remote = { path = "../tessel-remote" }
 anyhow.workspace = true
 libc = "0.2"
 serde_json.workspace = true

@@ -34,6 +34,19 @@ else
     echo "note: tessel-voice wasn't built (it needs swift and the macOS 26 sdk); voice input will offer cloud engines only" >&2
 fi
 
+# tessel for linux dev boxes (scripts/build-linux.sh), copied to a host when
+# it's set up. only what's been built: without them, hosts can't be set up
+# from this build.
+for arch in x86_64 aarch64; do
+    lin="$root/target/$arch-unknown-linux-musl/release"
+    if [ -x "$lin/tesseld" ] && [ -x "$lin/tesselctl" ]; then
+        mkdir -p "$app/Contents/Resources/linux/$arch"
+        for b in tesseld tesselctl; do
+            ln "$lin/$b" "$app/Contents/Resources/linux/$arch/$b" 2>/dev/null || cp "$lin/$b" "$app/Contents/Resources/linux/$arch/$b"
+        done
+    fi
+done
+
 # the workspace's version: the first `version = ` in the root Cargo.toml is [workspace.package]'s.
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
 cat > "$app/Contents/Info.plist" <<PLIST

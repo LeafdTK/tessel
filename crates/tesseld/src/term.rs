@@ -111,7 +111,7 @@ pub fn spawn(info: TermInfo, env: Vec<(String, String)>, hub: UnboundedSender<Hu
         libc::fcntl(master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
     }
 
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+    let shell = tessel_proto::local::user_shell();
     let mut cmd = Command::new(&shell);
     cmd.arg("-l");
     if !info.command.is_empty() {

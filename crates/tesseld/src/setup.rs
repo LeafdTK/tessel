@@ -242,7 +242,7 @@ fn copy_path(from: &Path, to: &Path) -> std::io::Result<()> {
 /// run a workspace's archive script before it's removed: shut down what it
 /// started, tidy what it left. it has a minute; the workspace goes either way.
 pub async fn archive(command: &str, workspace: &Path, env: &[(String, String)]) {
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/zsh".into());
+    let shell = tessel_proto::local::user_shell();
     let run = tokio::process::Command::new(shell)
         .arg("-lc")
         .arg(command)

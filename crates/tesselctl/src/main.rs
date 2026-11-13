@@ -4,6 +4,7 @@
 //! app can do can be done (and tested) from here.
 
 mod mcp;
+mod remote;
 mod shell;
 
 use anyhow::{Context, bail};
@@ -103,8 +104,23 @@ const HELP: &str = "tesselctl: drive the tessel daemon
       --window NAME    which window (default: the one opened last)
       PANE is a pane id, @focused, or the module it shows
 
+  other machines (what Settings › Hosts does): a dev box runs its own daemon, reached over quic
+  tesselctl host ls [--json]                the hosts, and which one the window shows
+  tesselctl host add USER@HOST [--name N]   add one and set it up over ssh: tessel copied there,
+      [--port 7731] [--no-claude]           this mac let in, its quic service started, claude installed
+  tesselctl host setup|update HOST          again: brings tessel there up to date
+  tesselctl host use HOST|mac               which one the window shows
+  tesselctl host rm HOST
+  tesselctl host key                        this mac's key, as hosts know it
+  on a host:
+  tesselctl remote serve [--port 7731]      the quic service: lets in allowed macs, relays to the daemon
+  tesselctl remote install [--port 7731]    keep it running (systemd user service); prints the host's key
+  tesselctl remote allow FINGERPRINT [NAME] | revoke FINGERPRINT|NAME | clients | host-key
+  tesselctl bridge                          stdin/stdout to the daemon (how ssh reaches it)
+
 SESSION may be any unique prefix of a session id.
 global: --no-start   do not start a daemon if none is running
+        --host HOST  talk to a host's daemon instead of this machine's (also $TESSEL_HOST)
 env:    TESSEL_HOME  which daemon (default ~/.tessel)";
 
 fn main() {
@@ -166,6 +182,7 @@ async fn run() -> anyhow::Result<()> {
     }
     let no_start = args.flag("--no-start");
     let json = args.flag("--json");
+    let on_host = args.opt("--host")?.or_else(|| std::env::var("TESSEL_HOST").ok().filter(|h| !h.is_empty()));
     let home = tessel_proto::local::home();
     let cmd = args.next("a command")?;
 
@@ -228,6 +245,16 @@ async fn run() -> anyhow::Result<()> {
         };
     }
 
+    if cmd == "remote" {
+        return remote::remote(&home, &mut args).await;
+    }
+    if cmd == "bridge" {
+        return tessel_remote::service::bridge(&home).await;
+    }
+    if cmd == "host" {
+        return remote::host(&home, &mut args, json).await;
+    }
+
     // a key for a service tessel uses, kept in this Mac's keychain: asked for by
     // macOS itself (hidden as it's typed), so it's in no argument, file or log.
     if args.rest.first().map(String::as_str) == Some("secret") {
@@ -247,7 +274,15 @@ async fn run() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let (client, mut events, welcome) = if no_start {
+    // a host's quic connection: held for as long as the command runs.
+    let _link;
+    let (client, mut events, welcome) = if let Some(which) = on_host {
+        let hosts = tessel_remote::hosts::Hosts::load(&home);
+        let host = hosts.find(&which).with_context(|| format!("no host {which} (tesselctl host ls)"))?;
+        let c = tessel_remote::connect(&home, host, "tesselctl").await.with_context(|| format!("reaching {}", host.name))?;
+        _link = c.link;
+        (c.client, c.events, c.welcome)
+    } else if no_start {
         Client::connect(&tessel_proto::local::socket(&home), "tesselctl").await?
     } else {
         tessel_client::connect_or_start(&home, "tesselctl").await?

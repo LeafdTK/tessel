@@ -118,3 +118,21 @@ pub fn binary_stamp(path: &Path) -> Option<String> {
 pub fn build_stamp(build: &str) -> Option<&str> {
     build.split_whitespace().nth(1)
 }
+
+/// the person's shell: `$SHELL`, else their login shell (a service has no
+/// `$SHELL`), else whatever there is.
+pub fn user_shell() -> String {
+    if let Ok(s) = std::env::var("SHELL")
+        && !s.is_empty()
+    {
+        return s;
+    }
+    let pw = unsafe { libc::getpwuid(libc::getuid()) };
+    if !pw.is_null() {
+        let shell = unsafe { std::ffi::CStr::from_ptr((*pw).pw_shell) }.to_string_lossy().into_owned();
+        if !shell.is_empty() {
+            return shell;
+        }
+    }
+    ["/bin/zsh", "/bin/bash"].into_iter().find(|s| std::path::Path::new(s).exists()).unwrap_or("/bin/sh").to_owned()
+}

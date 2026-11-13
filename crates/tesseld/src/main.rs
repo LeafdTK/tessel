@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
             eprintln!("tesseld: replaying {} recording(s) instead of running claude", recs.len());
             Arc::new(ReplayBackend::new(recs).paced(Duration::from_millis(400)))
         }
-        _ => Arc::new(claude_backend()?),
+        _ => Arc::new(claude_backend()),
     };
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -87,29 +87,39 @@ fn main() -> anyhow::Result<()> {
 /// started from a terminal, our own environment is right. started from the
 /// dock it is nearly empty and claude (often under ~/.nvm) isn't on PATH, so
 /// we ask a login shell what the environment should be.
-fn claude_backend() -> anyhow::Result<ClaudeBackend> {
+fn claude_backend() -> ClaudeBackend {
     let extra_args: Vec<String> =
         std::env::var("TESSEL_CLAUDE_ARGS").unwrap_or_default().split_whitespace().map(str::to_owned).collect();
     if let Some(bin) = std::env::var_os("TESSEL_CLAUDE_BIN") {
-        return Ok(ClaudeBackend { program: bin.into(), env: None, extra_args });
+        return ClaudeBackend { program: bin.into(), env: None, extra_args };
     }
     if let Some(program) = find_in_path("claude", &std::env::var("PATH").unwrap_or_default()) {
-        return Ok(ClaudeBackend { program, env: None, extra_args });
+        return ClaudeBackend { program, env: None, extra_args };
     }
     let env = login_env().unwrap_or_default();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).unwrap_or_default();
-    match find_in_path("claude", &path) {
-        Some(program) => Ok(ClaudeBackend { program, env: Some(env), extra_args }),
-        None => anyhow::bail!("could not find the `claude` cli on PATH (set TESSEL_CLAUDE_BIN to point at it)"),
+    if let Some(program) = find_in_path("claude", &path) {
+        return ClaudeBackend { program, env: Some(env), extra_args };
+    }
+    // where claude's own installers put it, for a shell that never said.
+    let home = std::env::var("HOME").unwrap_or_default();
+    match [".local/bin/claude", ".claude/local/claude"].iter().map(|p| PathBuf::from(&home).join(p)).find(|p| p.is_file()) {
+        Some(program) => ClaudeBackend { program, env: (!env.is_empty()).then_some(env), extra_args },
+        // no claude: terminals, git and the rest still work; starting an agent says why it can't.
+        None => {
+            eprintln!("tesseld: could not find the `claude` cli on PATH (set TESSEL_CLAUDE_BIN to point at it); agents won't start until it's installed");
+            ClaudeBackend { program: "claude".into(), env: (!env.is_empty()).then_some(env), extra_args }
+        }
     }
 }
+
 
 fn find_in_path(name: &str, path: &str) -> Option<PathBuf> {
     path.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join(name)).find(|p| p.is_file())
 }
 
 fn login_env() -> Option<Vec<(String, String)>> {
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+    let shell = tessel_proto::local::user_shell();
     const MARK: &str = "__tessel_env__";
     let mut child = std::process::Command::new(shell)
         .args(["-ilc", &format!("printf '{MARK}\\0'; env -0")])
