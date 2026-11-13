@@ -569,6 +569,11 @@ impl Shell {
                     if !this.ui_calls.is_empty() {
                         this.run_ui_calls(window, cx);
                     }
+                    // and an agent's browser steps: not at the next frame, which a
+                    // window behind others (or on another space) may never draw.
+                    if !this.page_calls.is_empty() && this.native_view.is_some() {
+                        this.sync_native(cx);
+                    }
                     cx.notify();
                 });
                 if alive.is_err() {

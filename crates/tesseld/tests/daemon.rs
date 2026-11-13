@@ -1510,3 +1510,18 @@ async fn a_restart_hands_over_the_lock_so_nothing_can_start_in_between() {
     running.hub.send(HubMsg::Stop).ok();
     let _ = tokio::time::timeout(Duration::from_secs(5), running.done).await;
 }
+
+#[tokio::test]
+async fn a_request_after_the_daemon_has_gone_is_refused_at_once_not_left_waiting() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (c, _ev) = d.client().await;
+    c.request(Request::SessionList).await.unwrap();
+    d.stop().await;
+    // the connection's end may take a moment to be noticed; after that, nothing waits.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    for _ in 0..3 {
+        let answer = tokio::time::timeout(Duration::from_secs(2), c.request(Request::SessionList)).await;
+        assert!(matches!(answer, Ok(Err(_))), "refused at once, not waited on: {answer:?}");
+    }
+    assert!(c.is_closed(), "and it says so, for whoever holds it to connect again");
+}

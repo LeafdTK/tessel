@@ -287,7 +287,7 @@ impl Shell {
 
     /// once a frame, when pages are native: pages made where they're needed,
     /// what's waiting done, and only the shown chat's page on screen.
-    fn sync_native(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_native(&mut self, cx: &mut Context<Self>) {
         let want = self.browser_visible().then(|| self.model.open.as_ref().map(|o| o.id)).flatten();
         // a page for the pane, starting where the workspace serves: the daemon
         // knows where that is, and answers with an Open to do here.

@@ -39,6 +39,9 @@ pub struct Client {
     out: mpsc::UnboundedSender<Vec<u8>>,
     pending: Pending,
     next: AtomicU64,
+    /// the connection has gone (the daemon stopped, or handed over to another):
+    /// nothing asked now would ever be answered, so nothing is asked.
+    closed: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// events from the daemon. ends when the connection does.
@@ -73,10 +76,15 @@ impl Client {
         let (out, mut out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let (ev_tx, ev_rx) = mpsc::unbounded_channel();
         let pending: Pending = Default::default();
+        let closed: Arc<std::sync::atomic::AtomicBool> = Default::default();
 
+        let (gone, unanswered) = (closed.clone(), pending.clone());
         tokio::spawn(async move {
             while let Some(bytes) = out_rx.recv().await {
                 if write.write_all(&bytes).await.is_err() {
+                    // can't be sent: whoever waits hears so now.
+                    gone.store(true, Ordering::SeqCst);
+                    unanswered.lock().unwrap().clear();
                     break;
                 }
             }
@@ -86,6 +94,7 @@ impl Client {
         });
 
         let waiting = pending.clone();
+        let gone = closed.clone();
         tokio::spawn(async move {
             let mut decoder = Decoder::new();
             let mut buf = vec![0u8; 64 * 1024];
@@ -143,11 +152,13 @@ impl Client {
                     }
                 }
             }
-            // wake everyone still waiting: their answer is never coming.
+            // wake everyone still waiting: their answer is never coming. and
+            // nothing asked from now on is taken: it would wait for ever.
+            gone.store(true, Ordering::SeqCst);
             waiting.lock().unwrap().clear();
         });
 
-        let client = Self { out, pending, next: AtomicU64::new(1) };
+        let client = Self { out, pending, next: AtomicU64::new(1), closed };
         let hello = Request::Hello {
             proto_major: PROTO_MAJOR,
             proto_minor: PROTO_MINOR,
@@ -169,10 +180,23 @@ impl Client {
         self.out.send(frame).map_err(|_| ClientError::Closed)
     }
 
+    /// whether the connection has gone. a client that has is no use: make another.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
     pub async fn request(&self, req: Request) -> Result<Response, ClientError> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        {
+            let mut pending = self.pending.lock().unwrap();
+            // checked with the lock held: the connection closing clears the
+            // pending under it, so a request is either refused here or woken there.
+            if self.is_closed() {
+                return Err(ClientError::Closed);
+            }
+            pending.insert(id, tx);
+        }
         let json = serde_json::to_vec(&Envelope::Req { id, req }).map_err(|e| RpcError::new(ErrorCode::Invalid, e.to_string()))?;
         let bytes = frame::encode(KIND_JSON, &json).map_err(|e| RpcError::new(ErrorCode::Invalid, e.to_string()))?;
         if self.out.send(bytes).is_err() {

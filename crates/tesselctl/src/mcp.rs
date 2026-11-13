@@ -137,6 +137,10 @@ struct Server {
 
 impl Server {
     async fn client(&mut self) -> anyhow::Result<&Client> {
+        // the daemon went (a restart hands over to a new one): connect to the one there is now.
+        if self.client.as_ref().is_some_and(Client::is_closed) {
+            self.client = None;
+        }
         if self.client.is_none() {
             let home = tessel_proto::local::home();
             let (c, _, _) = tessel_client::connect_or_start(&home, "tesselctl-mcp").await?;
@@ -145,12 +149,25 @@ impl Server {
         Ok(self.client.as_ref().expect("just set"))
     }
 
+    /// ask the daemon. a connection that went (the daemon restarted) is made
+    /// again and the question asked once more; nothing waits for ever.
+    async fn ask(&mut self, req: Request) -> anyhow::Result<Response> {
+        let first = self.client().await?.request(req.clone()).await;
+        match first {
+            Err(tessel_client::ClientError::Closed) => {
+                self.client = None;
+                Ok(self.client().await?.request(req).await?)
+            }
+            other => Ok(other?),
+        }
+    }
+
     async fn window(&mut self, cmd: &str, args: Value) -> anyhow::Result<Value> {
         if let Some((_, why)) = FOR_PEOPLE.iter().find(|(c, _)| *c == cmd) {
             anyhow::bail!("{cmd} is for the person to do, not an agent: {why}. ask them if it's needed");
         }
         // a window that doesn't answer is said to, rather than waited on for ever.
-        let reply = within(Duration::from_secs(30), "the window", self.client().await?.request(Request::UiExec { window: None, cmd: cmd.to_owned(), args })).await??;
+        let reply = within(Duration::from_secs(30), "the window", self.ask(Request::UiExec { window: None, cmd: cmd.to_owned(), args })).await??;
         match reply {
             Response::UiResult { value } => Ok(value),
             other => anyhow::bail!("unexpected reply: {other:?}"),
@@ -170,7 +187,7 @@ impl Server {
             "open" => {
                 let command: Vec<String> = args.get("command").and_then(Value::as_str).filter(|c| !c.trim().is_empty()).map(|c| vec![c.to_owned()]).unwrap_or_default();
                 let session = self.session;
-                let reply = self.client().await?.request(Request::TermOpen { session, cwd: None, command, cols: 120, rows: 32, agent: false }).await?;
+                let reply = self.ask(Request::TermOpen { session, cwd: None, command, cols: 120, rows: 32, agent: false }).await?;
                 let Response::Term { info } = reply else { anyhow::bail!("unexpected reply") };
                 // a pane for it: a new terminal pane shows a running one of this session that no pane shows.
                 let shown = if args.get("show").and_then(Value::as_bool).unwrap_or(false) {
@@ -189,25 +206,25 @@ impl Server {
                     text.push('\r');
                 }
                 let term = term()?;
-                self.client().await?.request(Request::TermInput { term, text }).await?;
+                self.ask(Request::TermInput { term, text }).await?;
                 "typed".to_owned()
             }
             "read" => {
                 let (term, history) = (term()?, args.get("history").and_then(Value::as_bool).unwrap_or(false));
-                text_of(self.client().await?.request(Request::TermCapture { term, history, format: None }).await?)?
+                text_of(self.ask(Request::TermCapture { term, history, format: None }).await?)?
             }
             "wait" => {
                 let term = term()?;
                 let text = args.get("text").and_then(Value::as_str).map(str::to_owned);
                 let timeout_ms = (args.get("timeout").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.1, 600.0) * 1000.0) as u64;
-                match self.client().await?.request(Request::TermWait { term, text, timeout_ms }).await? {
+                match self.ask(Request::TermWait { term, text, timeout_ms }).await? {
                     Response::TermText { text } => format!("the screen now:\n{text}"),
                     Response::Term { info } => format!("it exited with {}", info.exited.unwrap_or(-1)),
                     other => anyhow::bail!("unexpected reply: {other:?}"),
                 }
             }
             "list" => {
-                let Response::Terms { terms } = self.client().await?.request(Request::TermList).await? else { anyhow::bail!("unexpected reply") };
+                let Response::Terms { terms } = self.ask(Request::TermList).await? else { anyhow::bail!("unexpected reply") };
                 let mine: Vec<String> = terms
                     .iter()
                     .filter(|t| self.session.is_none() || t.session == self.session)
@@ -217,7 +234,7 @@ impl Server {
             }
             "close" => {
                 let term = term()?;
-                self.client().await?.request(Request::TermClose { term }).await?;
+                self.ask(Request::TermClose { term }).await?;
                 "closed".to_owned()
             }
             other => anyhow::bail!("tessel_terminal has no op {other:?}: open, run, send, read, wait, list or close"),
@@ -246,7 +263,7 @@ impl Server {
             "scroll" => BrowserAct::Scroll { dx: n("dx").unwrap_or(0.0), dy: n("dy").unwrap_or(400.0), x: n("x"), y: n("y") },
             other => anyhow::bail!("tessel_browser has no op {other:?}: open, back, forward, reload, snapshot, read, screenshot, click, type, select, key or scroll"),
         };
-        let reply = within(Duration::from_secs(90), "the browser", self.client().await?.request(Request::Browser { session, act, agent: true })).await??;
+        let reply = within(Duration::from_secs(90), "the browser", self.ask(Request::Browser { session, act, agent: true })).await??;
         let Response::Browser { state, text, image } = reply else { anyhow::bail!("unexpected reply: {reply:?}") };
         let at = format!("{} ({})", if state.title.is_empty() { "untitled" } else { &state.title }, state.url);
         Ok(match (text, image) {
@@ -291,7 +308,7 @@ impl Server {
                     o.retain(|_, v| !v.is_null());
                 }
                 let op: SurfaceOp = serde_json::from_value(op).map_err(|e| anyhow::anyhow!("that isn't a surface op: {e}"))?;
-                self.client().await?.request(Request::SurfaceOp { session, op }).await?;
+                self.ask(Request::SurfaceOp { session, op }).await?;
                 "done: it's on screen".to_owned()
             }
             "tessel_terminal" => self.terminal(args).await?,
@@ -324,7 +341,19 @@ pub async fn serve() -> anyhow::Result<()> {
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(match server.call(&name, &args).await {
+                // a backstop: one call never holds up every call after it (they're answered in turn).
+                // waiting on a terminal may take as long as it was asked to.
+                let asked = args.get("timeout").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 3600.0);
+                let limit = Duration::from_secs_f64(150f64.max(asked + 30.0));
+                let done = match tokio::time::timeout(limit, server.call(&name, &args)).await {
+                    Ok(done) => done,
+                    Err(_) => {
+                        // the connection it was waiting on may be the trouble: the next call makes a new one.
+                        server.client = None;
+                        Err(anyhow::anyhow!("{name} didn't finish in {}s, so it was given up on. tessel may need restarting", limit.as_secs()))
+                    }
+                };
+                Ok(match done {
                     Ok(text) => {
                         let mut content = vec![json!({"type": "text", "text": text})];
                         if let Some(png) = server.image.take() {
