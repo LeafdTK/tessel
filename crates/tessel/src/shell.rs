@@ -25,6 +25,7 @@ mod files;
 mod git;
 mod kube;
 mod procs;
+pub(crate) mod hosts;
 mod palette;
 mod panel;
 mod panes;
@@ -264,6 +265,7 @@ pub struct Shell {
     git: git::GitView,
     kube: kube::KubeView,
     procs: procs::ProcsView,
+    pub(crate) hosts: hosts::HostsView,
     bench_term: Option<terminal::BenchTerm>,
     /// a theme being tried on: drawn, not written.
     theme_preview: Option<String>,
@@ -286,6 +288,8 @@ pub struct Shell {
     making: bool,
     project_name: Entity<InputState>,
     project_parent: Entity<InputState>,
+    /// a folder on a dev box, being browsed: where, its folders, whether it's a repository.
+    pub(crate) host_folders: Option<Result<(String, Vec<String>, bool), String>>,
     github_repo: Entity<InputState>,
     template: projects::Template,
     github_private: bool,
@@ -723,6 +727,7 @@ impl Shell {
             git: git::GitView::new(window, cx),
             kube: kube::KubeView::new(kube_filter),
             procs: procs::ProcsView::default(),
+            hosts: hosts::HostsView::new(tessel_proto::local::home()),
             bench_term: launch.bench_term.then(terminal::BenchTerm::default),
             theme_preview: None,
             theme_preview_by_palette: false,
@@ -738,6 +743,7 @@ impl Shell {
             making: false,
             project_name,
             project_parent,
+            host_folders: None,
             github_repo,
             template: projects::Template::default(),
             github_private: false,
@@ -873,6 +879,7 @@ impl Shell {
 
     fn apply(&mut self, ev: UiEvent, cx: &mut Context<Self>) {
         match ev {
+            UiEvent::On { host, via } => self.host_connected(host, via),
             UiEvent::Connected => {
                 self.model.connection = Connection::Connected;
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
@@ -1051,6 +1058,7 @@ impl Shell {
                     self.folder_git.borrow_mut().insert(path, git);
                 }
             }
+            UiEvent::Answer { tag, result } if tag.starts_with("project.") => self.project_answer(tag, result),
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
             UiEvent::Answer { tag: "usage", result } => {
@@ -1592,6 +1600,7 @@ impl Shell {
         let nav = v_flex()
             .flex_shrink_0()
             .pb(px(NAV_PAD))
+            .child(self.host_picker(cx))
             .child(nav_row("nav-new", "square-pen", "New session", theme::keycaps(&p, "⌘ N").into_any_element()).on_click(cx.listener(|this, _, _, cx| this.show_new_session(cx))))
             .child(
                 nav_row(
@@ -2493,6 +2502,7 @@ impl Render for Shell {
         // which pane shows which chat, now that the layout may have changed.
         self.sync_views(cx);
         self.ensure_scripts_form(window, cx);
+        self.ensure_host_form(window, cx);
         if std::mem::take(&mut self.visual_panes_next) {
             self.show_visual_panes(window, cx);
         }
@@ -2584,6 +2594,7 @@ impl Render for Shell {
         if std::mem::take(&mut self.focus_sheet) {
             match self.sheet {
                 Some(projects::Sheet::Clone) => self.github_repo.update(cx, |s, cx| s.focus(window, cx)),
+                Some(projects::Sheet::Folder) => {}
                 _ => self.project_name.update(cx, |s, cx| s.focus(window, cx)),
             }
         }
@@ -2716,7 +2727,8 @@ impl Render for Shell {
 const NAV_ROW_H: f32 = 30.0;
 const NAV_PAD: f32 = 8.0;
 /// how far the list starts below the top of the sidebar's content.
-pub(crate) const NAV_H: f32 = NAV_ROW_H * 2.0 + NAV_PAD;
+/// the machine picker, then new session and all sessions.
+pub(crate) const NAV_H: f32 = NAV_ROW_H * 3.0 + NAV_PAD;
 
 /// how far in a session's row starts: under its project's name, past the
 /// disclosure and tile.

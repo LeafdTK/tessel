@@ -71,11 +71,15 @@ pub enum Cmd {
     /// any request, answered as `UiEvent::Answer` with the same tag: for
     /// modules that just ask and show (the git graph).
     Ask { tag: &'static str, req: Request },
+    /// show another machine's daemon (a host's id), or this mac's (none).
+    Host(Option<String>),
 }
 
 #[derive(Debug)]
 pub enum UiEvent {
     Connected,
+    /// connected to this machine: a host's id (none: this mac), and how it's reached.
+    On { host: Option<String>, via: String },
     Down(String),
     Sessions(Vec<SessionSummary>),
     Session(SessionSummary),
@@ -157,26 +161,81 @@ impl Following {
     }
 }
 
-async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::UnboundedSender<UiEvent>) {
+/// what the window asks for, with what came while it wasn't connected first.
+pub(crate) struct Cmds {
+    rx: mpsc::UnboundedReceiver<Cmd>,
+    held: std::collections::VecDeque<Cmd>,
+}
+
+impl Cmds {
+    async fn recv(&mut self) -> Option<Cmd> {
+        match self.held.pop_front() {
+            Some(c) => Some(c),
+            None => self.rx.recv().await,
+        }
+    }
+}
+
+/// connect to the daemon the window shows: this mac's (started if need be),
+/// or a host's. with how it was reached.
+async fn reach(home: &std::path::Path, host: Option<&str>) -> Result<(Client, Events, tessel_client::Welcome, Option<tessel_remote::Link>, String), (String, bool)> {
+    let Some(id) = host else {
+        return tessel_client::connect_or_start(home, "tessel").await.map(|(c, e, w)| (c, e, w, None, "this Mac".to_owned())).map_err(|e| (e.to_string(), e.is_version_mismatch()));
+    };
+    let hosts = tessel_remote::hosts::Hosts::load(home);
+    let Some(h) = hosts.get(id) else { return Err((format!("there's no host {id} any more"), true)) };
+    match tessel_remote::connect(home, h, "tessel").await {
+        Ok(c) => {
+            let via = match &c.link {
+                Some(l) => format!("quic, {} ms", l.rtt().as_millis()),
+                None => "ssh".to_owned(),
+            };
+            Ok((c.client, c.events, c.welcome, c.link, via))
+        }
+        Err(e) => Err((format!("{}: {e:#}", h.name), false)),
+    }
+}
+
+async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::UnboundedSender<UiEvent>) {
+    let mut cmds = Cmds { rx: cmds, held: Default::default() };
     let mut open = Following::default();
     let mut backoff = Duration::from_millis(100);
+    let mut host = tessel_remote::hosts::Hosts::load(&home).current;
     loop {
-        match tessel_client::connect_or_start(&home, "tessel").await {
-            Err(e) => {
-                if ui.send(UiEvent::Down(e.to_string())).is_err() {
+        match reach(&home, host.as_deref()).await {
+            Err((e, slow)) => {
+                if ui.send(UiEvent::Down(e)).is_err() {
                     return;
                 }
                 // a wrong-version daemon won't fix itself quickly; don't spin on it.
-                let wait = if e.is_version_mismatch() { Duration::from_secs(5) } else { backoff };
-                tokio::time::sleep(wait).await;
+                let wait = if slow { Duration::from_secs(5) } else { backoff };
                 backoff = (backoff * 2).min(Duration::from_secs(3));
+                // waiting, but another host asked for is gone to at once.
+                let until = tokio::time::Instant::now() + wait;
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(until) => break,
+                        cmd = cmds.rx.recv() => match cmd {
+                            None => return,
+                            Some(Cmd::Host(h)) => {
+                                host = h;
+                                open = Following::default();
+                                backoff = Duration::from_millis(100);
+                                break;
+                            }
+                            Some(other) => cmds.held.push_back(other),
+                        },
+                    }
+                }
             }
-            Ok((client, events, welcome)) => {
+            Ok((client, events, welcome, _link, via)) => {
                 let client = Arc::new(client);
                 // the daemon on disk is newer than the one running: it takes over,
                 // with every terminal and agent carrying on, once no turn is mid-way.
+                // (a host's daemon is brought up to date by setting it up again.)
                 let bin = tessel_client::daemon_binary();
-                let newer = bin.is_absolute()
+                let newer = host.is_none()
+                    && bin.is_absolute()
                     && welcome.capabilities.iter().any(|c| c == "handoff")
                     && tessel_proto::local::binary_stamp(&bin).is_some_and(|s| tessel_proto::local::build_stamp(&welcome.build) != Some(s.as_str()));
                 if newer && !ASKED_RESTART.swap(true, std::sync::atomic::Ordering::AcqRel) {
@@ -190,11 +249,15 @@ async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Un
                 }
                 open.many = welcome.proto_minor >= 13;
                 backoff = Duration::from_millis(100);
-                if ui.send(UiEvent::Connected).is_err() {
+                if ui.send(UiEvent::On { host: host.clone(), via }).is_err() || ui.send(UiEvent::Connected).is_err() {
                     return;
                 }
                 match session(&client, events, &mut cmds, &ui, &mut open).await {
                     Ended::UiGone => return,
+                    Ended::Switch(to) => {
+                        host = to;
+                        open = Following::default();
+                    }
                     Ended::Lost => {
                         if ui.send(UiEvent::Down("lost the connection to the daemon".into())).is_err() {
                             return;
@@ -209,6 +272,8 @@ async fn run(home: PathBuf, mut cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Un
 enum Ended {
     UiGone,
     Lost,
+    /// the window shows another machine now.
+    Switch(Option<String>),
 }
 
 /// the whole picture: every session, then each followed chat.
@@ -294,7 +359,7 @@ fn ask(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, req: Request, 
 async fn session(
     client: &Arc<Client>,
     mut events: Events,
-    cmds: &mut mpsc::UnboundedReceiver<Cmd>,
+    cmds: &mut Cmds,
     ui: &mpsc::UnboundedSender<UiEvent>,
     open: &mut Following,
 ) -> Ended {
@@ -376,6 +441,7 @@ async fn session(
             cmd = cmds.recv() => {
                 let Some(cmd) = cmd else { return Ended::UiGone };
                 let result = match cmd {
+                    Cmd::Host(h) => return Ended::Switch(h),
                     Cmd::Open(id) => {
                         open.open = id;
                         follow(client, ui, open).await

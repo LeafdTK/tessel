@@ -663,6 +663,8 @@ impl Hub {
                 if let Some(prev) = self.done.get(&cmd_id) {
                     return Some(Ok(prev.clone()));
                 }
+                // `~` is this machine's home: the window may be on another.
+                let cwd = if cwd.starts_with('~') { crate::projects::expand(&cwd).to_string_lossy().into_owned() } else { cwd };
                 if !Path::new(&cwd).is_dir() {
                     return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{cwd} is not a directory"))));
                 }
@@ -939,6 +941,7 @@ impl Hub {
                 self.create_session(create, cwd, wt)
             }
             Request::FolderInfo { path } => {
+                let path = if path.starts_with('~') { crate::projects::expand(&path).to_string_lossy().into_owned() } else { path };
                 let tx = self.tx.clone();
                 tokio::spawn(async move {
                     let git_root = worktree::repo_root(&path).await;
@@ -954,6 +957,19 @@ impl Hub {
                     use base64::Engine as _;
                     let (mime, bytes, note) = workspace::preview(&dir, &path).await?;
                     Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
+                });
+            }
+            Request::ProjectMake { parent, how } => {
+                return self.later(client, id, async move {
+                    tokio::task::spawn_blocking(move || crate::projects::make(&parent, &how))
+                        .await
+                        .map_err(|e| e.to_string())?
+                        .map(|(dir, prompt)| Response::ProjectMade { dir: dir.to_string_lossy().into_owned(), prompt })
+                });
+            }
+            Request::Folders { path } => {
+                return self.later(client, id, async move {
+                    tokio::task::spawn_blocking(move || crate::projects::folders(&path)).await.map_err(|e| e.to_string())?.map(|(path, folders, repo)| Response::Folders { path, folders, repo })
                 });
             }
             Request::Processes | Request::ProcessStop { .. } => {

@@ -282,6 +282,19 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    // ---- projects ---------------------------------------------------------------
+    /// a project made on the daemon's machine, ready for a session: a
+    /// repository cloned, or a new one from a template. `parent` may start
+    /// with `~`, the daemon's own home.
+    ProjectMake {
+        parent: String,
+        how: ProjectHow,
+    },
+    /// the folders in a folder on the daemon's machine (`~` is its home): for
+    /// choosing where to work on a machine whose disk the window can't see.
+    Folders {
+        path: String,
+    },
     // ---- what agents left running ----------------------------------------------
     /// every process started for a chat that's still running, one row per
     /// tree (a browser's helpers fold into it).
@@ -728,6 +741,20 @@ pub enum Response {
     Processes {
         procs: Vec<crate::procs::AgentProcess>,
     },
+    /// a project's folder, and what its first session is asked (if anything).
+    ProjectMade {
+        dir: String,
+        #[serde(default)]
+        prompt: String,
+    },
+    Folders {
+        /// the folder, written out whole.
+        path: String,
+        /// its folders' names, hidden ones left out.
+        folders: Vec<String>,
+        /// it's a git repository.
+        repo: bool,
+    },
     Tidied {
         text: String,
         /// what did it: "groq", "haiku" or "filter" (the noises only).
@@ -975,4 +1002,20 @@ pub enum Event {
 /// can a client built for `client_major` talk to this daemon?
 pub fn compatible(client_major: u16) -> bool {
     client_major == crate::PROTO_MAJOR
+}
+
+/// how a project is made (see `Request::ProjectMake`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectHow {
+    /// `git clone URL`, into a folder called `name`.
+    Clone { url: String, name: String },
+    /// a new repository: `template` is `empty`, `rust` or `next`. `github`:
+    /// also a private GitHub repository, with `gh`.
+    New {
+        name: String,
+        template: String,
+        #[serde(default)]
+        github: bool,
+    },
 }

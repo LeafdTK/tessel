@@ -321,6 +321,29 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);
                 done
             }
+            "host.use" => {
+                let which = arg(args, "host").ok_or("host: a host's id or name, or mac")?;
+                self.hosts_reload();
+                let to = match which {
+                    "mac" | "local" | "this" => None,
+                    w => Some(self.hosts.list.find(w).ok_or_else(|| format!("there's no host {w} (host.list says which there are)"))?.id.clone()),
+                };
+                self.switch_host(to, cx);
+                done
+            }
+            "host.add" => {
+                self.add_host_open(cx);
+                done
+            }
+            "host.list" => {
+                self.hosts_reload();
+                let current = self.hosts.list.current.clone();
+                let mut list = vec![json!({"id": "mac", "name": "This Mac", "showing": current.is_none()})];
+                for h in &self.hosts.list.hosts {
+                    list.push(json!({"id": h.id, "name": h.name, "ssh": h.ssh, "address": h.address, "transport": h.transport, "ready": h.ready(), "showing": current.as_deref() == Some(h.id.as_str())}));
+                }
+                Ok(json!(list))
+            }
             "app.notch" => {
                 let show = args.get("show").and_then(|v| v.as_bool()).ok_or("show: true or false")?;
                 // what the screen would choose isn't written down, so it keeps following the screen.

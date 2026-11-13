@@ -17,6 +17,7 @@ gpui-kit.workspace = true
 tessel-proto.workspace = true
 tessel-term.workspace = true
 tessel-client = { path = "../tessel-client" }
+tessel-remote = { path = "../tessel-remote" }
 tokio.workspace = true
 uuid.workspace = true
 serde_json.workspace = true

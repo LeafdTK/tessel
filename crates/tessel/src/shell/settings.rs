@@ -22,7 +22,7 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 8] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 9] = [
     ("appearance", "Appearance", "icons/sun-moon.svg"),
     ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
@@ -30,6 +30,7 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 8] = [
     ("terminal", "Terminal", "icons/square-terminal.svg"),
     ("agents", "Agents", "icons/bot.svg"),
     ("scripts", "Scripts", "icons/play.svg"),
+    ("hosts", "Hosts", "icons/server.svg"),
     ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
 
@@ -469,6 +470,7 @@ impl Shell {
             "models" => ("Models", v_flex().child(self.models_settings(cx))),
             "terminal" => ("Terminal", self.terminal_settings(cx)),
             "scripts" => ("Scripts", self.scripts_settings(cx)),
+            "hosts" => ("Hosts", self.hosts_settings(cx)),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };

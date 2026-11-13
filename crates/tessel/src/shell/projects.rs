@@ -3,15 +3,13 @@
 //!
 //! the + menu offers all three and the folders sessions have run in. making
 //! a project (a folder, `git init`, a template, optionally a private GitHub
-//! repository) happens on this machine, off the ui thread; then a session
-//! starts in it. a template that needs more than a few commands (a Next.js
+//! repository) is the daemon's job, on the machine the window shows (this
+//! mac, or a dev box); then a session starts in it. a template that needs more than a few commands (a Next.js
 //! app) is handed to the agent as its first message instead of being run here.
 
 use super::*;
 use gpui_kit::component::Icon;
 use gpui_kit::component::popover::Popover;
-use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sheet {
@@ -19,6 +17,9 @@ pub(crate) enum Sheet {
     Create,
     /// a GitHub repository, cloned.
     Clone,
+    /// a folder on a dev box: chosen by browsing it, since the mac's own
+    /// folder picker can't see its disk.
+    Folder,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,6 +31,17 @@ pub(crate) enum Template {
 }
 
 /// id, template, name, what it is, lucide icon.
+impl Template {
+    /// as the daemon knows it.
+    fn id(self) -> &'static str {
+        match self {
+            Template::Empty => "empty",
+            Template::Rust => "rust",
+            Template::Next => "next",
+        }
+    }
+}
+
 const TEMPLATES: [(&str, Template, &str, &str, &str); 3] = [
     ("empty", Template::Empty, "Empty", "A blank Git repository", "file-code"),
     ("rust", Template::Rust, "Rust", "cargo init, ready to build", "package"),
@@ -80,49 +92,6 @@ pub(crate) fn tilde(path: &str) -> String {
     }
 }
 
-fn untilde(path: &str) -> PathBuf {
-    match path.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest),
-        None => PathBuf::from(path),
-    }
-}
-
-fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
-    let out = cmd.output().map_err(|e| format!("Couldn't run {what}: {e}."))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr);
-        Err(format!("{what} failed: {}", err.lines().last().unwrap_or("").trim()))
-    }
-}
-
-/// make the project's folder. what the session is first asked, if anything, comes back.
-fn make_project(dir: &Path, name: &str, template: Template, github: bool) -> Result<String, String> {
-    if dir.exists() && std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
-        return Err(format!("{} already exists and isn't empty.", tilde(&dir.to_string_lossy())));
-    }
-    std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}.", dir.display()))?;
-    let git = |args: &[&str]| run(Command::new("git").args(args).current_dir(dir), "git");
-    match template {
-        Template::Rust => run(Command::new("cargo").args(["init", "--vcs", "git", "--name", &slug(name).replace('.', "_")]).current_dir(dir), "cargo init")?,
-        _ => {
-            git(&["init", "-b", "main"])?;
-            std::fs::write(dir.join("README.md"), format!("# {name}\n")).map_err(|e| format!("Couldn't write the readme: {e}."))?;
-        }
-    }
-    // a first commit, so worktrees and branches have something to start from.
-    // it can fail (no git identity set up); the project is still usable.
-    let _ = git(&["add", "-A"]).and_then(|_| git(&["commit", "-q", "-m", "chore: start the project"]));
-    if github {
-        run(Command::new("gh").args(["repo", "create", &slug(name), "--private", "--source", ".", "--push"]).current_dir(dir), "gh repo create")?;
-    }
-    Ok(match template {
-        Template::Next => "Set up a Next.js app in this empty repository with create-next-app: TypeScript, Tailwind and the App Router, in this folder rather than a new one. Then commit it.".into(),
-        _ => String::new(),
-    })
-}
-
 impl Shell {
     /// folders sessions have run in, the most recent first.
     pub(crate) fn recent_folders(&self, n: usize) -> Vec<String> {
@@ -160,9 +129,10 @@ impl Shell {
 
     /// the new-session card, pointed at a folder, with the cursor in what to do.
     pub(crate) fn start_in(&mut self, folder: String, window: &mut Window, cx: &mut Context<Self>) {
+        // on a dev box, `~` is its home: the daemon there works it out.
         let folder = match folder.strip_prefix("~/") {
-            Some(rest) => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
-            None => folder,
+            Some(rest) if !self.on_host() => format!("{}/{rest}", std::env::var("HOME").unwrap_or_default()),
+            _ => folder,
         };
         self.new_project = Some(folder);
         self.show_new = true;
@@ -171,6 +141,13 @@ impl Shell {
     }
 
     pub(crate) fn pick_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.on_host() {
+            let start = self.project_list().first().and_then(|f| f.rsplit_once('/').map(|(parent, _)| parent.to_owned())).unwrap_or_else(|| "~".into());
+            self.project_parent.update(cx, |s, cx| s.set_value(start.clone(), window, cx));
+            self.browse_host(start);
+            self.open_sheet(Sheet::Folder, cx);
+            return;
+        }
         let pick = cx.prompt_for_paths(PathPromptOptions { files: false, directories: true, multiple: false, prompt: Some("Open".into()) });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = pick.await else { return };
@@ -204,30 +181,41 @@ impl Shell {
         cx.notify();
     }
 
-    /// make the project (or clone it) off the ui thread, then start a session in it.
+    /// look in a folder on the machine the window shows.
+    pub(crate) fn browse_host(&mut self, path: String) {
+        self.host_folders = None;
+        self.cmd(Cmd::Ask { tag: "project.folders", req: tessel_proto::Request::Folders { path } });
+    }
+
+    /// make the project (or clone it) where the daemon is, then start a session in it.
     pub(crate) fn make(&mut self, cx: &mut Context<Self>) {
         let Some(sheet) = self.sheet else { return };
         if self.making {
             return;
         }
-        let parent = untilde(self.project_parent.read(cx).value().trim());
-        if parent.as_os_str().is_empty() {
+        let parent = self.project_parent.read(cx).value().trim().to_owned();
+        if parent.is_empty() {
             self.sheet_error = Some("Choose a folder to put it in.".into());
             cx.notify();
             return;
         }
-        let (template, github) = (self.template, self.github_private);
-        let job: Box<dyn FnOnce() -> Result<(PathBuf, String), String> + Send> = match sheet {
+        let how = match sheet {
+            Sheet::Folder => {
+                // the folder itself is where it works (`~` is the dev box's home: its daemon works it out).
+                self.sheet = None;
+                self.new_project = Some(parent);
+                self.show_new = true;
+                cx.notify();
+                return;
+            }
             Sheet::Create => {
                 let name = self.project_name.read(cx).value().trim().to_string();
-                let folder = slug(&name);
-                if folder.is_empty() {
+                if slug(&name).is_empty() {
                     self.sheet_error = Some("Give the project a name.".into());
                     cx.notify();
                     return;
                 }
-                let dir = parent.join(&folder);
-                Box::new(move || make_project(&dir, &name, template, github).map(|prompt| (dir, prompt)))
+                tessel_proto::ProjectHow::New { name, template: self.template.id().into(), github: self.github_private }
             }
             Sheet::Clone => {
                 let Some((url, name)) = clone_source(self.github_repo.read(cx).value().as_ref()) else {
@@ -235,35 +223,35 @@ impl Shell {
                     cx.notify();
                     return;
                 };
-                let dir = parent.join(name);
-                Box::new(move || {
-                    if dir.exists() {
-                        return Err(format!("{} already exists.", tilde(&dir.to_string_lossy())));
-                    }
-                    let _ = std::fs::create_dir_all(dir.parent().unwrap_or(&dir));
-                    run(Command::new("git").arg("clone").arg(&url).arg(&dir), "git clone").map(|_| (dir, String::new()))
-                })
+                tessel_proto::ProjectHow::Clone { url, name }
             }
         };
         self.making = true;
         self.sheet_error = None;
+        self.cmd(Cmd::Ask { tag: "project.make", req: tessel_proto::Request::ProjectMake { parent, how } });
         cx.notify();
-        let work = cx.background_executor().spawn(async move { job() });
-        cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |this, cx| {
-                this.making = false;
-                match result {
-                    Ok((dir, prompt)) => {
-                        this.sheet = None;
-                        this.cmd(Cmd::Create { cwd: dir.to_string_lossy().into_owned(), worktree: false, prompt, attachments: Vec::new() });
-                    }
-                    Err(e) => this.sheet_error = Some(e),
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+    }
+
+    pub(crate) fn project_answer(&mut self, tag: &'static str, result: Result<tessel_proto::Response, String>) {
+        match (tag, result) {
+            ("project.make", Ok(tessel_proto::Response::ProjectMade { dir, prompt })) => {
+                self.making = false;
+                self.sheet = None;
+                self.cmd(Cmd::Create { cwd: dir, worktree: false, prompt, attachments: Vec::new() });
+            }
+            ("project.make", Ok(_)) => {
+                self.making = false;
+                self.sheet_error = Some("The daemon is too old to make projects. Restart tessel to update it.".into());
+            }
+            ("project.make", Err(e)) => {
+                self.making = false;
+                self.sheet_error = Some(e);
+            }
+            ("project.folders", Ok(tessel_proto::Response::Folders { path, folders, repo })) => self.host_folders = Some(Ok((path, folders, repo))),
+            ("project.folders", Ok(_)) => self.host_folders = Some(Err("The daemon there is too old to browse. Set the host up again to update it.".into())),
+            ("project.folders", Err(e)) => self.host_folders = Some(Err(e)),
+            _ => {}
+        }
     }
 
     // ---- drawing --------------------------------------------------------------------
@@ -400,14 +388,21 @@ impl Shell {
         let label = |text: &'static str| div().set(Type::Callout).font_weight(FontWeight(550.)).child(text);
         let hint = |text: String| div().set(Type::Subheadline).text_color(p.secondary).child(text);
         let field = |input: &Entity<InputState>, id: &'static str| div().flex_1().child(Input::new(input).id(id));
+        let remote = self.on_host();
         let (title, about) = match sheet {
+            Sheet::Create if remote => ("Create project", "A folder with a Git repository on the dev box, and a first session in it."),
             Sheet::Create => ("Create project", "A local folder with a Git repository, and a first session in it."),
+            Sheet::Clone if remote => ("Open GitHub project", "Clone a repository on the dev box, and start a session in it."),
             Sheet::Clone => ("Open GitHub project", "Clone a repository, and start a session in it."),
+            Sheet::Folder => ("Open project", "A folder on the dev box to work in."),
         };
+        // the mac's folder picker can't see a dev box's disk: the path is typed (`~` is its home).
         let parent = v_flex()
             .gap_2()
             .child(label("Parent folder"))
-            .child(h_flex().gap_2().child(field(&self.project_parent, "project-parent")).child(Button::new("project-browse").outline().label("Browse").on_click(cx.listener(|this, _, window, cx| this.browse_parent(window, cx)))));
+            .child(h_flex().gap_2().child(field(&self.project_parent, "project-parent")).when(!remote, |d| {
+                d.child(Button::new("project-browse").outline().label("Browse").on_click(cx.listener(|this, _, window, cx| this.browse_parent(window, cx))))
+            }));
 
         let mut body = v_flex().gap_5();
         match sheet {
@@ -474,6 +469,7 @@ impl Shell {
                         .child(v_flex().child(div().set(Type::Body).child("Also make a private GitHub repository")).child(hint("With the gh command, signed in as you.".into()))),
                 );
             }
+            Sheet::Folder => body = body.child(self.host_folder_browser(cx)),
             Sheet::Clone => {
                 let source = clone_source(self.github_repo.read(cx).value().as_ref());
                 body = body.child(
@@ -530,17 +526,71 @@ impl Shell {
                                         (_, true) => "Working…",
                                         (Sheet::Create, false) => "Create  ⌘↵",
                                         (Sheet::Clone, false) => "Clone  ⌘↵",
+                                        (Sheet::Folder, false) => "Open  ⌘↵",
                                     })
                                     .on_click(cx.listener(|this, _, _, cx| this.make(cx))),
                             ),
                     ),
             )
     }
+
+    /// a folder on the dev box: where it is (typed, or gone to), and the folders in it.
+    fn host_folder_browser(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette.get();
+        let path = h_flex()
+            .gap_2()
+            .child(div().flex_1().child(Input::new(&self.project_parent).id("host-folder-path")))
+            .child(Button::new("host-folder-go").outline().label("Go").on_click(cx.listener(|this, _, _, cx| {
+                let path = this.project_parent.read(cx).value().trim().to_owned();
+                this.browse_host(if path.is_empty() { "~".into() } else { path });
+                cx.notify();
+            })));
+        let mut list = v_flex().id("host-folders").h(px(240.)).overflow_y_scroll().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).py_1();
+        match &self.host_folders {
+            None => list = list.child(div().p_3().set(Type::Callout).text_color(p.tertiary).child("Looking…")),
+            Some(Err(e)) => list = list.child(div().p_3().set(Type::Callout).text_color(p.failed).child(e.clone())),
+            Some(Ok((here, folders, repo))) => {
+                let row = |id: SharedString, icon: &'static str, name: String, to: String, cx: &mut Context<Self>| {
+                    h_flex()
+                        .id(id)
+                        .test_support()
+                        .h(px(28.))
+                        .mx_1()
+                        .px_2()
+                        .gap_2()
+                        .rounded(px(theme::R_TILE))
+                        .hover(|d| d.bg(p.hover))
+                        .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(14.)).text_color(p.secondary))
+                        .child(div().flex_1().min_w_0().truncate().set(Type::Body).child(name))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.project_parent.update(cx, |s, cx| s.set_value(to.clone(), window, cx));
+                            this.browse_host(to.clone());
+                            cx.notify();
+                        }))
+                };
+                if *repo {
+                    list = list.child(div().px_3().py_1().set(Type::Subheadline).text_color(p.finished).child("A git repository: open it, or a folder in it."));
+                }
+                if let Some((up, _)) = here.rsplit_once('/') {
+                    let up = if up.is_empty() { "/".to_owned() } else { up.to_owned() };
+                    list = list.child(row("host-folder-up".into(), "corner-left-up", "..".into(), up, cx));
+                }
+                for (i, f) in folders.iter().enumerate() {
+                    let to = format!("{}/{f}", here.trim_end_matches('/'));
+                    list = list.child(row(SharedString::from(format!("host-folder-{i}")), "folder", f.clone(), to, cx));
+                }
+                if folders.is_empty() {
+                    list = list.child(div().p_3().set(Type::Callout).text_color(p.tertiary).child("No folders in here."));
+                }
+            }
+        }
+        v_flex().gap_2().child(path).child(list)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Template, clone_source, make_project, slug};
+    use super::{clone_source, slug};
 
     #[test]
     fn names_become_folder_names() {
@@ -558,21 +608,6 @@ mod tests {
         assert_eq!(clone_source("git@github.com:hackclub/orchard.git"), Some(("git@github.com:hackclub/orchard.git".into(), "orchard".into())));
         assert_eq!(clone_source("orchard"), None);
         assert_eq!(clone_source(""), None);
-    }
-
-    #[test]
-    fn an_empty_project_is_a_git_repository_with_a_readme_and_never_overwrites() {
-        let dir = std::env::temp_dir().join(format!("tessel-project-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let first = make_project(&dir, "My App", Template::Empty, false).unwrap();
-        assert!(first.is_empty(), "an empty project starts with nothing to do");
-        assert!(dir.join(".git").is_dir() && std::fs::read_to_string(dir.join("README.md")).unwrap() == "# My App\n");
-        assert!(make_project(&dir, "My App", Template::Empty, false).unwrap_err().contains("isn't empty"));
-        std::fs::remove_dir_all(&dir).unwrap();
-        let next = std::env::temp_dir().join(format!("tessel-project-next-{}", std::process::id()));
-        let ask = make_project(&next, "Site", Template::Next, false).unwrap();
-        assert!(ask.contains("create-next-app"), "next.js is the agent's first job: {ask}");
-        std::fs::remove_dir_all(&next).unwrap();
     }
 }
 

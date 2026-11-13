@@ -10,6 +10,7 @@ pub mod hub;
 pub mod kube;
 pub mod orphans;
 pub mod procs;
+pub mod projects;
 pub mod paths;
 pub mod reducer;
 pub mod server;

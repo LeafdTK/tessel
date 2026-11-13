@@ -109,6 +109,9 @@ impl Rig {
             crate::bind_actions(shell.downgrade(), cx);
             (window, shell)
         });
+        // never this mac's own hosts.json: a home of the test's own.
+        let home = std::env::temp_dir().join(format!("tessel-test-home-{}", uuid::Uuid::new_v4()));
+        cx.update(|cx| shell.update(cx, |s, _| s.hosts = crate::shell::hosts::HostsView::new(home)));
         // a window you are looking at. (seeing a finished session only counts in one.)
         cx.update_window(window, |_, window, _| window.activate_window()).unwrap();
         let mut rig = Self { window, shell, events, cmds };
@@ -2784,4 +2787,40 @@ fn the_processes_pane_shows_what_agents_left_and_stops_it_when_sure(cx: &mut Tes
 fn a_subagent_asked_a_whole_script_is_one_line_in_the_sidebar() {
     assert_eq!(crate::shell::one_line("python3 -I - <<'EOF'\np='install/install.sh'\ns=open(p)"), "python3 -I - <<'EOF' …");
     assert_eq!(crate::shell::one_line("  start   the dev server "), "start the dev server");
+}
+
+#[gpui_kit::test]
+fn a_dev_box_is_picked_and_added_from_settings(cx: &mut TestAppContext) {
+    use tessel_remote::hosts::{Host, Hosts, Transport};
+    let mut rig = Rig::with_sessions(cx, session(1, "Fix login", RunState::Idle, None), vec![]);
+    let home = rig.shell.read_with(cx, |s, _| s.hosts.home.clone());
+    let mut list = Hosts::default();
+    let mut devbox = Host::new("Dev box", "seb@devbox");
+    devbox.address = Some("devbox:7731".into());
+    devbox.fingerprint = Some("SHA256:abc".into());
+    devbox.transport = Transport::Quic;
+    list.add(devbox);
+    list.save(&home).unwrap();
+    rig.shell.update(cx, |s, cx| {
+        s.hosts_reload();
+        s.settings_section = "hosts";
+        s.open_settings(cx);
+    });
+    rig.settle(cx);
+    assert!(rig.exists(cx, "host-row-mac") && rig.exists(cx, "host-row-dev-box"), "this mac and the dev box are listed");
+    rig.asked();
+    rig.click(cx, "host-show-dev-box");
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Host(Some(id))] if id == "dev-box"), "showing it connects to it");
+    assert_eq!(Hosts::load(&home).current.as_deref(), Some("dev-box"), "and it's remembered");
+    assert!(rig.shell.read_with(cx, |s, _| s.model.sessions.is_empty()), "this mac's chats aren't the dev box's");
+    rig.feed(cx, vec![UiEvent::On { host: Some("dev-box".into()), via: "quic, 4 ms".into() }, UiEvent::Connected, UiEvent::Sessions(vec![session(9, "On the box", RunState::Idle, None)])]);
+    assert!(rig.exists(cx, sid(9).0), "its own chats");
+    rig.asked();
+    rig.click(cx, "host-show-mac");
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Host(None))), "and back: {asked:?}");
+    // adding one: the form, then setting it up.
+    rig.shell.update(cx, |s, cx| s.add_host_open(cx));
+    rig.settle(cx);
+    assert!(rig.exists(cx, "host-form-ssh"), "the add form asks how ssh reaches it");
 }
