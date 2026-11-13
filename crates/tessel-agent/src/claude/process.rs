@@ -319,7 +319,13 @@ impl Backend for ClaudeBackend {
             cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         }
         Box::pin(async move {
-            let mut child = cmd.spawn().context("could not start the agent to ask for its models")?;
+            let mut child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    anyhow::bail!("claude code isn't installed on this machine (`curl -fsSL https://claude.ai/install.sh | bash` installs it)")
+                }
+                Err(e) => return Err(e).context("could not start the agent to ask for its models"),
+            };
             let mut stdin = child.stdin.take().context("no stdin")?;
             let stdout = child.stdout.take().context("no stdout")?;
             let ask = wire::initialize("tessel-models").to_string() + "\n";

@@ -126,6 +126,38 @@ pub enum UiEvent {
     Error(String),
 }
 
+/// a dev box's ports, reached from this mac: what the window's browser loads
+/// goes through here (see `tessel_remote::forward`).
+pub static FORWARDS: std::sync::LazyLock<tessel_remote::forward::Forwards> = std::sync::LazyLock::new(Default::default);
+
+/// window calls from this mac's daemon while the window shows a host: their
+/// numbers carry this bit, so each answer goes back where it came from.
+const FROM_MAC: u64 = 1 << 62;
+/// this mac's daemon, while the window shows a host (see `mac_window`).
+static MAC_UI: std::sync::Mutex<Option<Arc<Client>>> = std::sync::Mutex::new(None);
+
+/// while the window shows a host, it's still this mac's window: scripts here
+/// (`tesselctl ui …`) and agents here reach it through this mac's daemon.
+async fn mac_window(home: PathBuf, ui: mpsc::UnboundedSender<UiEvent>) {
+    loop {
+        if let Ok((client, mut events, _)) = tessel_client::connect_or_start(&home, "tessel").await {
+            let client = Arc::new(client);
+            if client.request(Request::UiRegister { name: "main".into() }).await.is_ok() {
+                *MAC_UI.lock().unwrap() = Some(client.clone());
+                while let Some(ev) = events.recv().await {
+                    if let Event::UiCall { call, cmd, args } = ev
+                        && ui.send(UiEvent::Call { call: call | FROM_MAC, cmd, args }).is_err()
+                    {
+                        return;
+                    }
+                }
+                *MAC_UI.lock().unwrap() = None;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
 pub struct Bridge {
     pub cmds: mpsc::UnboundedSender<Cmd>,
 }
@@ -218,6 +250,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                         cmd = cmds.rx.recv() => match cmd {
                             None => return,
                             Some(Cmd::Host(h)) => {
+                                FORWARDS.clear();
                                 host = h;
                                 open = Following::default();
                                 backoff = Duration::from_millis(100);
@@ -228,8 +261,11 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                     }
                 }
             }
-            Ok((client, events, welcome, _link, via)) => {
+            Ok((client, events, welcome, link, via)) => {
                 let client = Arc::new(client);
+                // the box's ports, for the browser: kept across a reconnect to it.
+                FORWARDS.set(link.clone(), tokio::runtime::Handle::current());
+                let mac = host.is_some().then(|| tokio::spawn(mac_window(home.clone(), ui.clone())));
                 // the daemon on disk is newer than the one running: it takes over,
                 // with every terminal and agent carrying on, once no turn is mid-way.
                 // (a host's daemon is brought up to date by setting it up again.)
@@ -252,9 +288,15 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                 if ui.send(UiEvent::On { host: host.clone(), via }).is_err() || ui.send(UiEvent::Connected).is_err() {
                     return;
                 }
-                match session(&client, events, &mut cmds, &ui, &mut open).await {
+                let ended = session(&client, events, &mut cmds, &ui, &mut open).await;
+                if let Some(mac) = mac {
+                    mac.abort();
+                    *MAC_UI.lock().unwrap() = None;
+                }
+                match ended {
                     Ended::UiGone => return,
                     Ended::Switch(to) => {
+                        FORWARDS.clear();
                         host = to;
                         open = Following::default();
                     }
@@ -509,7 +551,10 @@ async fn session(
                             Ok(v) => (Some(v), None),
                             Err(e) => (None, Some(e)),
                         };
-                        let client = client.clone();
+                        // asked by this mac's daemon while a host is shown: answered there.
+                        // (shown again, this mac's daemon is the client already.)
+                        let client = if call & FROM_MAC != 0 { MAC_UI.lock().unwrap().clone().unwrap_or_else(|| client.clone()) } else { client.clone() };
+                        let call = call & !FROM_MAC;
                         tokio::spawn(async move {
                             let _ = client.request(Request::UiAnswer { call, ok, err }).await;
                         });

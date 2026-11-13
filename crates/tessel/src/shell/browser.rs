@@ -345,7 +345,7 @@ impl Shell {
         let parent = self.native_view.ok_or("the window can't show pages")?;
         let web = WebView::new(parent).ok_or("this Mac couldn't make a web view")?;
         if let Some(url) = start {
-            web.load(&url_of(&url))?;
+            web.load(&crate::bridge::FORWARDS.to_local(&url_of(&url)))?;
         }
         self.page(session).borrow_mut().native = Some(Rc::new(Native { web }));
         self.page_opening.remove(&session);
@@ -735,7 +735,7 @@ impl Shell {
 
 /// where a native page is now.
 fn state_of(n: &Native, was: &BrowserState) -> BrowserState {
-    BrowserState { url: n.web.url(), title: n.web.title(), loading: n.web.loading(), picking: was.picking }
+    BrowserState { url: crate::bridge::FORWARDS.to_remote(&n.web.url()), title: n.web.title(), loading: n.web.loading(), picking: was.picking }
 }
 
 /// wait for a page to settle after something that may load one: up to ten seconds.
@@ -837,7 +837,8 @@ async fn page_act(
         BrowserAct::Open { url: None } => settle(n, cx).await,
         BrowserAct::Open { url: Some(url) } | BrowserAct::Navigate { url } => {
             let url = url_of(&url);
-            n.web.load(&url)?;
+            // a dev box's own address reaches it through this mac.
+            n.web.load(&crate::bridge::FORWARDS.to_local(&url))?;
             tell(format!("went to {url}"), None, cx);
             settle(n, cx).await;
         }

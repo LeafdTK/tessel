@@ -1113,6 +1113,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 Ok(Response::Ack)
             }
             Request::TermOpen { session, cwd, command, cols, rows, agent } => {
+                // `~` is this machine's home: the one asking may be on another.
+                let cwd = cwd.map(|c| if c.starts_with('~') { crate::projects::expand(&c).to_string_lossy().into_owned() } else { c });
                 let session_cwd = session.and_then(|s| self.sessions.get(&s)).map(|l| l.state.meta.cwd.clone());
                 if let Some(s) = session
                     && session_cwd.is_none()

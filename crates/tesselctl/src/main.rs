@@ -137,6 +137,9 @@ fn main() {
     }
 }
 
+/// talking to a host's daemon (`--host`): its paths are its own, not resolved here.
+static ON_HOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 struct Args {
     rest: Vec<String>,
 }
@@ -276,6 +279,8 @@ async fn run() -> anyhow::Result<()> {
 
     // a host's quic connection: held for as long as the command runs.
     let _link;
+    let remote = on_host.is_some();
+    ON_HOST.store(remote, std::sync::atomic::Ordering::Relaxed);
     let (client, mut events, welcome) = if let Some(which) = on_host {
         let hosts = tessel_remote::hosts::Hosts::load(&home);
         let host = hosts.find(&which).with_context(|| format!("no host {which} (tesselctl host ls)"))?;
@@ -306,11 +311,14 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         "new" => {
-            let cwd = match args.opt("--cwd")? {
-                Some(c) => PathBuf::from(c),
-                None => std::env::current_dir()?,
+            // a host's folder is the host's to work out (`~` is its home), not this machine's.
+            let cwd = match (args.opt("--cwd")?, remote) {
+                (Some(c), true) => PathBuf::from(c),
+                (None, true) => PathBuf::from("~"),
+                (Some(c), false) => PathBuf::from(c),
+                (None, false) => std::env::current_dir()?,
             };
-            let cwd = cwd.canonicalize().with_context(|| format!("{} does not exist", cwd.display()))?;
+            let cwd = if remote { cwd } else { cwd.canonicalize().with_context(|| format!("{} does not exist", cwd.display()))? };
             let want_worktree = args.flag("--worktree");
             let base = args.opt("--base")?;
             let name = args.opt("--name")?;
@@ -917,7 +925,10 @@ async fn term(client: &Client, events: &mut Events, args: &mut Args, json: bool)
             }
         }
         "open" => {
-            let cwd = args.opt("--cwd")?.map(|c| PathBuf::from(c).canonicalize().map(|p| p.to_string_lossy().into_owned())).transpose()?;
+            let cwd = match args.opt("--cwd")? {
+                Some(c) if ON_HOST.load(std::sync::atomic::Ordering::Relaxed) => Some(c),
+                c => c.map(|c| PathBuf::from(c).canonicalize().map(|p| p.to_string_lossy().into_owned())).transpose()?,
+            };
             let session = match args.opt("--session")? {
                 Some(s) => Some(resolve(client, &s).await?),
                 None => None,
