@@ -10,6 +10,45 @@ use gpui_kit::component::switch::Switch;
 use serde_json::json;
 use tessel_proto::{EFFORTS, FavoriteModel, MAX_FAVORITES, ModelInfo};
 
+/// every Claude model by its full id, beyond the few the agent lists by
+/// alias: (id, name, what it is, the efforts it takes). the agent runs any of
+/// them by id; what it lists itself comes first and wins.
+const CATALOGUE: &[(&str, &str, &str, &[&str])] = &[
+    ("claude-fable-5-2", "Fable 5.2", "Most capable, for the hardest long-running work", ALL),
+    ("claude-fable-5-1", "Fable 5.1", "The previous Fable", ALL),
+    ("claude-fable-5", "Fable 5", "The first Fable", ALL),
+    ("claude-opus-5-5", "Opus 5.5", "The current Opus", ALL),
+    ("claude-opus-5", "Opus 5", "The previous Opus", ALL),
+    ("claude-opus-4-8", "Opus 4.8", "Opus, fourth generation", ALL),
+    ("claude-opus-4-7", "Opus 4.7", "Opus, fourth generation", ALL),
+    ("claude-opus-4-6", "Opus 4.6", "Opus, fourth generation", FOUR_SIX),
+    ("claude-sonnet-5-5", "Sonnet 5.5", "The current Sonnet: fast and capable", ALL),
+    ("claude-sonnet-5", "Sonnet 5", "The previous Sonnet", ALL),
+    ("claude-sonnet-4-6", "Sonnet 4.6", "Sonnet, fourth generation", FOUR_SIX),
+    ("claude-haiku-5-5", "Haiku 5.5", "The current Haiku: quick and cheap", ALL),
+    ("claude-haiku-4-5", "Haiku 4.5", "The previous Haiku", &[]),
+];
+const ALL: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+const FOUR_SIX: &[&str] = &["low", "medium", "high", "max"];
+
+/// what the agent offers, then every model in the catalogue it didn't list.
+pub(crate) fn with_catalogue(mut models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    for (id, name, about, efforts) in CATALOGUE {
+        if models.iter().any(|m| m.id == *id || m.value == *id) {
+            continue;
+        }
+        models.push(ModelInfo { value: (*id).to_owned(), id: (*id).to_owned(), name: (*name).to_owned(), description: (*about).to_owned(), efforts: efforts.iter().map(|e| (*e).to_owned()).collect(), fast: false });
+    }
+    models
+}
+
+/// a model id someone typed, if it looks like one: something the agent can be
+/// asked for even though no list has it.
+pub(crate) fn typed_id(query: &str) -> Option<&str> {
+    let q = query.trim();
+    (q.len() >= 3 && !q.contains(char::is_whitespace) && q.chars().all(|c| c.is_ascii_alphanumeric() || "-_.[]:/@".contains(c))).then_some(q)
+}
+
 /// a model's family, as a letter and a hue: what its tile shows.
 pub(crate) fn family(name: &str) -> (char, f32) {
     let n = name.to_lowercase();
@@ -299,8 +338,35 @@ impl Shell {
             }
         } else {
             // a search: every model the agent offers.
-            let found: Vec<ModelInfo> = self.models.iter().filter(|m| m.value != "default").filter(|m| m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query)).cloned().collect();
-            if found.is_empty() {
+            let found: Vec<ModelInfo> = self
+                .models
+                .iter()
+                .filter(|m| m.value != "default")
+                .filter(|m| m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
+                .cloned()
+                .collect();
+            // an id no list has: asked for as it's written.
+            let raw = search.read(cx).value().trim().to_owned();
+            if let Some(id) = typed_id(&raw).filter(|id| !found.iter().any(|m| m.value == *id || m.id == *id)) {
+                let (me, pop, value) = (me.clone(), popover.clone(), id.to_owned());
+                list = list.child(
+                    h_flex()
+                        .id("model-typed")
+                        .test_support()
+                        .min_h(theme::z(theme::FLOAT_ITEM_H))
+                        .px(theme::z(8.))
+                        .gap(theme::z(10.))
+                        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                        .cursor_pointer()
+                        .hover(|d| d.bg(p.hover))
+                        .on_click(move |_, window, cx| {
+                            let _ = me.update(cx, |this, cx| this.set_model(value.clone(), cx));
+                            dismiss(&pop, window, cx);
+                        })
+                        .child(model_tile(id, 18., &p))
+                        .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(format!("Use {id}"))).child(div().set(Type::Subheadline).text_color(p.tertiary).child("Any model id the agent takes"))),
+                );
+            } else if found.is_empty() {
                 list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child(if self.models.is_empty() { "Asking the agent which models it has…" } else { "No model matches." }));
             }
             for m in found {

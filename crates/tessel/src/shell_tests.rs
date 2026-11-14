@@ -1512,7 +1512,7 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
     rig.asked();
     rig.click(cx, "turn-turn/2-more");
     rig.click(cx, "turn-fork-workspace");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Fork { session, workspace: true }] if *session == a.id));
+    assert!(matches!(rig.asked().as_slice(), [Cmd::Fork { session, workspace: true, .. }] if *session == a.id));
 }
 
 #[gpui_kit::test]
@@ -1650,7 +1650,7 @@ fn a_long_settings_page_scrolls_to_its_end(cx: &mut TestAppContext) {
     rig.settle(cx);
     let bottoms = |rig: &mut Rig, cx: &mut TestAppContext| {
         cx.update_window(rig.window, |_, window, _| {
-            let (body, last) = (window.find("settings-body").bounds(), window.find("models-row-m13").bounds());
+            let (body, last) = (window.find("settings-body").bounds(), window.find("models-row-claude-haiku-4-5").bounds());
             (body.origin.y + body.size.height, last.origin.y + last.size.height)
         })
         .unwrap()
