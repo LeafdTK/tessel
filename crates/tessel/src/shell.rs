@@ -181,6 +181,8 @@ pub struct Shell {
     /// half-written messages, one per chat, so every pane showing a chat
     /// shares its draft and moving between chats keeps each one.
     pub(crate) drafts: HashMap<SessionId, String>,
+    /// when each session's last turn ended, for the green that fades under glass.
+    pub(crate) done_at: HashMap<SessionId, Millis>,
     /// a draft to put in the message box at the next frame (it needs the window).
     pub(crate) draft_to_set: Option<String>,
     /// put the cursor in the message box at the next frame.
@@ -608,7 +610,12 @@ impl Shell {
             loop {
                 cx.background_executor().timer(Duration::from_millis(BEAT_MS)).await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting)) {
+                    let fading = |s: &SessionSummary| {
+                        crate::glass::liquid()
+                            && (s.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Finished && now_ms().saturating_sub(a.since_ms) < GLOW_FADE_MS)
+                                || this.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
+                    };
+                    if this.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || fading(s)) {
                         cx.notify();
                     }
                 });
@@ -679,6 +686,7 @@ impl Shell {
             chat_pane: None,
             views: HashMap::new(),
             drafts: HashMap::new(),
+            done_at: HashMap::new(),
             draft_to_set: None,
             focus_composer_next: false,
             followed: Vec::new(),
@@ -933,6 +941,8 @@ impl Shell {
                 }
                 // a turn ending may have changed its workspace's scripts (an agent asked to write them).
                 if was_busy && !summary.run_state.is_busy() {
+                    // the glow under its glass goes green and fades.
+                    self.done_at.insert(summary.id, now_ms());
                     self.scripts.remove(&summary.cwd);
                     self.scripts_tried.remove(&summary.cwd);
                 }
@@ -1658,7 +1668,13 @@ impl Shell {
             .pr_2()
             .rounded(px(theme::R_TILE))
             // liquid: the chat you're in is a bead of glass tinted with the accent.
-            .when(selected && crate::glass::liquid(), |d| d.child(glass_spot_tinted(theme::R_TILE, p.accent.opacity(0.28))))
+            // liquid: the chat you're in is a bead of glass tinted with the accent;
+            // one that's working (or wants you) glows under its glass.
+            .map(|d| match (crate::glass::liquid(), glow_of(s, &p, now, self.done_at.get(&s.id).copied())) {
+                (true, Some((c, k, breathe))) => d.child(glow_el(c, k * 0.8, breathe, 14.)).child(glass_tinted(theme::R_TILE, if selected { p.accent.opacity(0.22) } else { p.label.opacity(0.0) })),
+                (true, None) if selected => d.child(glass_spot_tinted(theme::R_TILE, p.accent.opacity(0.28))),
+                _ => d,
+            })
             .when(selected && !crate::glass::liquid(), |d| d.bg(p.selection))
             .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
@@ -3233,6 +3249,67 @@ impl Render for TurnTip {
         }
         card
     }
+}
+
+/// the light a session gives off under liquid glass: its colour, how
+/// strong, and whether it breathes. working breathes in the working colour;
+/// waiting on you is a steady blue; an error a steady red; a turn just done
+/// a green that fades in a few seconds. none at rest.
+pub(crate) fn glow_of(s: &SessionSummary, p: &Palette, now: Millis, done_at: Option<Millis>) -> Option<(Hsla, f32, bool)> {
+    if matches!(s.run_state, RunState::Working | RunState::Starting) {
+        return Some((p.blocked, 1.0, true));
+    }
+    // a turn that just ended, seen or not: green, fading.
+    if let Some(at) = done_at {
+        let age = now.saturating_sub(at) as f32 / GLOW_FADE_MS as f32;
+        if age < 1.0 && s.attention.as_ref().is_none_or(|a| a.reason == AttentionReason::Finished) {
+            return Some((p.finished, 0.9 * (1.0 - age), false));
+        }
+    }
+    let a = s.attention.as_ref()?;
+    match a.reason {
+        AttentionReason::NeedsPermission | AttentionReason::NeedsInput => Some((theme::info(p), 0.8, false)),
+        AttentionReason::Errored => Some((p.failed, 0.7, false)),
+        AttentionReason::Finished => {
+            let age = now.saturating_sub(a.since_ms) as f32 / GLOW_FADE_MS as f32;
+            (age < 1.0).then(|| (p.finished, 0.9 * (1.0 - age), false))
+        }
+        _ => None,
+    }
+}
+
+/// how long a finished turn's green takes to fade.
+pub(crate) const GLOW_FADE_MS: Millis = 4_000;
+
+/// soft light under a pane of glass, spilling a little past its edges: two
+/// pools that drift slowly side to side (when `breathe`), so the glass over
+/// them has something living to bend. `spread` is how far past the edges.
+pub(crate) fn glow_el(color: Hsla, strength: f32, breathe: bool, spread: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let t = (now_ms() % 600_000) as f32 / 1000.0;
+            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+            // breathing: up and down a little, slowly; at rest, still.
+            let pulse = if breathe { 0.72 + 0.28 * (t * 1.6).sin() } else { 1.0 };
+            let pools = [(0.3, 0.9, 0.0f32), (0.7, 0.7, 2.1f32)];
+            for (i, (at, size, phase)) in pools.iter().enumerate() {
+                let drift = if breathe { (t * 0.45 + phase).sin() * 0.18 } else { 0.0 };
+                let cx = w * (at + drift);
+                let pw = (w * 0.42 * size).max(24.);
+                let ph = (h * 0.55).max(12.);
+                let alpha = 0.55 * strength * pulse * if i == 0 { 1.0 } else { 0.8 };
+                let blob = Bounds::new(point(b.origin.x + px(cx - pw / 2.), b.origin.y + px(h * 0.5 - ph / 2.)), size_of(pw, ph));
+                window.paint_drop_shadows(blob, Corners::all(px(ph / 2.)), &[gpui_kit::BoxShadow { color: color.opacity(alpha), offset: point(px(0.), px(0.)), blur_radius: px(spread), spread_radius: px(0.), inset: false }]);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
+}
+
+fn size_of(w: f32, h: f32) -> Size<Pixels> {
+    size(px(w), px(h))
 }
 
 /// your last message in a session: its item and what it said.
