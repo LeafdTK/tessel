@@ -206,6 +206,16 @@ impl Shell {
                     let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
                 }),
             ))
+            .when(material == "glass", |d| {
+                let on = theme.glow.unwrap_or(false);
+                d.child(self.setting_row(
+                    "Glow",
+                    "An agent's work as light under the glass: amber while it works, blue when it wants you, green as it finishes.",
+                    gpui_kit::component::switch::Switch::new("theme-glow").checked(on).on_click(cx.listener(move |this, on: &bool, w, cx| {
+                        let _ = this.exec("theme.glow", &json!({"on": *on}), w, cx);
+                    })),
+                ))
+            })
             .child(self.picture_row(
                 "Backdrop",
                 "Behind the panes, and filling an empty conversation.",

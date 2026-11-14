@@ -425,6 +425,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `theme.list` | Every theme |  |  |
 | `theme.density` | Density: Islands |  | density: islands|compact |
 | `theme.material` | Material: Solid |  | material: solid|glass|felt |
+| `theme.glow` | Glow under glass |  | on?: true or false (default: the other way). with the glass material, an agent's work glows as light under the glass |
 | `theme.backdrop` | Backdrop: None |  | backdrop: none|dither|space |
 | `workspace.run` | Run the workspace's script |  | script?: its name (the default one if not given) |
 | `workspace.stop` | Stop the workspace's script |  | script?: its name (the default one if not given) |

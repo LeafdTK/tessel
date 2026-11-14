@@ -766,7 +766,7 @@ impl Shell {
             .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_md())
             .when(crate::glass::liquid(), |d| {
                 // what the agent is up to, as light under the glass (see `glow_of`).
-                let glow = self.model.open_summary().filter(|_| !self.show_new).and_then(|s| super::glow_of(s, &p, now_ms(), self.done_at.get(&s.id).copied()));
+                let glow = self.model.open_summary().filter(|_| !self.show_new && self.glow_on()).and_then(|s| super::glow_of(s, &p, now_ms(), self.done_at.get(&s.id).copied()));
                 d.children(glow.map(|(c, k, breathe)| super::glow_el(c, k, breathe, 46.))).child(super::glass_float(f32::from(theme::z(theme::R_CARD + 4.))))
             })
             // while a menu is up, its keys are its own.

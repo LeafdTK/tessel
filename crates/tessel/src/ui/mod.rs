@@ -548,6 +548,8 @@ pub struct ThemeSpec {
     pub glass: Option<bool>,
     /// the frame is felt: a fine grain with a soft sheen, the panes set into it.
     pub felt: Option<bool>,
+    /// with glass: what an agent's doing glows as light under the glass (off unless asked for).
+    pub glow: Option<bool>,
     /// what's behind the panes: nothing unless asked for.
     pub backdrop: Option<Backdrop>,
     /// the terminal's text size, in points (it uses the code font).
@@ -567,7 +569,7 @@ impl ThemeSpec {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "backdrop", "terminal", "message_size"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "glow", "backdrop", "terminal", "message_size"])?;
         let mut t = Self::default();
         let (mut t_size, mut t_colors) = (None, None);
         if let Some(b) = obj.get("base") {
@@ -596,6 +598,9 @@ impl ThemeSpec {
         }
         if let Some(d) = obj.get("density") {
             t.compact = Some(one_of(d, "theme.density", &[("islands", false), ("compact", true)])?);
+        }
+        if let Some(g) = obj.get("glow") {
+            t.glow = Some(flag(g, "theme.glow")?);
         }
         if let Some(m) = obj.get("material") {
             let (glass, felt) = one_of(m, "theme.material", &[("solid", (false, false)), ("glass", (true, false)), ("felt", (false, true))])?;

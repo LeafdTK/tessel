@@ -611,7 +611,7 @@ impl Shell {
                 cx.background_executor().timer(Duration::from_millis(BEAT_MS)).await;
                 let alive = this.update(cx, |this, cx| {
                     let fading = |s: &SessionSummary| {
-                        crate::glass::liquid()
+                        this.glow_on()
                             && (s.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Finished && now_ms().saturating_sub(a.since_ms) < GLOW_FADE_MS)
                                 || this.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
                     };
@@ -1670,7 +1670,7 @@ impl Shell {
             // liquid: the chat you're in is a bead of glass tinted with the accent.
             // liquid: the chat you're in is a bead of glass tinted with the accent;
             // one that's working (or wants you) glows under its glass.
-            .map(|d| match (crate::glass::liquid(), glow_of(s, &p, now, self.done_at.get(&s.id).copied())) {
+            .map(|d| match (crate::glass::liquid(), if self.glow_on() { glow_of(s, &p, now, self.done_at.get(&s.id).copied()) } else { None }) {
                 (true, Some((c, k, breathe))) => d.child(glow_el(c, k * 0.8, breathe, 14.)).child(glass_tinted(theme::R_TILE, if selected { p.accent.opacity(0.22) } else { p.label.opacity(0.0) })),
                 (true, None) if selected => d.child(glass_spot_tinted(theme::R_TILE, p.accent.opacity(0.28))),
                 _ => d,
@@ -3248,6 +3248,13 @@ impl Render for TurnTip {
             card = card.child(h_flex().child(div().flex_1().text_color(p.secondary).child(k.clone())).child(div().set(Type::Code).text_color(p.label).child(v.clone())));
         }
         card
+    }
+}
+
+impl Shell {
+    /// the glow is on: glass, and asked for (it's off unless it is).
+    pub(crate) fn glow_on(&self) -> bool {
+        crate::glass::liquid() && self.ui.theme.glow.unwrap_or(false)
     }
 }
 

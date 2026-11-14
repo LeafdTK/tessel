@@ -331,6 +331,14 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "density", v), window, cx);
                 done
             }
+            "theme.glow" => {
+                let on = match args.get("on").and_then(Value::as_bool) {
+                    Some(on) => on,
+                    None => !self.ui.theme.glow.unwrap_or(false),
+                };
+                self.edit_ui(|f| Self::set_in(f, "theme", "glow", on.then(|| json!(true))), window, cx);
+                done
+            }
             "theme.material" => {
                 let m = arg(args, "material").ok_or("material: solid, glass or felt")?;
                 if !matches!(m, "solid" | "glass" | "felt") {

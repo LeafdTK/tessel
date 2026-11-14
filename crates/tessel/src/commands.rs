@@ -117,6 +117,7 @@ pub static COMMANDS: &[Spec] = &[
     c("theme.material", "Material: Solid", "square", None, r#"{"material":"solid"}"#, "material: solid|glass|felt"),
     c("theme.material", "Material: Glass", "app-window", None, r#"{"material":"glass"}"#, ""),
     c("theme.material", "Material: Felt", "layers", None, r#"{"material":"felt"}"#, ""),
+    c("theme.glow", "Glow under glass", "sun", None, "{}", "on?: true or false (default: the other way). with the glass material, an agent's work glows as light under the glass"),
     c("theme.backdrop", "Backdrop: None", "square", None, r#"{"backdrop":"none"}"#, "backdrop: none|dither|space"),
     c("theme.backdrop", "Backdrop: Dither", "sparkle", None, r#"{"backdrop":"dither"}"#, ""),
     c("theme.backdrop", "Backdrop: Space", "orbit", None, r#"{"backdrop":"space"}"#, ""),
