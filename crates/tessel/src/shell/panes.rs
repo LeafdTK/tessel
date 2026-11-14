@@ -727,7 +727,14 @@ impl Shell {
         }
         let p = self.palette.get();
         if self.show_new || self.model.open_summary().is_none() {
-            return v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)).into_any_element();
+            // the animals swim behind it (see `critters`).
+            return div()
+                .relative()
+                .size_full()
+                .child(self.critters_el())
+                .child(v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)))
+                .children(self.critters_panel(cx))
+                .into_any_element();
         }
         let t = self.transcript_opts;
         let _ = pane;

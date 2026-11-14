@@ -37,6 +37,7 @@ pub static COMMANDS: &[Spec] = &[
     c("app.palette", "Command palette", "command", Some("⌘ K"), "{}", ""),
     c("app.tour", "Take the tour", "map", None, "{}", ""),
     c("app.settings", "Settings", "settings", Some("⌘ ,"), "{}", "section?: appearance, themes, models… opens there"),
+    c("debug.critters", "Critters", "fish", None, "{}", "the debug panel for the animals behind the new-session card: a switch for each kind. on?: a list of kinds to have out (butterfly, jellyfish, dragonfly, koi, frog, crane, crab)"),
     c("app.overview", "All sessions", "layout-grid", Some("⇧ ⌘ \\"), "{}", ""),
     c("app.sidebar", "Show or hide the sidebar", "panel-left", Some("⌥ ⌘ S"), "{}", ""),
     c("app.workspace", "Show or hide the workspace", "panel-right", Some("⌥ ⌘ I"), "{}", ""),

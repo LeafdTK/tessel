@@ -378,6 +378,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | --- | --- | --- | --- |
 | `app.palette` | Command palette | ⌘ K |  |
 | `app.settings` | Settings | ⌘ , | section?: appearance, themes, models… opens there |
+| `debug.critters` | Critters |  | the debug panel for the animals behind the new-session card: a switch for each kind. on?: a list of kinds to have out (butterfly, jellyfish, dragonfly, koi, frog, crane, crab) |
 | `app.overview` | All sessions | ⇧ ⌘ \\ |  |
 | `app.sidebar` | Show or hide the sidebar | ⌥ ⌘ S |  |
 | `app.workspace` | Show or hide the workspace | ⌥ ⌘ I |  |

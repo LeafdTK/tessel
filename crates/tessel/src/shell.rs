@@ -9,6 +9,7 @@
 //! thing was. and nothing in a list moves while the pointer rests on it.
 
 mod compose;
+mod critters;
 pub(crate) mod composer;
 mod exec;
 mod mentions;
@@ -393,6 +394,10 @@ pub struct Shell {
     bench_from: Option<Instant>,
     have_sessions: bool,
     _subscriptions: Vec<Subscription>,
+    /// the animals behind the new-session card, and whether their debug panel is up.
+    pub(crate) critters: critters::Shared,
+    pub(crate) critters_panel_open: bool,
+    critters_running: bool,
     _tasks: Vec<Task<()>>,
 }
 
@@ -801,6 +806,9 @@ impl Shell {
             bench_from: launch.bench_from,
             have_sessions: false,
             _subscriptions: subscriptions,
+            critters: std::rc::Rc::new(std::cell::RefCell::new(critters::Sim::new(critters::load(launch.ui.as_ref().and_then(|p| p.parent()))))),
+            critters_panel_open: false,
+            critters_running: false,
             _tasks: vec![pump, clock, beat],
         };
         this.adopt_ui(ui);
@@ -1885,7 +1893,8 @@ impl Shell {
             .border_1()
             .border_color(p.separator)
             .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_md())
-            .when(crate::glass::liquid(), |d| d.child(glass_spot(theme::R_CARD)))
+            .when(crate::glass::liquid(), |d| d.child(glass_float(theme::R_CARD)))
+            .child(self.critters_card())
             .children(chips)
             .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false).on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)))
             .child(
@@ -2516,6 +2525,10 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // the animals move only while the new-session screen is up.
+        if self.show_new || self.model.open_summary().is_none() {
+            self.critters_ensure(cx);
+        }
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
         browser::floats_reset();
         // which pane shows which chat, now that the layout may have changed.

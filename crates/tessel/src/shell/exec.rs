@@ -27,6 +27,21 @@ impl Shell {
                 self.open_palette(cx);
                 done
             }
+            "debug.critters" => {
+                if let Some(on) = args.get("on") {
+                    let ids: Vec<String> = serde_json::from_value(on.clone()).map_err(|e| format!("on: {e}"))?;
+                    let kinds = ids.iter().map(|i| super::critters::Kind::from_id(i).ok_or_else(|| format!("there's no kind \"{i}\""))).collect::<Result<Vec<_>, _>>()?;
+                    self.critters_set(kinds, cx);
+                } else {
+                    self.critters_panel_open = !self.critters_panel_open;
+                    // it lives on the new-session screen.
+                    if self.critters_panel_open && !self.show_new {
+                        self.show_new_session(cx);
+                    }
+                    cx.notify();
+                }
+                done
+            }
             "app.settings" => {
                 if let Some(section) = arg(args, "section") {
                     let found = super::settings::SECTIONS.iter().find(|(id, title, _)| *id == section || title.eq_ignore_ascii_case(section));
