@@ -202,40 +202,146 @@ fn draw_meadow(key: &Key) -> Vec<u8> {
     out
 }
 
-/// light pooled in a pane, for the glass in front of it to bend: three soft
-/// glows in neighbouring hues (one colour family, so they never mix to mud),
-/// on the pane's own colour, with a fine grain so the gradients don't band.
-/// smooth, so it's drawn small and the gpu stretches it.
+/// the field of colour behind a pane in liquid glass, made the way apple
+/// music makes its background from an album's art: copies of a picture,
+/// scaled, turned and twisted over each other, blurred hard and saturated.
+/// tessel has no album art, so each project gets a picture of its own: a few
+/// hard shapes in its colour, from its name (`frame` is the seed). what comes
+/// out is deep colour in slow, folded shapes, never the same twice.
 fn draw_wash(key: &Key) -> Vec<u8> {
     let (w, h) = (key.w.max(1) as usize, key.h.max(1) as usize);
-    let mut out = vec![0u8; w * h * 4];
-    let bg = key.bg.map(|c| c as f32 / 255.0);
-    let s = w.max(h) as f32;
-    // (where, as a share of the pane; how far it reaches; hue step; how strong)
-    let glows: [((f32, f32), f32, f32, f32); 3] = [((1.0, 0.0), 0.75, 0.0, 1.0), ((0.0, 1.0), 0.8, 0.07, 0.85), ((0.85, 0.62), 0.45, -0.06, 0.6)];
-    let (sat, light, amount) = if key.dark { (0.7, 0.42, 0.42) } else { (0.85, 0.72, 0.55) };
-    let colours: Vec<[f32; 3]> = glows.iter().map(|g| hsl(key.hue + g.2, sat, light)).collect();
+    let art = wash_art(key);
+    let n = WASH_ART;
+    let sample = |u: f32, v: f32| -> Option<[f32; 3]> {
+        if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
+            return None;
+        }
+        let (x, y) = ((u * n as f32) as usize, (v * n as f32) as usize);
+        Some(art[y * n + x])
+    };
+    // the copies: (centre, size as a share of the width, turn, twist), back to front.
+    let mut rng = key.frame.wrapping_mul(2_654_435_761).max(1);
+    let mut r = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        (rng % 10_000) as f32 / 10_000.0
+    };
+    let aspect = h as f32 / w as f32;
+    let copies: Vec<((f32, f32), f32, f32, f32)> = [1.6f32, 0.95, 0.6, 0.32]
+        .iter()
+        .map(|size| ((0.15 + r() * 0.7, (0.15 + r() * 0.7) * aspect), *size, r() * std::f32::consts::TAU, 1.6 + r() * 2.2))
+        .collect();
+    let mut img = vec![[0f32; 3]; w * h];
     for y in 0..h {
         for x in 0..w {
-            let mut c = bg;
-            for (g, col) in glows.iter().zip(&colours) {
-                let dx = (x as f32 - g.0.0 * w as f32) / (g.1 * s);
-                let dy = (y as f32 - g.0.1 * h as f32) / (g.1 * s);
-                let t = (-(dx * dx + dy * dy) * 2.2).exp() * g.3 * amount;
-                for k in 0..3 {
-                    c[k] += (col[k] - c[k]) * t;
+            let (px, py) = (x as f32 / w as f32, y as f32 / w as f32);
+            let mut c = art[0];
+            for ((cx, cy), size, turn, twist) in &copies {
+                let (mut dx, mut dy) = (px - cx, py - cy);
+                // the twist: turned most in the middle, not at all at the rim.
+                let radius = size * 0.75;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < radius {
+                    let k = (radius - dist) / radius;
+                    let a = k * k * twist;
+                    let (s_, c_) = a.sin_cos();
+                    (dx, dy) = (dx * c_ - dy * s_, dx * s_ + dy * c_);
+                }
+                let (s_, c_) = turn.sin_cos();
+                let (u, v) = ((dx * c_ - dy * s_) / size + 0.5, (dx * s_ + dy * c_) / size + 0.5);
+                if let Some(col) = sample(u, v) {
+                    c = col;
                 }
             }
-            let grain = (noise(x as u32, y as u32, 3) - 0.5) * (2.0 / 255.0);
-            let i = (y * w + x) * 4;
-            let to8 = |v: f32| ((v + grain).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-            out[i] = to8(c[2]);
-            out[i + 1] = to8(c[1]);
-            out[i + 2] = to8(c[0]);
-            out[i + 3] = 255;
+            img[y * w + x] = c;
         }
     }
+    // blurred hard: three box passes each way are near enough a gaussian.
+    let radius = ((w.max(h) as f32) * 0.035).round().max(1.0) as usize;
+    for _ in 0..3 {
+        box_blur(&mut img, w, h, radius, true);
+        box_blur(&mut img, w, h, radius, false);
+    }
+    let mut out = vec![0u8; w * h * 4];
+    for (i, c) in img.iter().enumerate() {
+        let noise_ = (noise((i % w) as u32, (i / w) as u32, 3) - 0.5) * (1.5 / 255.0);
+        let to8 = |v: f32| ((v + noise_).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        out[i * 4] = to8(c[2]);
+        out[i * 4 + 1] = to8(c[1]);
+        out[i * 4 + 2] = to8(c[0]);
+        out[i * 4 + 3] = 255;
+    }
     out
+}
+
+/// the side of a project's picture, in cells.
+const WASH_ART: usize = 48;
+
+/// a project's picture: hard shapes in its colours, deep and bright and
+/// between, on its darkest (or, in light mode, its palest).
+fn wash_art(key: &Key) -> Vec<[f32; 3]> {
+    let n = WASH_ART;
+    let hue = key.hue;
+    // one family of colours: the hue, a step either side, saturated, in three depths.
+    let tones: [[f32; 3]; 4] = if key.dark {
+        [hsl(hue, 0.5, 0.06), hsl(hue, 0.75, 0.15), hsl(hue + 0.03, 0.8, 0.28), hsl(hue - 0.04, 0.8, 0.4)]
+    } else {
+        [hsl(hue, 0.5, 0.95), hsl(hue, 0.65, 0.87), hsl(hue + 0.03, 0.7, 0.79), hsl(hue - 0.04, 0.75, 0.71)]
+    };
+    let mut img = vec![tones[0]; n * n];
+    let mut rng = key.frame.wrapping_mul(0x9E37_79B9).max(7);
+    let mut r = || {
+        rng ^= rng << 13;
+        rng ^= rng >> 17;
+        rng ^= rng << 5;
+        (rng % 10_000) as f32 / 10_000.0
+    };
+    for k in 0..7 {
+        let tone = tones[1 + k % 3];
+        let (cx, cy) = (r(), r());
+        let (rx, ry) = (0.18 + r() * 0.35, 0.12 + r() * 0.3);
+        let round = r() > 0.4;
+        for y in 0..n {
+            for x in 0..n {
+                let (dx, dy) = ((x as f32 / n as f32 - cx) / rx, (y as f32 / n as f32 - cy) / ry);
+                let inside = if round { dx * dx + dy * dy < 1.0 } else { dx.abs() < 1.0 && dy.abs() < 1.0 };
+                if inside {
+                    img[y * n + x] = tone;
+                }
+            }
+        }
+    }
+    img
+}
+
+/// one pass of a box blur, across (`along_x`) or down.
+fn box_blur(img: &mut [[f32; 3]], w: usize, h: usize, radius: usize, along_x: bool) {
+    let (len, lines) = if along_x { (w, h) } else { (h, w) };
+    let at = |line: usize, i: usize| if along_x { line * w + i } else { i * w + line };
+    let mut buf = vec![[0f32; 3]; len];
+    for line in 0..lines {
+        // edges held: the colour runs on past them.
+        let get = |i: isize| img[at(line, i.clamp(0, len as isize - 1) as usize)];
+        let span = (2 * radius + 1) as f32;
+        let mut sum = [0f32; 3];
+        for i in -(radius as isize)..=(radius as isize) {
+            let c = get(i);
+            for k in 0..3 {
+                sum[k] += c[k];
+            }
+        }
+        for i in 0..len {
+            buf[i] = sum.map(|v| v / span);
+            let (add, sub) = (get(i as isize + radius as isize + 1), get(i as isize - radius as isize));
+            for k in 0..3 {
+                sum[k] += add[k] - sub[k];
+            }
+        }
+        for i in 0..len {
+            img[at(line, i)] = buf[i];
+        }
+    }
 }
 
 /// an image's pixels, bgra, `key.w` × `key.h`.
@@ -427,6 +533,19 @@ pub(crate) fn image_el_at(state: Shared, me: WeakEntity<Shell>, corners: Corners
 #[cfg(test)]
 mod tests {
     use super::{Key, bayer, draw};
+
+    /// `TESSEL_WASH_OUT=dir cargo test wash_samples -- --ignored`: pictures of the wash to look at.
+    #[test]
+    #[ignore]
+    fn wash_samples() {
+        let Some(dir) = std::env::var_os("TESSEL_WASH_OUT") else { return };
+        for (i, (hue, dark)) in [(0.6, true), (0.6, false), (0.0, true), (0.33, true), (0.8, false)].iter().enumerate() {
+            let key = Key { w: 220, h: 260, cell: 1, hue: *hue, dark: *dark, bg: [0, 0, 0], felt: false, meadow: false, frame: 1234 + i as u32 * 77, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true };
+            let bgra = draw(&key);
+            let rgba: Vec<u8> = bgra.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+            image::RgbaImage::from_raw(key.w, key.h, rgba).unwrap().save(std::path::Path::new(&dir).join(format!("wash-{i}.png"))).unwrap();
+        }
+    }
 
     #[test]
     fn the_bayer_thresholds_are_each_used_once() {

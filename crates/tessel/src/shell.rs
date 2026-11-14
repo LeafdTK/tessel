@@ -3249,14 +3249,17 @@ impl Shell {
     pub(crate) fn wash_el(&self, pane: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
         let state = self.washes.borrow_mut().entry(pane.to_owned()).or_default().clone();
-        let (hue, dark) = (p.accent.h, p.dark);
-        let bg = {
-            let c = p.window.to_rgb();
-            [(c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8]
+        // the project's own colour and picture (as a song has its art).
+        let name = match self.model.open_summary().filter(|_| !self.show_new) {
+            Some(s) => project_name(s),
+            None => self.new_folder().as_deref().map(projects::folder_name).unwrap_or_default(),
         };
-        // smooth, so a quarter of the pixels is plenty: the gpu stretches it.
+        let hue = self.backdrop_hue();
+        let seed = name.bytes().fold(2_166_136_261u32, |h, b| (h ^ u32::from(b)).wrapping_mul(16_777_619));
+        let dark = p.dark;
+        // smooth, so an eighth of the pixels is plenty: the gpu stretches it.
         backdrop::image_el(state, cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
-            Some(backdrop::Key { w: (w * scale / 4.).round() as u32, h: (h * scale / 4.).round() as u32, cell: 1, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true })
+            Some(backdrop::Key { w: (w * scale / 8.).round() as u32, h: (h * scale / 8.).round() as u32, cell: 1, hue, dark, bg: [0, 0, 0], felt: false, meadow: false, frame: seed, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true })
         })
     }
 }
