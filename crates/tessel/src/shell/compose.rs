@@ -569,13 +569,28 @@ impl Shell {
     /// `inset`: room under the last row, for something floating over the
     /// list's end (the message box, as glass) to sit over without hiding it.
     pub(crate) fn transcript_el_for(&self, scroller: Entity<MessageScrollerState>, session: SessionId, inset: f32, cx: &mut Context<Self>) -> Stateful<Div> {
+        self.transcript_el_for_inset(scroller, session, 0., inset, cx)
+    }
+
+    /// the same, with room over the first row too (`top`), for a bar floating
+    /// over the list's start.
+    pub(crate) fn transcript_el_for_inset(&self, scroller: Entity<MessageScrollerState>, session: SessionId, top: f32, inset: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = self.palette.get();
         let this = cx.entity();
         // the list's default puts 2rem under every row, which suits chat
         // bubbles and not a dense log of tool calls. rows space themselves.
         let list = MessageScroller::new("transcript", scroller, move |ix, _window, cx| this.read(cx).row_in(session, ix, &this, cx))
             .with_row_style(StyleRefinement::default().pb_0().px_0())
-            .with_list_style(if inset > 0. { StyleRefinement::default().pb(px(inset)) } else { StyleRefinement::default() });
+            .with_list_style({
+                let mut st = StyleRefinement::default();
+                if inset > 0. {
+                    st = st.pb(px(inset));
+                }
+                if top > 0. {
+                    st = st.pt(px(top));
+                }
+                st
+            });
         let truncated = self.model.open_of(session).is_some_and(|o| o.has_more);
         div()
             .id("transcript-pane")

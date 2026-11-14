@@ -19,11 +19,16 @@ const CATALOGUE: &[(&str, &str, &str, &[&str])] = &[
     ("claude-fable-5", "Fable 5", "The first Fable", ALL),
     ("claude-opus-5-5", "Opus 5.5", "The current Opus", ALL),
     ("claude-opus-5", "Opus 5", "The previous Opus", ALL),
+    ("claude-opus-4-8[1m]", "Opus 4.8 1M", "Opus 4.8 with a million tokens of context", ALL),
     ("claude-opus-4-8", "Opus 4.8", "Opus, fourth generation", ALL),
+    ("claude-opus-4-7[1m]", "Opus 4.7 1M", "Opus 4.7 with a million tokens of context", ALL),
     ("claude-opus-4-7", "Opus 4.7", "Opus, fourth generation", ALL),
+    ("claude-opus-4-6[1m]", "Opus 4.6 1M", "Opus 4.6 with a million tokens of context", FOUR_SIX),
     ("claude-opus-4-6", "Opus 4.6", "Opus, fourth generation", FOUR_SIX),
     ("claude-sonnet-5-5", "Sonnet 5.5", "The current Sonnet: fast and capable", ALL),
+    ("claude-sonnet-5[1m]", "Sonnet 5 1M", "Sonnet 5 with a million tokens of context", ALL),
     ("claude-sonnet-5", "Sonnet 5", "The previous Sonnet", ALL),
+    ("claude-sonnet-4-6[1m]", "Sonnet 4.6 1M", "Sonnet 4.6 with a million tokens of context", FOUR_SIX),
     ("claude-sonnet-4-6", "Sonnet 4.6", "Sonnet, fourth generation", FOUR_SIX),
     ("claude-haiku-5-5", "Haiku 5.5", "The current Haiku: quick and cheap", ALL),
     ("claude-haiku-4-5", "Haiku 4.5", "The previous Haiku", &[]),
@@ -336,15 +341,20 @@ impl Shell {
                         .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
                 );
             }
-        } else {
-            // a search: every model the agent offers.
+        }
+        {
+            // under the loadout, every other model; a search: every model that matches.
+            let favs: Vec<String> = self.favorites().into_iter().map(|f| f.model).collect();
             let found: Vec<ModelInfo> = self
                 .models
                 .iter()
                 .filter(|m| m.value != "default")
-                .filter(|m| m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
+                .filter(|m| if query.is_empty() { !favs.contains(&m.value) && !favs.contains(&m.id) } else { m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query) })
                 .cloned()
                 .collect();
+            if query.is_empty() && !found.is_empty() {
+                list = list.child(theme::float_sep(&p)).child(theme::float_label(&p, "All models"));
+            }
             // an id no list has: asked for as it's written.
             let raw = search.read(cx).value().trim().to_owned();
             if let Some(id) = typed_id(&raw).filter(|id| !found.iter().any(|m| m.value == *id || m.id == *id)) {
@@ -366,7 +376,7 @@ impl Shell {
                         .child(model_tile(id, 18., &p))
                         .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(format!("Use {id}"))).child(div().set(Type::Subheadline).text_color(p.tertiary).child("Any model id the agent takes"))),
                 );
-            } else if found.is_empty() {
+            } else if found.is_empty() && !query.is_empty() {
                 list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child(if self.models.is_empty() { "Asking the agent which models it has…" } else { "No model matches." }));
             }
             for m in found {

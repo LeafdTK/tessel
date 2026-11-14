@@ -513,6 +513,9 @@ impl Shell {
         // the window's buttons sit over the top left pane when nothing else is there.
         let inset = under_buttons;
 
+        // liquid glass: the title bar floats over the pane as a capsule of glass,
+        // and what's in the pane runs on up under it.
+        let liquid = crate::glass::liquid() && !self.ui.theme.compact.unwrap_or(false);
         let mut controls = h_flex().gap_0p5().flex_shrink_0();
         if live {
             controls = controls.child(self.new_pane_menu(id, &trail, cx)).child(self.pane_menu(id, &trail, module, cx));
@@ -544,8 +547,7 @@ impl Shell {
             .pl(px(6. + inset))
             .pr_2()
             .gap_2()
-            .border_b_1()
-            .border_color(p.separator)
+            .when(!liquid, |d| d.border_b_1().border_color(p.separator))
             // a pane's header is title bar: it moves the window.
             .on_double_click(|_, window, _| window.titlebar_double_click())
             .on_mouse_move(self.moves_window(cx))
@@ -625,9 +627,80 @@ impl Shell {
             // glass only floats over it (the message box, sheets).
             .when(!open_sky, |d| d.bg(p.window))
             .overflow_hidden()
-            .child(header)
-            .child(div().flex_1().min_h_0().overflow_hidden().child(body))
+            .map(|d| {
+                if !liquid || open_sky {
+                    return d.child(header).child(div().flex_1().min_h_0().overflow_hidden().child(body));
+                }
+                // the conversation keeps its own room under the bar (it scrolls
+                // under it); anything else starts below it.
+                let conversation = module == Some(Module::Conversation);
+                let top_h = self.top_h.clone();
+                let scroller = self.scroller.clone();
+                let measure = canvas(
+                    move |b, _, cx| {
+                        let h = f32::from(b.size.height);
+                        if conversation && (h - top_h.get()).abs() > 1. {
+                            top_h.set(h);
+                            // the first row carries the room under the bar.
+                            let scroller = scroller.clone();
+                            cx.defer(move |cx| {
+                                scroller.update(cx, |s, cx| {
+                                    if s.item_count() > 0 {
+                                        s.remeasure_items(0..1, cx);
+                                    }
+                                });
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0();
+                let bar = v_flex()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .p(px(6.))
+                    .child(
+                        v_flex()
+                            .relative()
+                            .rounded(px(theme::R_PANEL - 4.))
+                            .child(super::glass_float(theme::R_PANEL - 4.))
+                            .child(header)
+                            .when(conversation, |d| d.children(self.top_strip(cx))),
+                    )
+                    .child(measure);
+                // apple's scroll edge: what runs under the bar fades into the
+                // pane at the top, so nothing sharp shows around the glass.
+                let fade_h = if conversation { self.top_h.get().max(HEADER_H + 12.) + 14. } else { HEADER_H + 24. };
+                let fade = div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .right_0()
+                    .h(px(fade_h))
+                    .bg(gpui_kit::linear_gradient(180., gpui_kit::linear_color_stop(p.window, 0.45), gpui_kit::linear_color_stop(p.window.opacity(0.), 1.)));
+                d.relative()
+                    .child(div().absolute().inset_0().overflow_hidden().when(!conversation, |d| d.pt(px(HEADER_H + 12.))).child(body))
+                    .child(fade)
+                    .child(bar)
+            })
             .into_any_element()
+    }
+
+    /// in liquid glass, what sits under the conversation's title inside its
+    /// floating bar: the workspace's tabs, an error, what the last step did.
+    fn top_strip(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let p = self.palette.get();
+        if self.show_new || self.model.open_summary().is_none() {
+            return Vec::new();
+        }
+        let mut out: Vec<AnyElement> = Vec::new();
+        out.extend(self.workspace_tabs_el(cx));
+        out.extend(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e).into_any_element()));
+        out.extend(self.shipped_el(cx));
+        out
     }
 
     /// what the header says: the module, or for the conversation the session itself.
@@ -727,7 +800,8 @@ impl Shell {
         }
         let p = self.palette.get();
         if self.show_new || self.model.open_summary().is_none() {
-            return v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)).into_any_element();
+            let under_bar = if crate::glass::liquid() && !self.ui.theme.compact.unwrap_or(false) { HEADER_H + 12. } else { 0. };
+            return v_flex().size_full().pt(px(under_bar)).children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)).into_any_element();
         }
         let t = self.transcript_opts;
         let _ = pane;
@@ -836,12 +910,15 @@ impl Shell {
                 })
         });
         let session = self.model.open.as_ref().map(|o| o.id).or(self.awaiting).unwrap_or(SessionId(uuid::Uuid::nil()));
-        let top = v_flex()
-            .size_full()
-            .children(self.workspace_tabs_el(cx))
-            .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
-            .children(self.shipped_el(cx));
-        if !crate::glass::liquid() {
+        let liquid = crate::glass::liquid() && !self.ui.theme.compact.unwrap_or(false);
+        let top = v_flex().size_full();
+        // liquid: those float in the pane's glass bar instead (see `top_strip`).
+        let top = if liquid {
+            top
+        } else {
+            top.children(self.workspace_tabs_el(cx)).children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).children(self.shipped_el(cx))
+        };
+        if !liquid {
             let composer = v_flex().children(working).child(composer).child(hints);
             return top
                 .child(div().flex_1().min_h_0().relative().child(self.transcript_el_for(self.scroller.clone(), session, 0., cx).size_full()).child(self.message_rail(cx)))
@@ -894,8 +971,18 @@ impl Shell {
                 .flex_1()
                 .min_h_0()
                 .relative()
-                .child(self.transcript_el_for(self.scroller.clone(), session, self.dock_h.get() + 14., cx).size_full())
+                .child(self.transcript_el_for_inset(self.scroller.clone(), session, self.top_h.get() + 4., self.dock_h.get() + 14., cx).size_full())
                 .child(self.message_rail(cx))
+                // and at the bottom, under the message box.
+                .child(
+                    div()
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h(px(self.dock_h.get() + 8.))
+                        .bg(gpui_kit::linear_gradient(180., gpui_kit::linear_color_stop(p.window.opacity(0.), 0.), gpui_kit::linear_color_stop(p.window, 0.6))),
+                )
                 .child(dock),
         )
         .child(h_flex().justify_center().pt(theme::z(4.)).pb_3().child(column().child(hints)))
