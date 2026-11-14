@@ -341,20 +341,15 @@ impl Shell {
                         .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
                 );
             }
-        }
-        {
-            // under the loadout, every other model; a search: every model that matches.
-            let favs: Vec<String> = self.favorites().into_iter().map(|f| f.model).collect();
+        } else {
+            // a search: every model the agent offers, and every claude model.
             let found: Vec<ModelInfo> = self
                 .models
                 .iter()
                 .filter(|m| m.value != "default")
-                .filter(|m| if query.is_empty() { !favs.contains(&m.value) && !favs.contains(&m.id) } else { m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query) })
+                .filter(|m| m.name.to_lowercase().contains(&query) || m.description.to_lowercase().contains(&query) || m.id.to_lowercase().contains(&query))
                 .cloned()
                 .collect();
-            if query.is_empty() && !found.is_empty() {
-                list = list.child(theme::float_sep(&p)).child(theme::float_label(&p, "All models"));
-            }
             // an id no list has: asked for as it's written.
             let raw = search.read(cx).value().trim().to_owned();
             if let Some(id) = typed_id(&raw).filter(|id| !found.iter().any(|m| m.value == *id || m.id == *id)) {
@@ -376,7 +371,7 @@ impl Shell {
                         .child(model_tile(id, 18., &p))
                         .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(format!("Use {id}"))).child(div().set(Type::Subheadline).text_color(p.tertiary).child("Any model id the agent takes"))),
                 );
-            } else if found.is_empty() && !query.is_empty() {
+            } else if found.is_empty() {
                 list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child(if self.models.is_empty() { "Asking the agent which models it has…" } else { "No model matches." }));
             }
             for m in found {

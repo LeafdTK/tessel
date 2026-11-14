@@ -1242,8 +1242,8 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
     assert!(rig.exists(cx, "model-search"), "the picker opens with its search");
     let (menu, trigger) = cx.update_window(rig.window, |_, window, _| (window.find("model-list").bounds(), window.find("model-menu").bounds())).unwrap();
     assert!(menu.origin.y + menu.size.height <= trigger.origin.y + gpui_kit::px(1.), "it opens above the button: {menu:?} {trigger:?}");
-    assert!(rig.exists(cx, "favorite-0") && rig.exists(cx, "favorite-1") && !rig.exists(cx, "favorite-2"), "the loadout first");
-    assert!(rig.exists(cx, "model-claude-opus-4-7") && !rig.exists(cx, "model-opus"), "then every other model, the loadout not twice");
+    assert!(rig.exists(cx, "favorite-0") && rig.exists(cx, "favorite-1") && !rig.exists(cx, "favorite-2"), "the loadout, and only it");
+    assert!(!rig.exists(cx, "model-claude-opus-4-7"), "the rest wait for a search");
     rig.asked();
 
     // a favourite brings its effort and its speed with it.
