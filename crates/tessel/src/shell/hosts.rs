@@ -617,7 +617,7 @@ impl Shell {
     pub(crate) fn hosts_settings(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
         let current = self.hosts.list.current.clone();
-        let card = || v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden();
+        let card = || v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if self.frozen { p.fill } else { p.window }).overflow_hidden();
         let connected = |id: &str| self.hosts.on.as_deref() == Some(id) && matches!(self.model.connection, crate::model::Connection::Connected);
 
         // this mac, then each host: what it is, how it's doing, and one menu.

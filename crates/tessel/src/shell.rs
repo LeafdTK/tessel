@@ -392,6 +392,8 @@ pub struct Shell {
     bench_on_launch: bool,
     bench_from: Option<Instant>,
     have_sessions: bool,
+    /// a modal is up over a picture of the window, under liquid glass.
+    pub(crate) frozen: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -800,6 +802,7 @@ impl Shell {
             bench_on_launch: launch.bench_motion,
             bench_from: launch.bench_from,
             have_sessions: false,
+            frozen: false,
             _subscriptions: subscriptions,
             _tasks: vec![pump, clock, beat],
         };
@@ -2607,12 +2610,14 @@ impl Render for Shell {
         // felt: the cloth is drawn under everything, and the frame is clear over it.
         let glass = self.ui.theme.glass.unwrap_or(false);
         let felt = self.felt_on();
+        self.freeze_for_modal(window);
+        let frozen = self.frozen;
         div()
             .id("shell")
             .relative()
             .size_full()
-            .when(!glass, |d| d.bg(p.window))
-            .when(felt, |d| d.child(self.felt_el(cx)))
+            .when(!glass && !frozen, |d| d.bg(p.window))
+            .when(felt && !frozen, |d| d.child(self.felt_el(cx)))
             .text_color(p.label)
             .set(Type::Body)
             .when_some(font, |d, f| d.font_family(f))
@@ -2668,7 +2673,8 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| this.dictate_modifiers(&ev.modifiers, window, cx)))
             // a click outside a page takes the keyboard back from it.
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| this.page_focus(ev.position, window, cx)))
-            .children(root)
+            // under a modal the window is a picture of itself (see `freeze_for_modal`).
+            .children(root.filter(|_| !frozen))
             // a broken layout file is said over the top of everything, so no
             // layout can hide its own mistake.
             .when_some(self.ui_error.clone(), |d, e| {
@@ -3206,17 +3212,43 @@ impl Render for TurnTip {
     }
 }
 
+impl Shell {
+    /// a modal opening: the window as it is becomes a picture under native
+    /// liquid glass, and only the modal is drawn over it (so the glass bends the
+    /// window itself). closing: the window comes back.
+    fn freeze_for_modal(&mut self, window: &mut Window) {
+        // not on yet: the picture doesn't show through gpui's view so far.
+        // `TESSEL_GLASS_MODALS=1` tries it.
+        let modal = (self.settings_open || self.flow_open()) && std::env::var_os("TESSEL_GLASS_MODALS").is_some();
+        if modal == self.frozen || !crate::glass::available() {
+            return;
+        }
+        let view = view_of(window).unwrap_or(0);
+        if !modal {
+            crate::glass::backdrop(view, None);
+            crate::glass::hold(false);
+            self.frozen = false;
+            return;
+        }
+        // the frame before this one: the window without the modal.
+        let Ok(frame) = window.render_to_image() else { return };
+        let scale = window.scale_factor();
+        if (frame.width() as f32 - f32::from(window.viewport_size().width) * scale).abs() > 2.0 {
+            return;
+        }
+        crate::glass::backdrop(view, Some((frame.as_raw(), frame.width(), frame.height(), scale)));
+        crate::glass::hold(true);
+        self.frozen = true;
+    }
+}
+
 /// where a surface of liquid glass is: put inside it (filling it), it notes
 /// its place each frame, and a native pane of glass is laid under it (see
-/// `glass`). nothing at all without liquid glass.
+/// `glass`). where the system has no liquid glass, nothing.
 pub(crate) fn glass_spot(radius: f32) -> impl IntoElement {
     canvas(
         |_, _, _| {},
-        move |b, _, _, _| {
-            if crate::glass::liquid() {
-                crate::glass::spot(crate::glass::Spot { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height), radius });
-            }
-        },
+        move |b, _, _, _| crate::glass::spot(crate::glass::Spot { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height), radius }),
     )
     .absolute()
     .inset_0()

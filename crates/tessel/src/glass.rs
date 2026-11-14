@@ -113,6 +113,133 @@ pub fn liquid() -> bool {
     LIQUID.load(Ordering::Relaxed)
 }
 
+/// a picture of the window, under its glass, while a modal is up: the glass
+/// over it bends it (tessel's own drawing is above any glass). none takes it away.
+/// `rgba` is the window's pixels, `w` × `h`, at `scale` pixels a point.
+pub fn backdrop(view: usize, picture: Option<(&[u8], u32, u32, f32)>) {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        put_backdrop(view, picture)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let _ = (view, picture);
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGColorSpaceCreateDeviceRGB() -> *mut std::ffi::c_void;
+    fn CGDataProviderCreateWithCFData(data: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn CGImageCreate(w: usize, h: usize, bpc: usize, bpp: usize, row: usize, space: *mut std::ffi::c_void, info: u32, provider: *mut std::ffi::c_void, decode: *const f64, interpolate: bool, intent: i32) -> *mut std::ffi::c_void;
+    fn CGImageRelease(i: *mut std::ffi::c_void);
+    fn CGColorSpaceRelease(s: *mut std::ffi::c_void);
+    fn CGDataProviderRelease(p: *mut std::ffi::c_void);
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    fn CFDataCreate(alloc: *const std::ffi::c_void, bytes: *const u8, len: isize) -> *const std::ffi::c_void;
+    fn CFRelease(o: *const std::ffi::c_void);
+}
+
+#[cfg(target_os = "macos")]
+unsafe fn put_backdrop(view: usize, picture: Option<(&[u8], u32, u32, f32)>) {
+    use objc2::encode::{Encode, Encoding};
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+    unsafe impl Encode for Rect {
+        const ENCODING: Encoding = Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])]);
+    }
+    let ours = view as *mut AnyObject;
+    if ours.is_null() {
+        return;
+    }
+    unsafe {
+        let content: *mut AnyObject = msg_send![ours, superview];
+        if content.is_null() {
+            return;
+        }
+        let nsstring = AnyClass::get(c"NSString").expect("Foundation");
+        let mark: *mut AnyObject = msg_send![nsstring, stringWithUTF8String: c"tessel-glass-backdrop".as_ptr()];
+        let bg_mark: *mut AnyObject = msg_send![nsstring, stringWithUTF8String: c"tessel-liquid-glass".as_ptr()];
+        let subviews: *mut AnyObject = msg_send![content, subviews];
+        let n: usize = msg_send![subviews, count];
+        let (mut have, mut window_glass): (*mut AnyObject, *mut AnyObject) = (std::ptr::null_mut(), std::ptr::null_mut());
+        for i in 0..n {
+            let v: *mut AnyObject = msg_send![subviews, objectAtIndex: i];
+            let id: *mut AnyObject = msg_send![v, identifier];
+            if id.is_null() {
+                continue;
+            }
+            let is: Bool = msg_send![id, isEqualToString: mark];
+            let bg: Bool = msg_send![id, isEqualToString: bg_mark];
+            if is.as_bool() {
+                have = v;
+            } else if bg.as_bool() {
+                window_glass = v;
+            }
+        }
+        let Some((rgba, w, h, scale)) = picture else {
+            if !have.is_null() {
+                let _: () = msg_send![have, removeFromSuperview];
+            }
+            return;
+        };
+        if rgba.len() < (w * h * 4) as usize {
+            return;
+        }
+        let data = CFDataCreate(std::ptr::null(), rgba.as_ptr(), rgba.len() as isize);
+        let provider = CGDataProviderCreateWithCFData(data);
+        let space = CGColorSpaceCreateDeviceRGB();
+        // rgba, its alpha premultiplied, as tessel paints it.
+        const PREMULTIPLIED_LAST: u32 = 1;
+        let cg = CGImageCreate(w as usize, h as usize, 8, 32, (w * 4) as usize, space, PREMULTIPLIED_LAST, provider, std::ptr::null(), false, 0);
+        CGColorSpaceRelease(space);
+        CGDataProviderRelease(provider);
+        CFRelease(data);
+        if cg.is_null() {
+            return;
+        }
+        let _ = (h, w);
+        if have.is_null() {
+            let frame: Rect = msg_send![content, bounds];
+            let v: *mut AnyObject = msg_send![AnyClass::get(c"NSView").expect("AppKit"), alloc];
+            let v: *mut AnyObject = msg_send![v, initWithFrame: frame];
+            const WIDTH_SIZABLE: usize = 2;
+            const HEIGHT_SIZABLE: usize = 16;
+            let _: () = msg_send![v, setAutoresizingMask: WIDTH_SIZABLE | HEIGHT_SIZABLE];
+            let _: () = msg_send![v, setWantsLayer: Bool::YES];
+            let _: () = msg_send![v, setIdentifier: mark];
+            // over the window's own glass, under every pane of glass and all of tessel.
+            const ABOVE: isize = 1;
+            const BELOW: isize = -1;
+            if window_glass.is_null() {
+                let _: () = msg_send![content, addSubview: v, positioned: BELOW, relativeTo: std::ptr::null_mut::<AnyObject>()];
+            } else {
+                let _: () = msg_send![content, addSubview: v, positioned: ABOVE, relativeTo: window_glass];
+            }
+            let _: () = msg_send![v, release];
+            have = v;
+        }
+        // the picture is the layer's contents: drawn as is, stretched to the window.
+        let layer: *mut AnyObject = msg_send![have, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setContents: cg as *mut AnyObject];
+            let _: () = msg_send![layer, setContentsScale: f64::from(scale)];
+        }
+        CGImageRelease(cg);
+    }
+}
+
 pub fn set_liquid(on: bool, dark: bool) {
     if std::env::var_os("TESSEL_GLASS_LOG").is_some() {
         eprintln!("tessel glass: liquid {on}, dark {dark}");
@@ -144,11 +271,43 @@ pub fn spot(s: Spot) {
     SPOTS.with(|v| v.borrow_mut().push(s));
 }
 
+/// the system has liquid glass at all (macOS 26 on).
+pub fn available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *HAS.get_or_init(|| objc2::runtime::AnyClass::get(c"NSGlassEffectView").is_some())
+    }
+    #[cfg(not(target_os = "macos"))]
+    false
+}
+
+thread_local! {
+    /// while a modal is up over a frozen picture of the window: the spots that
+    /// were there (the window isn't drawn, but its glass stays as it was).
+    static HELD: RefCell<Option<Vec<Spot>>> = const { RefCell::new(None) };
+}
+
+/// hold the window's glass as it is (a modal is up over a picture of it), or let go.
+pub fn hold(on: bool) {
+    let shown = SHOWN.with(|s| s.borrow().clone());
+    HELD.with(|h| *h.borrow_mut() = on.then_some(shown));
+}
+
 /// put a pane of liquid glass under each surface noted this frame (and take
 /// away the ones no surface needs): called once, after everything is painted.
 pub fn sync(view: usize) {
-    let spots = SPOTS.with(|v| std::mem::take(&mut *v.borrow_mut()));
-    let spots = if liquid() { spots } else { Vec::new() };
+    let new = SPOTS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    if !available() {
+        return;
+    }
+    let spots = match HELD.with(|h| h.borrow().clone()) {
+        Some(mut held) => {
+            held.extend(new);
+            held
+        }
+        None => new,
+    };
     if SHOWN.with(|s| *s.borrow() == spots) {
         return;
     }

@@ -524,8 +524,9 @@ impl Shell {
                     .rounded(px(theme::R_PANEL))
                     .border_1()
                     .border_color(p.separator)
-                    .bg(p.raised)
-                    .shadow_lg()
+                    // over the frozen window, a pane of liquid glass; else solid.
+                    .when(!self.frozen, |d| d.bg(p.raised).shadow_lg())
+                    .when(self.frozen, |d| d.relative().child(super::glass_spot(theme::R_PANEL)))
                     .overflow_hidden()
                     // clicks inside the sheet stay inside it.
                     .on_click(|_, _, cx| cx.stop_propagation())
@@ -557,7 +558,7 @@ impl Shell {
                                 .child(if current == "hosts" {
                                     div().flex_shrink_0().child(rows).into_any_element()
                                 } else {
-                                    v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.window).overflow_hidden().child(div().mt(px(-1.)).child(rows)).into_any_element()
+                                    v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if self.frozen { p.fill } else { p.window }).overflow_hidden().child(div().mt(px(-1.)).child(rows)).into_any_element()
                                 }),
                         ),
                     ),
