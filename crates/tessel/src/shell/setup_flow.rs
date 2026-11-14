@@ -402,7 +402,7 @@ impl Shell {
             .relative()
             .w(px(560.))
             .max_w(relative(0.9))
-            .h(px(540.))
+            .h(px(640.))
             .max_h(relative(0.88))
             .rounded(px(20.))
             .border_1()
@@ -460,7 +460,7 @@ impl Shell {
                     .relative()
                     .w(px(880.))
                     .max_w(relative(0.94))
-                    .h(px(640.))
+                    .h(px(740.))
                     .max_h(relative(0.92))
                     .rounded(px(22.))
                     .border_1()
@@ -528,7 +528,7 @@ impl Shell {
         };
         if f.is_vercel() {
             let vcpus = f.vcpus();
-            let size = h_flex().gap(px(4.)).children([2u32, 4, 8].map(|n| {
+            let size = h_flex().flex_wrap().gap(px(4.)).children(tessel_remote::vercel::SIZES.map(|n| {
                 let on = n == vcpus;
                 div()
                     .id(SharedString::from(format!("flow-vcpus-{n}")))
@@ -545,11 +545,34 @@ impl Shell {
                         }
                         cx.notify();
                     }))
-                    .child(format!("{n} CPUs"))
+                    .child(format!("{n} CPU · {} GB", n * 2))
             }));
+            let keep = f.keep_disk();
+            let disk = h_flex()
+                .gap(px(12.))
+                .items_center()
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .gap(px(2.))
+                        .child(div().text_size(px(13.)).text_color(BONE).child("Keep its disk"))
+                        .child(div().text_size(px(12.)).text_color(ASH).child(if keep {
+                            "Its files, installs and projects stay when it stops, and come back when it wakes."
+                        } else {
+                            "It starts fresh from the image every time it wakes. Nothing is kept."
+                        })),
+                )
+                .child(Switch::new("flow-keep-disk").checked(keep).on_click(cx.listener(|this, on: &bool, _, cx| {
+                    if let Some(f) = this.hosts.form.as_mut() {
+                        f.set_keep_disk(*on);
+                    }
+                    cx.notify();
+                })));
             v_flex()
                 .gap(px(14.))
-                .child(h_flex().gap(px(12.)).items_end().child(div().flex_1().child(field("Name", "", &f.name, "host-form-name"))).child(v_flex().gap(px(6.)).child(div().text_size(px(12.5)).text_color(STONE).child("Size")).child(size)))
+                .child(field("Name", "", &f.name, "host-form-name"))
+                .child(v_flex().gap(px(6.)).child(div().text_size(px(12.5)).text_color(STONE).child("Size")).child(size))
+                .child(disk)
                 .child(if f.has_token() {
                     div().text_size(px(12.5)).text_color(STONE).child("Your Vercel token is in this Mac's keychain.").into_any_element()
                 } else {

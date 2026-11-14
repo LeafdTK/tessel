@@ -68,6 +68,8 @@ pub(crate) struct HostForm {
     pub(crate) key: Entity<InputState>,
     port: Entity<InputState>,
     vcpus: u32,
+    /// the sandbox keeps its disk between sessions.
+    keep_disk: bool,
     /// a vercel token, when the keychain has none yet.
     token: Entity<InputState>,
     team: Entity<InputState>,
@@ -91,6 +93,14 @@ impl HostForm {
 
     pub(crate) fn set_vcpus(&mut self, n: u32) {
         self.vcpus = n;
+    }
+
+    pub(crate) fn keep_disk(&self) -> bool {
+        self.keep_disk
+    }
+
+    pub(crate) fn set_keep_disk(&mut self, on: bool) {
+        self.keep_disk = on;
     }
 
     pub(crate) fn has_token(&self) -> bool {
@@ -361,6 +371,7 @@ impl Shell {
             key: field("~/.ssh/id_ed25519", "", window, cx),
             port: field("7731", &tessel_remote::quic::DEFAULT_PORT.to_string(), window, cx),
             vcpus: 2,
+            keep_disk: true,
             token: cx.new(|cx| InputState::new(window, cx).placeholder("vcp_…").masked(true)),
             team: field("team_…", saved["team"].as_str().unwrap_or(""), window, cx),
             project: field("prj_…", saved["project"].as_str().unwrap_or(""), window, cx),
@@ -400,7 +411,11 @@ impl Shell {
             }
             let cfg = serde_json::json!({"team": team, "project": project});
             std::fs::write(tessel_remote::vercel::config(&self.hosts.home), serde_json::to_vec_pretty(&cfg).unwrap_or_default()).map_err(|e| format!("Couldn't save the team and project: {e}"))?;
-            Ok((Host::sandbox(&name, f.vcpus), tessel_remote::quic::DEFAULT_PORT))
+            let mut host = Host::sandbox(&name, f.vcpus);
+            if let Some(sb) = host.vercel.as_mut() {
+                sb.persistent = f.keep_disk;
+            }
+            Ok((host, tessel_remote::quic::DEFAULT_PORT))
         } else {
             let (ssh, port) = (text(&f.ssh, cx), text(&f.port, cx));
             if ssh.is_empty() {
@@ -441,16 +456,53 @@ impl Shell {
         cx.notify();
     }
 
-    fn host_remove(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.hosts.confirm_remove.as_deref() != Some(id) {
-            self.hosts.confirm_remove = Some(id.to_owned());
+    /// take a host off this mac's list. a sandbox goes from vercel too
+    /// (`in_vercel`): it, and the disk it kept. asked twice, either way.
+    fn host_remove(&mut self, id: &str, in_vercel: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let mark = format!("{id}{}", if in_vercel { "" } else { "#tessel" });
+        if self.hosts.confirm_remove.as_deref() != Some(mark.as_str()) {
+            self.hosts.confirm_remove = Some(mark);
             cx.notify();
             return;
         }
         self.hosts.confirm_remove = None;
+        let host = self.hosts.list.get(id).cloned();
         if self.hosts.list.current.as_deref() == Some(id) {
             self.switch_host(None, cx);
         }
+        let Some(host) = host.filter(|h| in_vercel && h.vercel.is_some()) else {
+            self.host_forget(id, cx);
+            return;
+        };
+        // from vercel first: only once it's gone there does it leave the list,
+        // so a failure never leaves a sandbox nobody can see.
+        let home = self.hosts.home.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let r = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string()).and_then(|rt| rt.block_on(tessel_remote::vercel::delete(&home, &host)).map_err(|e| format!("{e:#}")));
+            let _ = tx.send(r);
+        });
+        self.hosts.said = Some(format!("Deleting {id} from Vercel…"));
+        let id = id.to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let r = rx.await.unwrap_or_else(|_| Err("it went away".into()));
+            let _ = in_window(&this, cx, |this, _, cx| {
+                match r {
+                    Ok(()) => {
+                        this.hosts.said = Some(format!("Deleted {id}, in Vercel too."));
+                        this.host_forget(&id, cx);
+                    }
+                    Err(e) => this.hosts.said = Some(format!("Couldn't delete it from Vercel, so it's still here: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// off this mac's list, and nothing else.
+    fn host_forget(&mut self, id: &str, cx: &mut Context<Self>) {
         let mut list = Hosts::load(&self.hosts.home);
         list.remove(id);
         if let Err(e) = list.save(&self.hosts.home) {
@@ -707,6 +759,7 @@ impl Shell {
                         let this = shell.read(cx);
                         let p = this.palette.get();
                         let armed = this.hosts.confirm_remove.as_deref() == Some(id.as_str());
+                        let armed_here = this.hosts.confirm_remove.as_deref() == Some(format!("{id}#tessel").as_str());
                         let busy = this.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
                         let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>, close: bool| {
                             let (me, popover) = (me.clone(), popover.clone());
@@ -743,13 +796,35 @@ impl Shell {
                             list = list.child(theme::float_item(&p, i("stop"), Some("square"), "Stop the sandbox", None, false).test_support().on_click(act(Box::new(move |this, w, cx| this.host_stop(&to, w, cx)), true)));
                         }
                         let to = id.clone();
-                        list.child(theme::float_sep(&p))
-                            .child(
-                                theme::float_danger(&p, i("remove"), Some("trash"), if armed { "Click again to remove" } else { "Remove" }, armed.then_some("Tessel stays installed there"))
-                                    .test_support()
-                                    .on_click(act(Box::new(move |this, _, cx| this.host_remove(&to, cx)), armed)),
+                        let list = list.child(theme::float_sep(&p));
+                        if !sandbox {
+                            return list
+                                .child(
+                                    theme::float_danger(&p, i("remove"), Some("trash"), if armed { "Click again to remove" } else { "Remove" }, armed.then_some("Tessel stays installed there"))
+                                        .test_support()
+                                        .on_click(act(Box::new(move |this, w, cx| this.host_remove(&to, false, w, cx)), armed)),
+                                )
+                                .into_any_element();
+                        }
+                        // a sandbox: deleted in vercel too, unless you say otherwise.
+                        let keep = id.clone();
+                        list.child(
+                            theme::float_danger(
+                                &p,
+                                i("remove"),
+                                Some("trash"),
+                                if armed { "Click again to delete" } else { "Delete the sandbox" },
+                                Some(if armed { "Gone from Vercel too, with its disk. This can't be undone" } else { "From tessel and from Vercel, its disk with it" }),
                             )
-                            .into_any_element()
+                            .test_support()
+                            .on_click(act(Box::new(move |this, w, cx| this.host_remove(&to, true, w, cx)), armed)),
+                        )
+                        .child(
+                            theme::float_item(&p, i("forget"), Some("x"), if armed_here { "Click again to remove" } else { "Remove from tessel only" }, Some("The sandbox stays in Vercel"), false)
+                                .test_support()
+                                .on_click(act(Box::new(move |this, w, cx| this.host_remove(&keep, false, w, cx)), armed_here)),
+                        )
+                        .into_any_element()
                     }),
             )
             .into_any_element()

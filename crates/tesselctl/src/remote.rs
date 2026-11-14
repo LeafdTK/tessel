@@ -101,8 +101,15 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
         "add" if args.rest.iter().any(|a| a == "--vercel") => {
             let name = args.opt("--vercel")?.context("--vercel NAME: what to call the sandbox")?;
             let vcpus = args.opt("--vcpus")?.map(|v| v.parse()).transpose()?.unwrap_or(2);
-            anyhow::ensure!(vcpus == 1 || (vcpus % 2 == 0 && vcpus <= 8), "--vcpus: 1, 2, 4 or 8");
-            let id = hosts.add(Host::sandbox(&name, vcpus));
+            anyhow::ensure!(tessel_remote::vercel::SIZES.contains(&vcpus), "--vcpus: 1, 2, 4, 8, 16 or 32 (2 GB of memory each)");
+            let mut host = Host::sandbox(&name, vcpus);
+            // its disk is kept between sessions unless it's asked to start fresh each time.
+            if args.flag("--fresh")
+                && let Some(sb) = host.vercel.as_mut()
+            {
+                sb.persistent = false;
+            }
+            let id = hosts.add(host);
             hosts.save(home)?;
             println!("added {id}");
             set_up(home, &id, args).await
@@ -222,11 +229,21 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             Ok(())
         }
         "rm" => {
+            // a sandbox goes from vercel too, its disk with it, unless it's kept.
+            let keep = args.flag("--keep-sandbox");
             let which = args.next("which host")?;
-            let id = hosts.find(&which).with_context(|| format!("no host {which}"))?.id.clone();
+            let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
+            let id = host.id.clone();
+            if host.vercel.is_some() && !keep {
+                tessel_remote::vercel::delete(home, &host).await.context("deleting the sandbox from vercel (--keep-sandbox removes it from tessel only)")?;
+            }
             hosts.remove(&id);
             hosts.save(home)?;
-            println!("removed {id} (tessel stays installed there: `tesselctl remote revoke` on it shuts this mac out)");
+            match (host.vercel.is_some(), keep) {
+                (true, false) => println!("removed {id}, and deleted its sandbox from vercel"),
+                (true, true) => println!("removed {id} from tessel; its sandbox is still in vercel"),
+                _ => println!("removed {id} (tessel stays installed there: `tesselctl remote revoke` on it shuts this mac out)"),
+            }
             Ok(())
         }
         "key" => {

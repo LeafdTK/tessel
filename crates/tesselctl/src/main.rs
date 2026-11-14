@@ -110,9 +110,11 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl host add USER@HOST [--name N] [--key ~/.ssh/KEY]
                                             add one and set it up over ssh: tessel copied there,
       [--port 7731] [--no-claude]           this mac let in, its quic service started, claude installed
-  tesselctl host add --vercel NAME [--vcpus 2]   a dev box in a vercel sandbox (token: `secret vercel`;
+  tesselctl host add --vercel NAME [--vcpus 1|2|4|8|16|32] [--fresh]
+                                            a dev box in a vercel sandbox (token: `secret vercel`;
                                             team and project: ~/.tessel/vercel.json). it runs while
                                             shown, stops by itself after, and keeps its disk
+                                            (--fresh: it starts clean each time)
   tesselctl host stop HOST                  stop a sandbox now
   tesselctl host ping HOST                  how fast it is: connecting, the path, round trips
   tesselctl host bring HOST [--what a,b,…] [--sign-in]
@@ -123,7 +125,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             how sandboxes are reached (Settings › Hosts)
   tesselctl host setup|update HOST          again: brings tessel there up to date
   tesselctl host use HOST|mac               which one the window shows
-  tesselctl host rm HOST
+  tesselctl host rm HOST [--keep-sandbox]   a sandbox is deleted from vercel too, its disk
+                                            with it; --keep-sandbox removes it from tessel only
   tesselctl host key                        this mac's key, as hosts know it
   on a host:
   tesselctl remote serve [--port 7731]      the quic service: lets in allowed macs, relays to the daemon

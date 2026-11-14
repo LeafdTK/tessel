@@ -38,11 +38,22 @@ pub struct Sandbox {
     /// its own `PATH` (where its runtimes are), learned at setup: tessel's folders go in front.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// its disk is kept when it stops (vercel snapshots it, and restores it
+    /// when it wakes). off: it starts fresh from the image every time.
+    #[serde(default = "yes")]
+    pub persistent: bool,
 }
 
 fn two() -> u32 {
     2
 }
+
+fn yes() -> bool {
+    true
+}
+
+/// the sizes vercel has: CPUs, with 2 GB of memory each.
+pub const SIZES: [u32; 6] = [1, 2, 4, 8, 16, 32];
 
 /// the account: the token, and where sandboxes go.
 pub struct Account {
@@ -203,7 +214,7 @@ impl Account {
                 "timeout": timeout,
                 "runtime": "node24",
                 "resources": {"vcpus": sb.vcpus, "memory": sb.vcpus * 2048},
-                "persistent": true,
+                "persistent": sb.persistent,
             })
         };
         let v = self.api("POST", "/v2/sandboxes", Some(body(LEASE.as_millis() as u64))).await?;
@@ -432,6 +443,19 @@ pub async fn reconfigure(home: &Path, host: &Host) -> anyhow::Result<bool> {
     let _ = acct.run(&id, "sh", &["-c", "pkill -f 'tesselctl remote serve-ws'; true"], &[]).await;
     start_service(&acct, &id, &there, sb.path.as_deref(), &crate::net::Net::load(home)).await?;
     Ok(true)
+}
+
+/// delete the host's sandbox from vercel: it, its sessions, and the disk it
+/// kept (its snapshots no other sandbox uses). can't be undone. one that's
+/// already gone is fine.
+pub async fn delete(home: &Path, host: &Host) -> anyhow::Result<()> {
+    let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
+    let acct = Account::load(home, &sb)?;
+    match acct.api("DELETE", &format!("/v2/sandboxes/{}?projectId={}&deleteOrphanSnapshots=true", sb.name, acct.project), None).await {
+        Ok(_) => Ok(()),
+        Err(e) if e.downcast_ref::<ApiError>().is_some_and(|a| a.code == 404) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// stop the host's sandbox now (it would by itself, soon after nothing shows it).

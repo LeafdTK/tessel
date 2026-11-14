@@ -77,7 +77,7 @@ impl Host {
     pub fn sandbox(name: &str, vcpus: u32) -> Self {
         let mut h = Self::new(name, "");
         h.name = name.trim().to_owned();
-        h.vercel = Some(crate::vercel::Sandbox { name: slug(name), team: None, project: None, vcpus, path: None });
+        h.vercel = Some(crate::vercel::Sandbox { name: slug(name), team: None, project: None, vcpus, path: None, persistent: true });
         h.transport = Transport::Vercel;
         h
     }
