@@ -198,7 +198,6 @@ impl Shell {
         };
         let sure = self.procs.confirm == Some(pid);
         let group = SharedString::from(format!("proc-{pid}"));
-        let small = |s: String, w: f32, ink: Hsla| div().w(z(w)).flex_shrink_0().text_right().set(Type::Subheadline).text_color(ink).child(s);
         let mut what = vec![];
         if r.kind == ProcessKind::Browser {
             what.push("browser".to_owned());
@@ -209,14 +208,21 @@ impl Shell {
         if r.left_behind {
             what.push("left behind".to_owned());
         }
+        what.push(format!("{:.0}%", r.cpu));
+        what.push(bytes(r.rss_bytes));
+        // two lines that only ever truncate: the name and its ports with the age
+        // at the end, then what it is and what it costs. narrow panes keep the
+        // name whole instead of squeezing it to a letter per line.
         h_flex()
             .id(group.clone())
             .test_support()
             .group(group.clone())
+            .relative()
             .mx(z(4.))
             .px(z(8.))
             .py(z(5.))
             .gap(z(8.))
+            .min_w_0()
             .rounded(z(theme::R_TILE))
             .hover(|d| d.bg(p.hover))
             .tooltip({
@@ -228,21 +234,21 @@ impl Shell {
                 v_flex()
                     .flex_1()
                     .min_w_0()
+                    .overflow_hidden()
                     .child(
                         h_flex()
                             .gap(z(6.))
                             .min_w_0()
-                            .child(div().min_w_0().truncate().set(Type::Body).text_color(p.label).child(r.name.clone()))
-                            .children(r.ports.iter().take(3).map(|port| div().flex_shrink_0().px(z(5.)).rounded(z(4.)).bg(p.fill).set(Type::Code).text_color(p.secondary).child(format!(":{port}")))),
+                            .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(p.label).child(r.name.clone()))
+                            .children(r.ports.iter().take(2).map(|port| div().flex_shrink_0().px(z(5.)).rounded(z(4.)).bg(p.fill).set(Type::Code).text_color(p.secondary).child(format!(":{port}"))))
+                            .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(age(r.age_secs))),
                     )
-                    .when(!what.is_empty(), |d| d.child(div().set(Type::Subheadline).text_color(if r.left_behind { p.blocked } else { p.tertiary }).child(what.join(" · ")))),
+                    .child(div().min_w_0().truncate().set(Type::Subheadline).text_color(if r.left_behind { p.blocked } else { p.tertiary }).child(what.join(" · "))),
             )
-            .child(small(format!("{:.0}%", r.cpu), 36., p.secondary))
-            .child(small(bytes(r.rss_bytes), 64., p.secondary))
-            .child(small(age(r.age_secs), 32., p.tertiary))
             .child(
-                div().w(z(64.)).flex_shrink_0().flex().justify_end().child(
-                    theme::button(&p, SharedString::from(format!("proc-{pid}-stop")), if sure { "Stop it" } else { "Stop" }, None, if sure { ButtonKind::Primary } else { ButtonKind::Ghost })
+                // over the row's end on hover, so it never takes width from the name.
+                h_flex().absolute().top_0().bottom_0().right(z(6.)).items_center().child(
+                    theme::button(&p, SharedString::from(format!("proc-{pid}-stop")), if sure { "Stop it" } else { "Stop" }, None, if sure { ButtonKind::Primary } else { ButtonKind::Secondary })
                         .test_support()
                         .when(!sure, |b| b.invisible().group_hover(group.clone(), |s| s.visible()))
                         .on_click(cx.listener(move |this, _, _, cx| {
