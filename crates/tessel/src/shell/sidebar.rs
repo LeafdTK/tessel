@@ -33,7 +33,7 @@ impl Shell {
         let tile = if queue {
             div().size(theme::z(16.)).flex_shrink_0().flex().items_center().justify_center().rounded(theme::z(4.)).bg(theme::info(&p).opacity(0.16)).child(Icon::empty().path("icons/bell.svg").size(theme::z(10.)).text_color(theme::info(&p))).into_any_element()
         } else {
-            super::avatar::letter(title, 18., 5.).into_any_element()
+            super::avatar::letter(title, 18., 5., &p).into_any_element()
         };
         let mut row = h_flex()
             .id(SharedString::from(format!("project-{title}")))
@@ -228,8 +228,8 @@ pub(crate) fn project_color(name: &str) -> Hsla {
 
 /// a project's tile: its first letter on two colours picked from its name,
 /// the same every time (see `avatar`).
-pub(crate) fn project_tile(name: &str, _p: &Palette) -> Div {
-    super::avatar::letter(name, 18., 5.)
+pub(crate) fn project_tile(name: &str, p: &Palette) -> Div {
+    super::avatar::letter(name, 18., 5., p)
 }
 
 /// show a folder in the Finder.

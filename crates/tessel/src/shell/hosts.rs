@@ -496,7 +496,6 @@ impl Shell {
         } else {
             about.join(" · ")
         };
-        let seed = self.hosts.list.current.clone().unwrap_or_else(|| "this-mac".into());
         let icon = machine_icon(self.hosts.list.current());
         let picker = Popover::new("host-picker-popover")
             .p_0()
@@ -517,7 +516,7 @@ impl Shell {
                             .w_full()
                             .min_w_0()
                             .gap(px(10.))
-                            .child(super::avatar::machine(&seed, icon, 28., 7.))
+                            .child(super::avatar::machine(icon, 28., 7., &p))
                             .child(
                                 v_flex()
                                     .flex_1()
@@ -542,7 +541,7 @@ impl Shell {
                         let _ = me.update(cx, |this, cx| this.switch_host(to.clone(), cx));
                     }
                 };
-                let machine = |id: SharedString, seed: String, icon: &'static str, name: String, note: String, on: bool| {
+                let machine = |id: SharedString, icon: &'static str, name: String, note: String, on: bool| {
                     h_flex()
                         .id(id)
                         .test_support()
@@ -552,7 +551,7 @@ impl Shell {
                         .rounded(px(theme::R_TILE))
                         .when(on, |d| d.bg(p.selection))
                         .when(!on, |d| d.hover(|d| d.bg(p.hover)))
-                        .child(super::avatar::machine(&seed, icon, 26., 6.))
+                        .child(super::avatar::machine(icon, 26., 6., &p))
                         .child(
                             v_flex()
                                 .flex_1()
@@ -562,7 +561,7 @@ impl Shell {
                         )
                 };
                 let mut list = v_flex().w(px(280.)).p(px(6.)).gap(px(2.)).child(
-                    machine("host-mac".into(), "this-mac".into(), "laptop", "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
+                    machine("host-mac".into(), "laptop", "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
                 );
                 for h in &this.hosts.list.hosts {
                     let note = if !h.ready() {
@@ -576,7 +575,7 @@ impl Shell {
                         format!("{} · {how}", h.arch.as_deref().map_or_else(|| "linux".to_owned(), |a| format!("linux {a}")))
                     };
                     let on = current.as_deref() == Some(h.id.as_str());
-                    list = list.child(machine(SharedString::from(format!("host-{}", h.id)), h.id.clone(), machine_icon(Some(h)), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
+                    list = list.child(machine(SharedString::from(format!("host-{}", h.id)), machine_icon(Some(h)), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
                 }
                 let settings = |adding: bool| {
                     let (me, popover) = (me.clone(), popover.clone());
@@ -617,11 +616,11 @@ impl Shell {
     pub(crate) fn hosts_settings(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
         let current = self.hosts.list.current.clone();
-        let card = || v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if self.frozen { p.fill } else { p.window }).overflow_hidden();
+        let card = || v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if crate::glass::liquid() { p.fill } else { p.window }).overflow_hidden();
         let connected = |id: &str| self.hosts.on.as_deref() == Some(id) && matches!(self.model.connection, crate::model::Connection::Connected);
 
         // this mac, then each host: what it is, how it's doing, and one menu.
-        let mut machines = card().child(self.machine_row("mac", "this-mac", "laptop", "This Mac".into(), "Chats and agents on this Mac".into(), current.is_none(), None, cx));
+        let mut machines = card().child(self.machine_row("mac", "laptop", "This Mac".into(), "Chats and agents on this Mac".into(), current.is_none(), None, cx));
         for h in &self.hosts.list.hosts {
             let showing = current.as_deref() == Some(h.id.as_str());
             let mut about = if !h.ready() {
@@ -637,7 +636,7 @@ impl Shell {
                 about = format!("{about} · {}", self.hosts.via);
             }
             let icon = if h.vercel.is_some() { "cloud" } else { "server" };
-            machines = machines.child(self.machine_row(&h.id, &h.id, icon, h.name.clone(), about, showing, Some(h), cx));
+            machines = machines.child(self.machine_row(&h.id, icon, h.name.clone(), about, showing, Some(h), cx));
             if let Some(run) = self.hosts.run.as_ref().filter(|r| r.host == h.id) {
                 machines = machines.child(self.setup_steps(run));
             }
@@ -666,7 +665,7 @@ impl Shell {
 
     /// one machine in Settings › Hosts: its tile, name and state; clicking shows it.
     #[allow(clippy::too_many_arguments)]
-    fn machine_row(&self, id: &str, seed: &str, icon: &'static str, name: String, about: String, showing: bool, host: Option<&Host>, cx: &mut Context<Self>) -> AnyElement {
+    fn machine_row(&self, id: &str, icon: &'static str, name: String, about: String, showing: bool, host: Option<&Host>, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
         let to = host.map(|h| h.id.clone());
         let ready = host.is_none_or(Host::ready);
@@ -683,7 +682,7 @@ impl Shell {
                 let to = to.clone();
                 d.hover(|d| d.bg(p.hover)).on_click(cx.listener(move |this, _, _, cx| this.switch_host(to.clone(), cx)))
             })
-            .child(super::avatar::machine(seed, icon, 30., 8.))
+            .child(super::avatar::machine(icon, 30., 8., &p))
             .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(name)).child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(about)))
             .when(showing, |d| d.child(h_flex().gap_1().child(Icon::empty().path("icons/check.svg").size(z(13.)).text_color(p.accent)).child(div().set(Type::Subheadline).text_color(p.secondary).child("Showing"))))
             .children(host.map(|h| self.host_menu(h, showing, cx)))

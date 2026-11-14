@@ -322,6 +322,7 @@ impl Shell {
 
     pub(crate) fn setup_flow_layer(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(f) = self.hosts.flow.as_ref() else { return div().into_any_element() };
+        let p = self.palette.get();
         // finished setting up: ready, whatever step it was on.
         let step = match (f.step, self.flow_run().and_then(|r| r.done.as_ref())) {
             (Step::Setup, Some(Ok(()))) => Step::Ready,
@@ -423,7 +424,7 @@ impl Shell {
                             .pt(px(22.))
                             .gap(px(14.))
                             .items_center()
-                            .child(super::avatar::machine(&name.clone().unwrap_or_else(|| "new".into()), if sandbox == Some(true) { "cloud" } else { "server" }, 40., 10.))
+                            .child(super::avatar::machine(if sandbox == Some(true) { "cloud" } else { "server" }, 40., 10., &p))
                             .child(v_flex().flex_1().min_w_0().gap(px(3.)).child(div().text_size(px(24.)).line_height(px(28.)).font_weight(FontWeight(640.)).text_color(BONE).child(title)).child(div().text_size(px(13.5)).text_color(STONE).child(about))),
                     )
                     .child(v_flex().id("flow-body").pt(px(22.)).flex_1().min_h_0().overflow_y_scroll().child(body))
