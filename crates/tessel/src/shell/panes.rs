@@ -621,11 +621,9 @@ impl Shell {
                     this.focus_chat_pane(&fid, cx);
                 }
             }))
+            // solid, as apple's content is: colour comes from what's in it, and
+            // glass only floats over it (the message box, sheets).
             .when(!open_sky, |d| d.bg(p.window))
-            // liquid glass: the pane is solid, with colour washed through it,
-            // so the glass in front of it (the bubbles, the message box) has
-            // something to bend.
-            .when(!open_sky && crate::glass::liquid() && !compact, |d| d.relative().child(self.wash_el(id, cx)))
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))

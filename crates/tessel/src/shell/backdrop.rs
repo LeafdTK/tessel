@@ -36,9 +36,6 @@ pub(crate) struct Key {
     pub oy: u32,
     pub fw: u32,
     pub fh: u32,
-    /// the colour washed through a pane in liquid glass (see `draw_wash`),
-    /// around `hue`, over `bg`.
-    pub wash: bool,
 }
 
 #[derive(Default)]
@@ -202,153 +199,8 @@ fn draw_meadow(key: &Key) -> Vec<u8> {
     out
 }
 
-/// the field of colour behind a pane in liquid glass, made the way apple
-/// music makes its background from an album's art: copies of a picture,
-/// scaled, turned and twisted over each other, blurred hard and saturated.
-/// tessel has no album art, so each project gets a picture of its own: a few
-/// hard shapes in its colour, from its name (`frame` is the seed). what comes
-/// out is deep colour in slow, folded shapes, never the same twice.
-fn draw_wash(key: &Key) -> Vec<u8> {
-    let (w, h) = (key.w.max(1) as usize, key.h.max(1) as usize);
-    let art = wash_art(key);
-    let n = WASH_ART;
-    let sample = |u: f32, v: f32| -> Option<[f32; 3]> {
-        if !(0.0..1.0).contains(&u) || !(0.0..1.0).contains(&v) {
-            return None;
-        }
-        let (x, y) = ((u * n as f32) as usize, (v * n as f32) as usize);
-        Some(art[y * n + x])
-    };
-    // the copies: (centre, size as a share of the width, turn, twist), back to front.
-    let mut rng = key.frame.wrapping_mul(2_654_435_761).max(1);
-    let mut r = || {
-        rng ^= rng << 13;
-        rng ^= rng >> 17;
-        rng ^= rng << 5;
-        (rng % 10_000) as f32 / 10_000.0
-    };
-    let aspect = h as f32 / w as f32;
-    let copies: Vec<((f32, f32), f32, f32, f32)> = [1.6f32, 0.95, 0.6, 0.32]
-        .iter()
-        .map(|size| ((0.15 + r() * 0.7, (0.15 + r() * 0.7) * aspect), *size, r() * std::f32::consts::TAU, 1.6 + r() * 2.2))
-        .collect();
-    let mut img = vec![[0f32; 3]; w * h];
-    for y in 0..h {
-        for x in 0..w {
-            let (px, py) = (x as f32 / w as f32, y as f32 / w as f32);
-            let mut c = art[0];
-            for ((cx, cy), size, turn, twist) in &copies {
-                let (mut dx, mut dy) = (px - cx, py - cy);
-                // the twist: turned most in the middle, not at all at the rim.
-                let radius = size * 0.75;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < radius {
-                    let k = (radius - dist) / radius;
-                    let a = k * k * twist;
-                    let (s_, c_) = a.sin_cos();
-                    (dx, dy) = (dx * c_ - dy * s_, dx * s_ + dy * c_);
-                }
-                let (s_, c_) = turn.sin_cos();
-                let (u, v) = ((dx * c_ - dy * s_) / size + 0.5, (dx * s_ + dy * c_) / size + 0.5);
-                if let Some(col) = sample(u, v) {
-                    c = col;
-                }
-            }
-            img[y * w + x] = c;
-        }
-    }
-    // blurred hard: three box passes each way are near enough a gaussian.
-    let radius = ((w.max(h) as f32) * 0.035).round().max(1.0) as usize;
-    for _ in 0..3 {
-        box_blur(&mut img, w, h, radius, true);
-        box_blur(&mut img, w, h, radius, false);
-    }
-    let mut out = vec![0u8; w * h * 4];
-    for (i, c) in img.iter().enumerate() {
-        let noise_ = (noise((i % w) as u32, (i / w) as u32, 3) - 0.5) * (1.5 / 255.0);
-        let to8 = |v: f32| ((v + noise_).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
-        out[i * 4] = to8(c[2]);
-        out[i * 4 + 1] = to8(c[1]);
-        out[i * 4 + 2] = to8(c[0]);
-        out[i * 4 + 3] = 255;
-    }
-    out
-}
-
-/// the side of a project's picture, in cells.
-const WASH_ART: usize = 48;
-
-/// a project's picture: hard shapes in its colours, deep and bright and
-/// between, on its darkest (or, in light mode, its palest).
-fn wash_art(key: &Key) -> Vec<[f32; 3]> {
-    let n = WASH_ART;
-    let hue = key.hue;
-    // one family of colours: the hue, a step either side, saturated, in three depths.
-    let tones: [[f32; 3]; 4] = if key.dark {
-        [hsl(hue, 0.5, 0.06), hsl(hue, 0.75, 0.15), hsl(hue + 0.03, 0.8, 0.28), hsl(hue - 0.04, 0.8, 0.4)]
-    } else {
-        [hsl(hue, 0.5, 0.95), hsl(hue, 0.65, 0.87), hsl(hue + 0.03, 0.7, 0.79), hsl(hue - 0.04, 0.75, 0.71)]
-    };
-    let mut img = vec![tones[0]; n * n];
-    let mut rng = key.frame.wrapping_mul(0x9E37_79B9).max(7);
-    let mut r = || {
-        rng ^= rng << 13;
-        rng ^= rng >> 17;
-        rng ^= rng << 5;
-        (rng % 10_000) as f32 / 10_000.0
-    };
-    for k in 0..7 {
-        let tone = tones[1 + k % 3];
-        let (cx, cy) = (r(), r());
-        let (rx, ry) = (0.18 + r() * 0.35, 0.12 + r() * 0.3);
-        let round = r() > 0.4;
-        for y in 0..n {
-            for x in 0..n {
-                let (dx, dy) = ((x as f32 / n as f32 - cx) / rx, (y as f32 / n as f32 - cy) / ry);
-                let inside = if round { dx * dx + dy * dy < 1.0 } else { dx.abs() < 1.0 && dy.abs() < 1.0 };
-                if inside {
-                    img[y * n + x] = tone;
-                }
-            }
-        }
-    }
-    img
-}
-
-/// one pass of a box blur, across (`along_x`) or down.
-fn box_blur(img: &mut [[f32; 3]], w: usize, h: usize, radius: usize, along_x: bool) {
-    let (len, lines) = if along_x { (w, h) } else { (h, w) };
-    let at = |line: usize, i: usize| if along_x { line * w + i } else { i * w + line };
-    let mut buf = vec![[0f32; 3]; len];
-    for line in 0..lines {
-        // edges held: the colour runs on past them.
-        let get = |i: isize| img[at(line, i.clamp(0, len as isize - 1) as usize)];
-        let span = (2 * radius + 1) as f32;
-        let mut sum = [0f32; 3];
-        for i in -(radius as isize)..=(radius as isize) {
-            let c = get(i);
-            for k in 0..3 {
-                sum[k] += c[k];
-            }
-        }
-        for i in 0..len {
-            buf[i] = sum.map(|v| v / span);
-            let (add, sub) = (get(i as isize + radius as isize + 1), get(i as isize - radius as isize));
-            for k in 0..3 {
-                sum[k] += add[k] - sub[k];
-            }
-        }
-        for i in 0..len {
-            img[at(line, i)] = buf[i];
-        }
-    }
-}
-
 /// an image's pixels, bgra, `key.w` × `key.h`.
 pub(crate) fn draw(key: &Key) -> Vec<u8> {
-    if key.wash {
-        return draw_wash(key);
-    }
     if key.meadow {
         return draw_meadow(key);
     }
@@ -433,7 +285,7 @@ impl Shell {
     }
 
     /// the hue for the room: the open session's project, else the one a new session would start in.
-    pub(crate) fn backdrop_hue(&self) -> f32 {
+    fn backdrop_hue(&self) -> f32 {
         let name = match self.model.open_summary().filter(|_| !self.show_new) {
             Some(s) => project_name(s),
             None => self.new_folder().as_deref().map(projects::folder_name).unwrap_or_default(),
@@ -448,7 +300,7 @@ impl Shell {
         let bg = rgb8(p.window);
         // a dot of about two points, whatever the screen, drawn 1:1 so its edges stay sharp.
         image_el(self.backdrop.clone(), cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
-            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false })
+            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 })
         })
     }
 
@@ -464,7 +316,7 @@ impl Shell {
         let bg = rgb8(p.sidebar.opacity(1.0));
         let dark = p.dark;
         // a point per pixel: the gpu's smoothing softens the grain, as cloth is soft.
-        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false }))
+        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 }))
     }
 }
 
@@ -534,19 +386,6 @@ pub(crate) fn image_el_at(state: Shared, me: WeakEntity<Shell>, corners: Corners
 mod tests {
     use super::{Key, bayer, draw};
 
-    /// `TESSEL_WASH_OUT=dir cargo test wash_samples -- --ignored`: pictures of the wash to look at.
-    #[test]
-    #[ignore]
-    fn wash_samples() {
-        let Some(dir) = std::env::var_os("TESSEL_WASH_OUT") else { return };
-        for (i, (hue, dark)) in [(0.6, true), (0.6, false), (0.0, true), (0.33, true), (0.8, false)].iter().enumerate() {
-            let key = Key { w: 220, h: 260, cell: 1, hue: *hue, dark: *dark, bg: [0, 0, 0], felt: false, meadow: false, frame: 1234 + i as u32 * 77, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true };
-            let bgra = draw(&key);
-            let rgba: Vec<u8> = bgra.chunks(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
-            image::RgbaImage::from_raw(key.w, key.h, rgba).unwrap().save(std::path::Path::new(&dir).join(format!("wash-{i}.png"))).unwrap();
-        }
-    }
-
     #[test]
     fn the_bayer_thresholds_are_each_used_once() {
         let mut seen: Vec<u32> = (0..8).flat_map(|y| (0..8).map(move |x| (bayer(x, y) * 64.0) as u32)).collect();
@@ -575,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_backdrop_is_dots_with_gaps_and_cheap_to_draw() {
-        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false };
+        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 2880 * 1800 * 4);
         // the last column and row of every dot are the gap, all one colour.
@@ -590,7 +429,7 @@ mod tests {
 
     #[test]
     fn felt_stays_close_to_its_colour_and_is_cheap_to_draw() {
-        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false };
+        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 1440 * 900 * 4);
         // grain, not pattern: every pixel within a few steps of the cloth's colour.

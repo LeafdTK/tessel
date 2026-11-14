@@ -685,6 +685,5 @@ fn meadow_key(b: Bounds<Pixels>, field: Bounds<Pixels>, scale: f32, frame: u32, 
         oy: d(b.origin.y - field.origin.y),
         fw: d(field.size.width),
         fh: d(field.size.height),
-        wash: false,
     }
 }

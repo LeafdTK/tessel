@@ -320,8 +320,6 @@ pub struct Shell {
     pub(crate) backdrop: backdrop::Shared,
     /// the felt under the window, once drawn.
     pub(crate) felt: backdrop::Shared,
-    /// each pane's colour wash (liquid glass), by pane.
-    pub(crate) washes: std::cell::RefCell<HashMap<String, backdrop::Shared>>,
     /// the space backdrop's photo.
     pub(crate) space: space::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
@@ -765,7 +763,6 @@ impl Shell {
             changes_scope: "all",
             changes_search,
             backdrop: Default::default(),
-            washes: Default::default(),
             felt: Default::default(),
             space: Default::default(),
             thumbs: Default::default(),
@@ -1995,9 +1992,7 @@ impl Shell {
             ),
             ItemBody::User { text, attachments } => {
                 // it hugs what you wrote; a full-width bar would read as a heading.
-                let bubble = div().max_w(relative(0.8)).px(px(16.)).py(px(10.)).rounded(px(18.)).set(Type::Prose).text_color(p.label);
-                // liquid: a bead of glass with the accent in it; the pane's colour shows through.
-                let bubble = if crate::glass::liquid() { bubble.relative().child(glass_tinted(18., p.accent.opacity(0.14))) } else { bubble.bg(p.fill) }.child(text.clone());
+                let bubble = div().max_w(relative(0.8)).px(px(16.)).py(px(10.)).rounded(px(18.)).bg(p.fill).set(Type::Prose).text_color(p.label).child(text.clone());
                 let sent = (!attachments.is_empty()).then(|| div().px_1().set(Type::Subheadline).text_color(p.secondary).child(format!("With {}", attachments.join(", "))));
                 let col = if self.transcript_opts.user_left { v_flex().items_start() } else { v_flex().items_end() };
                 Some(col.gap_1().when(!text.trim().is_empty(), |d| d.child(bubble)).children(sent).into_any_element())
@@ -3240,27 +3235,6 @@ impl Render for TurnTip {
             card = card.child(h_flex().child(div().flex_1().text_color(p.secondary).child(k.clone())).child(div().set(Type::Code).text_color(p.label).child(v.clone())));
         }
         card
-    }
-}
-
-impl Shell {
-    /// colour washed through a solid pane, for the glass in front of it to
-    /// bend: an image in the accent's family of hues, rounded with the pane.
-    pub(crate) fn wash_el(&self, pane: &str, cx: &mut Context<Self>) -> AnyElement {
-        let p = self.palette.get();
-        let state = self.washes.borrow_mut().entry(pane.to_owned()).or_default().clone();
-        // the project's own colour and picture (as a song has its art).
-        let name = match self.model.open_summary().filter(|_| !self.show_new) {
-            Some(s) => project_name(s),
-            None => self.new_folder().as_deref().map(projects::folder_name).unwrap_or_default(),
-        };
-        let hue = self.backdrop_hue();
-        let seed = name.bytes().fold(2_166_136_261u32, |h, b| (h ^ u32::from(b)).wrapping_mul(16_777_619));
-        let dark = p.dark;
-        // smooth, so an eighth of the pixels is plenty: the gpu stretches it.
-        backdrop::image_el(state, cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
-            Some(backdrop::Key { w: (w * scale / 8.).round() as u32, h: (h * scale / 8.).round() as u32, cell: 1, hue, dark, bg: [0, 0, 0], felt: false, meadow: false, frame: seed, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true })
-        })
     }
 }
 
