@@ -90,6 +90,9 @@ pub(crate) struct TermView {
     selecting: bool,
     scroll_acc: f32,
     pub(crate) ime: Option<Entity<TermIme>>,
+    /// it runs on a dev box: what's typed shows before the box echoes it.
+    remote: bool,
+    echo: Echo,
 }
 
 pub(crate) type TermCell = Rc<RefCell<TermView>>;
@@ -124,7 +127,7 @@ impl gpui_kit::EntityInputHandler for TermIme {
         cx.notify();
     }
 
-    fn replace_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(&mut self, _: Option<std::ops::Range<usize>>, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.marked.clear();
         if text.is_empty() {
             return;
@@ -137,8 +140,14 @@ impl gpui_kit::EntityInputHandler for TermIme {
             v.term.scroll_to_bottom();
             v.term.clear_selection();
             v.fresh = true;
+            if v.guessing() {
+                let (at, cols) = (v.screen.cursor, v.screen.cols);
+                v.echo.typed(text, at, cols);
+            }
         }
         let _ = self.cmds.send(Cmd::TermInput(self.id, text.as_bytes().to_vec()));
+        // drawn now, not when the echo comes back: that's the point of guessing.
+        window.refresh();
         cx.notify();
     }
 
@@ -159,6 +168,104 @@ impl gpui_kit::EntityInputHandler for TermIme {
     fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
         None
     }
+}
+
+/// typing shown before a dev box echoes it back, as mosh does: each key
+/// lands at the cursor at once and goes when the box draws it for real.
+/// a guess the box contradicts turns guessing off until the next line, and
+/// guesses on a new line show only once one of them has come true, so a
+/// password prompt (which echoes nothing) never shows what's typed.
+#[derive(Default)]
+pub(crate) struct Echo {
+    /// the guesses: (row, col, char), oldest first.
+    cells: Vec<(u16, u16, char)>,
+    /// where the cursor goes once they land.
+    cursor: Option<(u16, u16)>,
+    /// one guess this line came true: the rest can show.
+    trusted: bool,
+    /// one was wrong: none until the next line.
+    off: bool,
+    since: Option<Instant>,
+}
+
+impl Echo {
+    /// what was typed, plain text, with the cursor where the box last put it.
+    pub(crate) fn typed(&mut self, text: &str, at: Option<tessel_term::Cursor>, cols: u16) {
+        if self.off {
+            return;
+        }
+        for ch in text.chars() {
+            // only plain one-cell characters are safe to guess at.
+            if !(' '..='~').contains(&ch) {
+                self.line();
+                return;
+            }
+            let Some((row, col)) = self.cursor.or_else(|| at.map(|c| (c.row, c.col))) else { return };
+            if col + 1 >= cols {
+                return;
+            }
+            self.cells.push((row, col, ch));
+            self.cursor = Some((row, col + 1));
+            self.since.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// backspace: the last guess goes, if there is one.
+    pub(crate) fn backspace(&mut self) {
+        if let Some((row, col, _)) = self.cells.pop() {
+            self.cursor = Some((row, col));
+        }
+    }
+
+    /// enter, or any key the box answers its own way: guesses start over.
+    pub(crate) fn line(&mut self) {
+        *self = Self::default();
+    }
+
+    /// the box drew: guesses it drew go, and one it went past without drawing
+    /// was wrong. any left after a couple of seconds weren't coming.
+    pub(crate) fn reconcile(&mut self, screen: &Screen) {
+        if self.cells.is_empty() {
+            self.cursor = None;
+            self.since = None;
+            return;
+        }
+        let before = self.cells.len();
+        self.cells.retain(|(r, c, ch)| cell_at(screen, *r, *c) != Some(*ch));
+        if self.cells.len() < before {
+            self.trusted = true;
+        }
+        let passed = screen.cursor.is_some_and(|cur| self.cells.iter().any(|(r, c, _)| cur.row > *r || (cur.row == *r && cur.col > *c)));
+        let stale = self.since.is_some_and(|t| t.elapsed() > Duration::from_secs(2));
+        if passed || stale {
+            *self = Self { off: true, ..Self::default() };
+            return;
+        }
+        if self.cells.is_empty() {
+            self.cursor = None;
+            self.since = None;
+        }
+    }
+
+    /// what to draw: the guesses, once they can be trusted.
+    pub(crate) fn shown(&self) -> &[(u16, u16, char)] {
+        if self.trusted && !self.off { &self.cells } else { &[] }
+    }
+
+    pub(crate) fn shown_cursor(&self) -> Option<(u16, u16)> {
+        (!self.shown().is_empty()).then_some(self.cursor).flatten()
+    }
+}
+
+/// the character in a cell of the screen; a cell nothing's written in is a space.
+fn cell_at(screen: &Screen, row: u16, col: u16) -> Option<char> {
+    let line = screen.lines.get(usize::from(row))?;
+    for s in &line.spans {
+        if col >= s.col && col < s.col + s.cols {
+            return line.text.get(s.start..s.end)?.chars().nth(usize::from(col - s.col));
+        }
+    }
+    Some(' ')
 }
 
 fn rgb(c: Rgb) -> Hsla {
@@ -324,7 +431,15 @@ impl TermView {
             selecting: false,
             scroll_acc: 0.0,
             ime: None,
+            remote: false,
+            echo: Echo::default(),
         }
+    }
+
+    /// guess at typing now, here: on a dev box, at a shell's prompt (not a
+    /// full-screen program, not scrolled back).
+    fn guessing(&self) -> bool {
+        self.remote && !self.term.alternate() && !self.term.mouse_tracking() && self.screen.scrolled == 0
     }
 
     /// start over: the next attach brings a dump of everything.
@@ -595,6 +710,17 @@ impl Shell {
         let action = if ev.is_held { KeyAction::Repeat } else { KeyAction::Press };
         let bytes = v.term.key(key, mods, text.as_deref(), unshifted, action);
         if !bytes.is_empty() {
+            // backspace takes a guess back; anything else the box answers its own way.
+            if ks.key == "backspace" && mods.is_empty() {
+                v.echo.backspace();
+            } else if printable && ev.is_held {
+                if v.guessing() {
+                    let (at, cols) = (v.screen.cursor, v.screen.cols);
+                    v.echo.typed(text.as_deref().unwrap_or_default(), at, cols);
+                }
+            } else {
+                v.echo.line();
+            }
             v.term.scroll_to_bottom();
             v.term.clear_selection();
             v.fresh = true;
@@ -669,6 +795,7 @@ impl Shell {
             return div().size_full().flex().items_center().justify_center().child(gpui_kit::component::spinner::Spinner::new().small().color(p.tertiary)).into_any_element();
         };
         let view = self.terms[&id].clone();
+        view.borrow_mut().remote = self.on_host();
         let focus = view.borrow().focus.clone();
         let exited = view.borrow().info.exited;
         let (fg, bg, accent) = term_scheme(self.ui.theme.term_colors.as_deref(), &p);
@@ -713,8 +840,9 @@ impl Shell {
                 }
                 if v.fresh {
                     v.fresh = false;
-                    let TermView { term, screen, .. } = &mut *v;
+                    let TermView { term, screen, echo, .. } = &mut *v;
                     let _ = term.update(screen);
+                    echo.reconcile(screen);
                 }
 
                 // shape the rows that changed since they were last shaped.
@@ -783,7 +911,25 @@ impl Shell {
                     let _ = line.paint(at, lh, TextAlign::Left, None, window, cx);
                     return;
                 }
-                if let Some(c) = v.screen.cursor.filter(|_| v.screen.scrolled == 0) {
+                // what's typed and not echoed yet, drawn as if it were.
+                let guesses = v.echo.shown();
+                if !guesses.is_empty() {
+                    let ink = rgb(v.screen.fg);
+                    let ground = rgb(v.screen.bg);
+                    for (row, col, ch) in guesses {
+                        let at = point(origin.x + cw * f32::from(*col), origin.y + lh * f32::from(*row));
+                        window.paint_quad(fill(Bounds::new(at, gpui_kit::size(cw, lh)), ground));
+                        let text: SharedString = ch.to_string().into();
+                        let run = TextRun { len: text.len(), font: term_font(mono_paint.clone(), false, false), color: ink, background_color: None, underline: None, strikethrough: None };
+                        let line = window.text_system().shape_line(text, font_size, &[run], None);
+                        let _ = line.paint(at, lh, TextAlign::Left, None, window, cx);
+                    }
+                }
+                let cursor = v.screen.cursor.map(|c| match v.echo.shown_cursor() {
+                    Some((row, col)) => tessel_term::Cursor { row, col, ..c },
+                    None => c,
+                });
+                if let Some(c) = cursor.filter(|_| v.screen.scrolled == 0) {
                     let at = point(origin.x + cw * f32::from(c.col), origin.y + lh * f32::from(c.row));
                     let ink = v.colors.map_or(rgb(v.screen.fg), |c| rgb(c.2));
                     let focused = focus_for_paint.is_focused(window);
@@ -975,5 +1121,79 @@ impl Shell {
         b.fed += chunk.len();
         // the next frame comes as soon as the display can take it, nothing else waking it.
         window.request_animation_frame();
+    }
+}
+
+#[cfg(test)]
+mod echo_tests {
+    use super::{Echo, cell_at};
+    use tessel_term::{Cursor, CursorShape, Line, Rgb, Screen, Span};
+
+    /// a one-row screen showing `text`, the cursor at `col`.
+    fn screen(text: &str, col: u16) -> Screen {
+        let mut s = Screen::default();
+        s.cols = 40;
+        let span = Span { col: 0, cols: text.chars().count() as u16, start: 0, end: text.len(), fg: Rgb(0, 0, 0), bg: None, bold: false, italic: false, faint: false, underline: false, strike: false };
+        s.lines = vec![Line { text: text.to_owned(), spans: if text.is_empty() { vec![] } else { vec![span] }, version: 1 }];
+        s.cursor = Some(Cursor { col, row: 0, shape: CursorShape::Block, blink: false });
+        s
+    }
+
+    #[test]
+    fn a_cell_reads_its_character_or_a_space() {
+        let s = screen("$ ls", 4);
+        assert_eq!(cell_at(&s, 0, 2), Some('l'));
+        assert_eq!(cell_at(&s, 0, 9), Some(' '));
+    }
+
+    #[test]
+    fn guesses_show_once_one_has_come_true_and_go_as_the_box_draws_them() {
+        let mut e = Echo::default();
+        e.typed("l", screen("$ ", 2).cursor, 40);
+        assert!(e.shown().is_empty(), "the first key of a line waits to be echoed");
+        e.reconcile(&screen("$ l", 3));
+        e.typed("s -la", screen("$ l", 3).cursor, 40);
+        assert_eq!(e.shown().iter().map(|g| g.2).collect::<String>(), "s -la", "after that, typing shows at once");
+        assert_eq!(e.shown_cursor(), Some((0, 8)));
+        e.reconcile(&screen("$ ls -", 6));
+        assert_eq!(e.shown().iter().map(|g| g.2).collect::<String>(), "la", "what the box drew goes");
+    }
+
+    #[test]
+    fn a_password_prompt_never_shows_what_is_typed() {
+        let mut e = Echo::default();
+        let prompt = screen("Password: ", 10);
+        e.typed("hunter2", prompt.cursor, 40);
+        e.reconcile(&prompt);
+        assert!(e.shown().is_empty());
+    }
+
+    #[test]
+    fn a_wrong_guess_stops_guessing_until_the_next_line() {
+        let mut e = Echo::default();
+        e.typed("a", screen("$ ", 2).cursor, 40);
+        e.reconcile(&screen("$ a", 3));
+        e.typed("b", screen("$ a", 3).cursor, 40);
+        // the box drew something else there and moved on.
+        e.reconcile(&screen("$ aX", 4));
+        assert!(e.shown().is_empty());
+        e.typed("c", screen("$ aX", 4).cursor, 40);
+        assert!(e.shown().is_empty(), "still off");
+        e.line();
+        e.typed("d", screen("$ ", 2).cursor, 40);
+        e.reconcile(&screen("$ d", 3));
+        e.typed("e", screen("$ d", 3).cursor, 40);
+        assert_eq!(e.shown().len(), 1, "a new line guesses again");
+    }
+
+    #[test]
+    fn backspace_takes_the_last_guess_back() {
+        let mut e = Echo::default();
+        e.typed("a", screen("$ ", 2).cursor, 40);
+        e.reconcile(&screen("$ a", 3));
+        e.typed("bc", screen("$ a", 3).cursor, 40);
+        e.backspace();
+        assert_eq!(e.shown().iter().map(|g| g.2).collect::<String>(), "b");
+        assert_eq!(e.shown_cursor(), Some((0, 4)));
     }
 }
