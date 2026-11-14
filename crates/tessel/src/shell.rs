@@ -288,7 +288,9 @@ pub struct Shell {
     sheet: Option<projects::Sheet>,
     focus_sheet: bool,
     sheet_focus: FocusHandle,
-    sheet_error: Option<String>,
+    pub(crate) sheet_error: Option<String>,
+    /// bringing this mac's GitHub sign-in to the box, for a clone that wanted one.
+    pub(crate) bringing_github: bool,
     making: bool,
     project_name: Entity<InputState>,
     project_parent: Entity<InputState>,
@@ -750,6 +752,7 @@ impl Shell {
             focus_sheet: false,
             sheet_focus: cx.focus_handle(),
             sheet_error: None,
+            bringing_github: false,
             making: false,
             project_name,
             project_parent,

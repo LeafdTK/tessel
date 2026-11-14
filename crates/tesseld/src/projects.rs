@@ -42,8 +42,25 @@ fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
+/// a GitHub sign-in a mac brought here, as git takes it: the token in the
+/// environment, and a credential helper that hands it to github.com. read
+/// fresh each time, so one brought a minute ago works without a restart.
+pub fn github_auth(home: &Path, cmd: &mut Command) {
+    let token = std::fs::read_to_string(home.join("remote").join("gh-token")).ok().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+    let Some(token) = token.or_else(|| std::env::var("GH_TOKEN").ok().filter(|t| !t.is_empty())) else { return };
+    cmd.env("GH_TOKEN", &token).env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// git's own flags for that sign-in (only with a token to give).
+fn github_helper(cmd: &mut Command) -> &mut Command {
+    cmd.args(["-c", "credential.https://github.com.helper=", "-c", "credential.https://github.com.helper=!f() { test -n \"$GH_TOKEN\" && echo username=x-access-token && echo \"password=$GH_TOKEN\"; }; f"])
+}
+
+/// what a clone that failed for want of a sign-in says, so the app can offer one.
+pub const NEEDS_GITHUB: &str = "GitHub wants a sign-in on this machine to clone that.";
+
 /// make the project. its folder, and what its first session is asked.
-pub fn make(parent: &str, how: &ProjectHow) -> Result<(PathBuf, String), String> {
+pub fn make(home: &Path, parent: &str, how: &ProjectHow) -> Result<(PathBuf, String), String> {
     let parent = expand(parent);
     match how {
         ProjectHow::Clone { url, name } => {
@@ -52,7 +69,19 @@ pub fn make(parent: &str, how: &ProjectHow) -> Result<(PathBuf, String), String>
                 return Err(format!("{} already exists.", dir.display()));
             }
             let _ = std::fs::create_dir_all(&parent);
-            run(Command::new("git").arg("clone").arg(url).arg(&dir), "git clone")?;
+            let mut git = Command::new("git");
+            github_helper(&mut git);
+            github_auth(home, &mut git);
+            // never stop to ask for a password nobody can type.
+            git.env("GIT_TERMINAL_PROMPT", "0");
+            run(git.arg("clone").arg(url).arg(&dir), "git clone").map_err(|e| {
+                let l = e.to_lowercase();
+                if l.contains("could not read username") || l.contains("authentication failed") || l.contains("terminal prompts disabled") || l.contains("repository not found") {
+                    format!("{NEEDS_GITHUB} ({e})")
+                } else {
+                    e
+                }
+            })?;
             Ok((dir, String::new()))
         }
         ProjectHow::New { name, template, github } => {
@@ -61,12 +90,12 @@ pub fn make(parent: &str, how: &ProjectHow) -> Result<(PathBuf, String), String>
                 return Err("Give the project a name.".into());
             }
             let dir = parent.join(&folder);
-            new_project(&dir, name, template, *github).map(|prompt| (dir, prompt))
+            new_project(home, &dir, name, template, *github).map(|prompt| (dir, prompt))
         }
     }
 }
 
-fn new_project(dir: &Path, name: &str, template: &str, github: bool) -> Result<String, String> {
+fn new_project(home: &Path, dir: &Path, name: &str, template: &str, github: bool) -> Result<String, String> {
     if dir.exists() && std::fs::read_dir(dir).map(|mut d| d.next().is_some()).unwrap_or(false) {
         return Err(format!("{} already exists and isn't empty.", dir.display()));
     }
@@ -83,7 +112,9 @@ fn new_project(dir: &Path, name: &str, template: &str, github: bool) -> Result<S
     // it can fail (no git identity set up); the project is still usable.
     let _ = git(&["add", "-A"]).and_then(|_| git(&["commit", "-q", "-m", "chore: start the project"]));
     if github {
-        run(Command::new("gh").args(["repo", "create", &slug(name), "--private", "--source", ".", "--push"]).current_dir(dir), "gh repo create")?;
+        let mut gh = Command::new("gh");
+        github_auth(home, &mut gh);
+        run(gh.args(["repo", "create", &slug(name), "--private", "--source", ".", "--push"]).current_dir(dir), "gh repo create")?;
     }
     Ok(match template {
         "next" => "Set up a Next.js app in this empty repository with create-next-app: TypeScript, Tailwind and the App Router, in this folder rather than a new one. Then commit it.".into(),
@@ -116,11 +147,11 @@ mod tests {
     fn an_empty_project_is_a_git_repository_with_a_readme_and_never_overwrites() {
         let tmp = tempfile::tempdir().unwrap();
         let how = ProjectHow::New { name: "My App".into(), template: "empty".into(), github: false };
-        let (dir, prompt) = make(&tmp.path().to_string_lossy(), &how).unwrap();
+        let (dir, prompt) = make(tmp.path(), &tmp.path().to_string_lossy(), &how).unwrap();
         assert_eq!(dir, tmp.path().join("my-app"));
         assert!(dir.join(".git").is_dir() && dir.join("README.md").is_file());
         assert!(prompt.is_empty());
-        assert!(make(&tmp.path().to_string_lossy(), &how).is_err(), "never into a folder with things in it");
+        assert!(make(tmp.path(), &tmp.path().to_string_lossy(), &how).is_err(), "never into a folder with things in it");
         let (_, names, repo) = folders(&tmp.path().to_string_lossy()).unwrap();
         assert_eq!(names, vec!["my-app"]);
         assert!(!repo);

@@ -187,6 +187,43 @@ impl Shell {
         self.cmd(Cmd::Ask { tag: "project.folders", req: tessel_proto::Request::Folders { path } });
     }
 
+    /// the last clone failed for want of a GitHub sign-in, on a dev box.
+    fn wants_github(&self) -> bool {
+        self.hosts.list.current.is_some() && (self.bringing_github || self.sheet_error.as_deref().is_some_and(|e| e.starts_with("GitHub wants a sign-in")))
+    }
+
+    /// bring this mac's GitHub sign-in to the box shown, then try the clone again.
+    fn bring_github(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.hosts.list.current.clone() else { return };
+        let Some(host) = tessel_remote::hosts::Hosts::load(&self.hosts.home).get(&id).cloned() else { return };
+        let home = self.hosts.home.clone();
+        self.bringing_github = true;
+        self.sheet_error = None;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<(), String>>();
+        std::thread::spawn(move || {
+            let carry = tessel_remote::carry::Carry { gh: true, ..Default::default() };
+            let r = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())
+                .and_then(|rt| rt.block_on(tessel_remote::setup::bring(&home, &host, carry, &mut |_| {})).map_err(|e| format!("{e:#}")));
+            let _ = tx.send(r);
+        });
+        cx.spawn(async move |this, cx| {
+            let r = rx.recv().await.unwrap_or_else(|| Err("it stopped part way".into()));
+            let _ = this.update(cx, |this, cx| {
+                this.bringing_github = false;
+                match r {
+                    Ok(()) => this.make(cx),
+                    Err(e) => this.sheet_error = Some(format!("Couldn't bring it: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     /// make the project (or clone it) where the daemon is, then start a session in it.
     pub(crate) fn make(&mut self, cx: &mut Context<Self>) {
         let Some(sheet) = self.sheet else { return };
@@ -514,6 +551,20 @@ impl Shell {
                     .child(v_flex().gap_1().child(div().text_size(px(20.)).line_height(px(26.)).font_weight(FontWeight(650.)).child(title)).child(hint(about.into())))
                     .child(body)
                     .children(self.sheet_error.clone().map(|e| div().set(Type::Callout).text_color(p.failed).child(e)))
+                    // a clone on a dev box that wanted a sign-in: bring this mac's, then try again.
+                    .when(self.wants_github(), |d| {
+                        d.child(
+                            h_flex()
+                                .gap_3()
+                                .items_center()
+                                .child(
+                                    theme::button(&p, "bring-github", if self.bringing_github { "Bringing your GitHub sign-in…" } else { "Bring your GitHub sign-in" }, Some("github"), theme::ButtonKind::Secondary)
+                                        .test_support()
+                                        .when(!self.bringing_github, |b| b.on_click(cx.listener(|this, _, _, cx| this.bring_github(cx)))),
+                                )
+                                .child(div().set(Type::Subheadline).text_color(p.secondary).child("From this Mac's GitHub CLI. Agents there can push with it.")),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_2()

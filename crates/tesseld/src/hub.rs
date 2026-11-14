@@ -980,8 +980,9 @@ impl Hub {
                 });
             }
             Request::ProjectMake { parent, how } => {
+                let home = self.cfg.paths.home.clone();
                 return self.later(client, id, async move {
-                    tokio::task::spawn_blocking(move || crate::projects::make(&parent, &how))
+                    tokio::task::spawn_blocking(move || crate::projects::make(&home, &parent, &how))
                         .await
                         .map_err(|e| e.to_string())?
                         .map(|(dir, prompt)| Response::ProjectMade { dir: dir.to_string_lossy().into_owned(), prompt })
@@ -1535,7 +1536,16 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let cwd = live.state.meta.cwd.clone();
         let root = live.state.meta.worktree.as_ref().map_or_else(|| cwd.clone(), |w| w.repo.clone());
         let port = self.ports.of(&cwd);
-        crate::setup::env(&cwd, &root, port)
+        let mut env = crate::setup::env(&cwd, &root, port);
+        // sign-ins a mac brought here since the daemon started.
+        for (name, file) in [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token"), ("GH_TOKEN", "gh-token")] {
+            if let Ok(t) = std::fs::read_to_string(self.cfg.paths.home.join("remote").join(file))
+                && !t.trim().is_empty()
+            {
+                env.push((name.to_owned(), t.trim().to_owned()));
+            }
+        }
+        env
     }
 
     /// the session's mirror terminal, headed for one more of its agent's Bash
