@@ -114,6 +114,8 @@ pub struct Fork {
     permission_mode: Option<String>,
     /// the parent's repository, so a new worktree's project is the same one.
     repo: Option<String>,
+    /// only the conversation up to this message of the agent's (its id).
+    at: Option<String>,
 }
 
 struct Client {
@@ -167,8 +169,9 @@ struct Live {
     /// something only a fresh start picks up has changed (a linked folder).
     /// the agent is stopped as soon as it is idle and comes back on demand.
     restart_when_idle: bool,
-    /// a fork's parent conversation, until the agent has started one of its own.
-    fork_from: Option<String>,
+    /// a fork's parent conversation (and where in it to stop), until the agent
+    /// has started one of its own.
+    fork_from: Option<(String, Option<String>)>,
 }
 
 pub struct Hub {
@@ -911,7 +914,7 @@ impl Hub {
                     diff.map(|diff| Response::Diff { diff })
                 });
             }
-            Request::SessionFork { cmd_id, session, workspace } => {
+            Request::SessionFork { cmd_id, session, workspace, before } => {
                 if let Some(prev) = self.done.get(&cmd_id) {
                     return Some(Ok(prev.clone()));
                 }
@@ -920,10 +923,27 @@ impl Hub {
                 let Some(agent_id) = st.agent_session_id.clone() else {
                     return Some(Err(RpcError::new(ErrorCode::Conflict, "there's no conversation to fork yet: send it a message first")));
                 };
+                // from before one of your messages: the items before it, and the
+                // agent's conversation cut where that message was added to it.
+                let (items, at) = match &before {
+                    None => (st.items().to_vec(), None),
+                    Some(item) => {
+                        let Some(ix) = st.items().iter().position(|i| &i.id == item) else { return Some(Err(not_found_item(item))) };
+                        let tessel_proto::ItemBody::User { text, .. } = &st.items()[ix].body else {
+                            return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{item} isn't a message of yours"))));
+                        };
+                        let nth = st.items()[..ix].iter().filter(|i| matches!(&i.body, tessel_proto::ItemBody::User { text: t, .. } if t == text)).count();
+                        match cut_before(&agent_id, &st.meta.cwd, item.as_str(), text, nth) {
+                            Ok(at) => (st.items()[..ix].to_vec(), at),
+                            Err(e) => return Some(Err(RpcError::new(ErrorCode::Conflict, e))),
+                        }
+                    }
+                };
                 let fork = Fork {
                     agent_id,
                     from_cwd: st.meta.cwd.clone(),
-                    items: st.items().to_vec(),
+                    at,
+                    items,
                     effort: st.effort.clone(),
                     fast: st.fast,
                     permission_mode: st.permission_mode.clone(),
@@ -1664,7 +1684,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             {
                 eprintln!("tesseld: forking {}: {e}", f.agent_id);
             }
-            fork_from = Some(f.agent_id);
+            fork_from = Some((f.agent_id, f.at));
         }
         self.store.save(state.persisted(), state.items().to_vec());
         self.sessions.insert(
@@ -1782,10 +1802,14 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let known = live.state.agent_session_id.clone();
         // a fork's first start carries on from its parent's conversation under a new id.
         let fork = known.is_none().then(|| live.fork_from.clone()).flatten();
+        let resume_at = fork.as_ref().and_then(|(_, at)| at.clone());
+        // a fork from before the very first message has nothing to carry on from.
+        let fork = fork.filter(|(_, at)| at.as_deref() != Some(FROM_THE_START)).map(|(id, _)| id);
         let opts = SpawnOpts {
             cwd: cwd.into(),
             resume: known.is_some() || fork.is_some(),
             fork: fork.is_some(),
+            resume_at: resume_at.filter(|at| at != FROM_THE_START && fork.is_some()),
             agent_session_id: known.or(fork).unwrap_or_else(|| session.to_string()),
             model: live.state.model.clone(),
             permission_mode: live.state.permission_mode.clone(),
@@ -2132,6 +2156,10 @@ fn not_found(session: SessionId) -> RpcError {
     RpcError::new(ErrorCode::NotFound, format!("no session {session}"))
 }
 
+fn not_found_item(item: &tessel_proto::ItemId) -> RpcError {
+    RpcError::new(ErrorCode::NotFound, format!("no item {item}"))
+}
+
 /// the settings file, or the defaults when there is none or it can't be read.
 fn load_settings(path: &std::path::Path) -> tessel_proto::DaemonSettings {
     match std::fs::read(path) {
@@ -2160,6 +2188,56 @@ fn conversations_dir(cwd: &str) -> std::path::PathBuf {
 }
 
 /// put a copy of a conversation where an agent started in `to_cwd` will look for it.
+/// a fork's cut that leaves nothing of the conversation: the message was its first.
+const FROM_THE_START: &str = "-";
+
+/// where to cut the agent's conversation `agent_id` so it stops just before a
+/// message of yours (the `nth` + 1st with this `text`, or the one with the id
+/// `item`): the id of the entry it follows. `FROM_THE_START` if none does.
+fn cut_before(agent_id: &str, cwd: &str, item: &str, text: &str, nth: usize) -> Result<Option<String>, String> {
+    let projects = conversations_dir(cwd).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    let file = format!("{agent_id}.jsonl");
+    let at = conversations_dir(cwd).join(&file);
+    let path = if at.is_file() {
+        at
+    } else {
+        std::fs::read_dir(&projects).ok().and_then(|d| d.flatten().map(|d| d.path().join(&file)).find(|p| p.is_file())).ok_or("the conversation isn't on this machine any more")?
+    };
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("reading the conversation: {e}"))?;
+    cut_in(&raw, item, text, nth).map(Some).ok_or_else(|| "that message isn't in the agent's conversation".to_owned())
+}
+
+/// `cut_before` over the conversation's lines.
+fn cut_in(raw: &str, item: &str, text: &str, nth: usize) -> Option<String> {
+    let said = |v: &serde_json::Value| -> Option<String> {
+        let content = v.get("message")?.get("content")?;
+        if let Some(s) = content.as_str() {
+            return Some(s.to_owned());
+        }
+        let parts: Vec<&str> = content.as_array()?.iter().filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text")).filter_map(|b| b.get("text")?.as_str()).collect();
+        (!parts.is_empty()).then(|| parts.join("\n"))
+    };
+    let want = text.trim();
+    let mut seen = 0;
+    for line in raw.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") || v.get("isMeta").and_then(|m| m.as_bool()) == Some(true) {
+            continue;
+        }
+        let by_id = v.get("uuid").and_then(|u| u.as_str()) == Some(item);
+        let by_text = said(&v).is_some_and(|s| s.trim() == want);
+        if !by_id && !by_text {
+            continue;
+        }
+        if !by_id && seen < nth {
+            seen += 1;
+            continue;
+        }
+        return Some(v.get("parentUuid").and_then(|p| p.as_str()).map_or_else(|| FROM_THE_START.to_owned(), str::to_owned));
+    }
+    None
+}
+
 fn copy_conversation(agent_id: &str, to_cwd: &str) -> std::io::Result<()> {
     let projects = conversations_dir(to_cwd).parent().map(std::path::Path::to_path_buf).unwrap_or_default();
     let file = format!("{agent_id}.jsonl");
@@ -2171,6 +2249,24 @@ fn copy_conversation(agent_id: &str, to_cwd: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod fork_tests {
+    #[test]
+    fn a_fork_from_before_a_message_stops_at_what_it_followed() {
+        let raw = [
+            r#"{"type":"user","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"hello"}}"#,
+            r#"{"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"content":[{"type":"text","text":"hi"}]}}"#,
+            r#"{"type":"user","uuid":"m1","parentUuid":"a1","isMeta":true,"message":{"content":"<meta>"}}"#,
+            r#"{"type":"user","uuid":"u2","parentUuid":"a1","message":{"role":"user","content":[{"type":"text","text":"do the thing"}]}}"#,
+            r#"{"type":"assistant","uuid":"a2","parentUuid":"u2","message":{"content":[]}}"#,
+            r#"{"type":"user","uuid":"u3","parentUuid":"a2","message":{"role":"user","content":"do the thing"}}"#,
+        ]
+        .join("\n");
+        assert_eq!(super::cut_in(&raw, "x", "do the thing", 0).as_deref(), Some("a1"));
+        assert_eq!(super::cut_in(&raw, "x", "do the thing", 1).as_deref(), Some("a2"), "the second time it was said");
+        assert_eq!(super::cut_in(&raw, "x", "hello", 0).as_deref(), Some(super::FROM_THE_START), "the first message follows nothing");
+        assert_eq!(super::cut_in(&raw, "u3", "edited since", 0).as_deref(), Some("a2"), "the agent's own id finds it too");
+        assert_eq!(super::cut_in(&raw, "x", "never said", 0), None);
+    }
+
     #[test]
     fn a_folder_s_conversations_are_kept_under_its_resolved_path_with_dashes() {
         let d = super::conversations_dir("/no/such/place.v2");

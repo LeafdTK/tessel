@@ -393,7 +393,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `session.delete` | Delete a session |  | session |
 | `session.model` | Change the model |  | model, session? |
 | `session.tab` | New tab in this workspace |  | a new session in the open session's folder |
-| `session.fork` | Fork to new tab |  | workspace?: true for a new worktree; session?. carries the conversation on, and opens it |
+| `session.fork` | Fork to new tab |  | workspace?: true for a new worktree; before?: a message of yours (item id), to start from just before it with it in the message box; session?. carries the conversation on, and opens it |
+| `session.retry` | Try the last message again |  | model?: with this model instead; session?. sends your last message again |
 | `model.favorite` | Use favourite model 1 | ⌃ ⌘ 1 | n: 1-5, the favourite's place; session? |
 | `model.effort` | Think harder | ⇧ ⌘ E | effort?: low|medium|high|xhigh|max|default; without one, the next level up; session? |
 | `model.fast` | Fast mode on or off | ⌥ ⌘ F | fast?: true|false; without it, flips; session? |

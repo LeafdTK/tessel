@@ -893,7 +893,7 @@ impl Shell {
                 }
             }
             UiEvent::Models(models, commands) => {
-                self.models = models;
+                self.models = models::with_catalogue(models);
                 self.slash_commands = commands;
             }
             UiEvent::Git { session, summary } => self.apply_git(session, summary),
@@ -1084,6 +1084,10 @@ impl Shell {
             ev @ (UiEvent::BrowserFrame { .. } | UiEvent::BrowserState { .. } | UiEvent::BrowserPicked { .. } | UiEvent::BrowserActivity { .. } | UiEvent::BrowserEngine(_)) => self.browser_event(ev, cx),
             UiEvent::Answer { .. } => {}
             ev @ (UiEvent::Terms(_) | UiEvent::TermOpened { .. } | UiEvent::TermOutput(..) | UiEvent::TermUpdated(_) | UiEvent::TermRemoved(_)) => self.term_event(ev, cx),
+            UiEvent::Draft { session, text } => {
+                self.drafts.insert(session, text);
+                self.focus_composer_next = true;
+            }
             UiEvent::Created => {
                 self.show_new = false;
                 self.error = None;
@@ -2103,8 +2107,17 @@ impl Shell {
                 Some(self.turn_footer(session, ix, &item.id, *started_ms, *finished_ms, *duration_ms, *cost_usd, model.as_deref(), *fast, *usage, files, me))
             }
             ItemBody::Notice { level, text } => {
-                let color = if *level == NoticeLevel::Error { p.failed } else { p.secondary };
-                Some(h_flex().justify_center().set(Type::Subheadline).text_color(color).child(sentence(text)).into_any_element())
+                let failed = *level == NoticeLevel::Error;
+                let color = if failed { p.failed } else { p.secondary };
+                // long errors wrap, centred, instead of running off the window.
+                let line = div().w_full().min_w_0().px(px(12.)).text_center().whitespace_normal().set(Type::Subheadline).text_color(color).child(sentence(text));
+                // the turn that failed is the last thing here: ways out of it.
+                let last = failed && self.model.open_of(session).is_some_and(|o| ((ix + 1)..o.len()).all(|j| !o.row(j).is_some_and(|(i, d)| d == 0 && matches!(&i.body, ItemBody::User { text, .. } if from_person(text)))));
+                let said = self.model.open_of(session).and_then(last_said);
+                Some(match (last, said) {
+                    (true, Some((said_id, _))) => v_flex().w_full().items_center().gap(px(8.)).child(line).child(self.failed_actions(said_id, me)).into_any_element(),
+                    _ => line.into_any_element(),
+                })
             }
             ItemBody::Unknown => None,
         };
@@ -2119,12 +2132,24 @@ impl Shell {
             None => body,
             Some(text) => {
                 let group = SharedString::from(format!("row-{}", item.id));
+                // yours can be said again differently: a new tab from just before it.
+                let edit = matches!(&item.body, ItemBody::User { .. }).then(|| {
+                    let (me, said) = (me.downgrade(), item.id.clone());
+                    Button::new(("edit", ix))
+                        .ghost()
+                        .xsmall()
+                        .icon(gpui_kit::component::Icon::empty().path("icons/pencil.svg"))
+                        .tooltip("Edit from here, in a new tab")
+                        .on_click(move |_, window, cx| {
+                            let _ = me.update(cx, |this, cx| this.run_key("session.fork", serde_json::json!({ "before": said.as_str() }), window, cx));
+                        })
+                });
                 div()
                     .relative()
                     .group(group.clone())
                     .child(body)
                     .child(
-                        div().absolute().top(px(-6.)).right(px(-6.)).invisible().group_hover(group, |s| s.visible()).child(
+                        h_flex().absolute().top(px(-6.)).right(px(-6.)).invisible().group_hover(group, |s| s.visible()).children(edit).child(
                             Button::new(("copy", ix))
                                 .ghost()
                                 .xsmall()
@@ -3239,6 +3264,62 @@ impl Shell {
         crate::glass::backdrop(view, Some((frame.as_raw(), frame.width(), frame.height(), scale)));
         crate::glass::hold(true);
         self.frozen = true;
+    }
+}
+
+/// your last message in a session: its item and what it said.
+pub(crate) fn last_said(open: &crate::model::Open) -> Option<(ItemId, String)> {
+    open.items().iter().rev().find_map(|i| match &i.body {
+        ItemBody::User { text, .. } if from_person(text) && !text.trim().is_empty() => Some((i.id.clone(), text.clone())),
+        _ => None,
+    })
+}
+
+impl Shell {
+    /// under a turn that failed (a refusal, an error): send it again, send it
+    /// to another model, or say it differently from just before it.
+    fn failed_actions(&self, said: ItemId, me: &Entity<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let weak = me.downgrade();
+        let current = self.model.open_summary().and_then(|s| s.model.clone());
+        let others: Vec<(String, String)> = self.favorites().into_iter().filter(|f| current.as_deref() != Some(f.model.as_str())).map(|f| (f.model.clone(), self.model_name(&f.model))).collect();
+        let retry = {
+            let weak = weak.clone();
+            theme::button(&p, "failed-retry", "Try again", Some("rotate-ccw"), theme::ButtonKind::Secondary).test_support().on_click(move |_, window, cx| {
+                let _ = weak.update(cx, |this, cx| this.run_key("session.retry", serde_json::json!({}), window, cx));
+            })
+        };
+        let edit = {
+            let (weak, said) = (weak.clone(), said.clone());
+            theme::button(&p, "failed-edit", "Edit and send again", Some("pencil"), theme::ButtonKind::Secondary)
+                .test_support()
+                .tooltip(|w, cx| gpui_kit::component::tooltip::Tooltip::new("A new tab from just before your message, with it in the box to change").build(w, cx))
+                .on_click(move |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.run_key("session.fork", serde_json::json!({ "before": said.as_str() }), window, cx));
+                })
+        };
+        let models = gpui_kit::component::popover::Popover::new("failed-models")
+            .p_0()
+            .anchor(Anchor::TopLeft)
+            .trigger(Button::new("failed-model").outline().small().label("Try another model").icon(gpui_kit::component::Icon::empty().path("icons/chevron-down.svg")))
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = weak.upgrade() else { return div().into_any_element() };
+                let p = shell.read(cx).palette.get();
+                let mut list = theme::float_list(&p).w(px(220.));
+                for (i, (model, name)) in others.iter().enumerate() {
+                    let (weak, popover, model) = (weak.clone(), popover.clone(), model.clone());
+                    list = list.child(theme::float_item(&p, SharedString::from(format!("failed-model-{i}")), Some("box"), name.clone(), None, false).test_support().on_click(move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        let _ = weak.update(cx, |this, cx| this.run_key("session.retry", serde_json::json!({ "model": model }), window, cx));
+                    }));
+                }
+                if others.is_empty() {
+                    list = list.child(div().px_2().py_2().set(Type::Callout).text_color(p.secondary).child("Add models in Settings, Models."));
+                }
+                list.into_any_element()
+            });
+        h_flex().flex_wrap().justify_center().gap(px(6.)).child(retry).child(models).child(edit).into_any_element()
     }
 }
 

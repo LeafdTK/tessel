@@ -266,6 +266,10 @@ pub enum Request {
         /// a new workspace (worktree) rather than a tab in the same one.
         #[serde(default)]
         workspace: bool,
+        /// the conversation as it was before this message of yours (a `User`
+        /// item), to say it again differently. none: all of it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<crate::ItemId>,
     },
     /// what a folder is, before there's a session in it: whether it's in a git
     /// repository (so a session there can have a worktree of its own).

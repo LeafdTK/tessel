@@ -1369,7 +1369,7 @@ async fn a_conversation_forks_into_a_new_tab_that_carries_on_from_it() {
     let d = Daemon::start(&["plain", "plain"]).await;
     let (c, _) = d.client().await;
     let s = create(&c, &d.cwd(), None).await;
-    let fork = |id| Request::SessionFork { cmd_id: Uuid::new_v4(), session: id, workspace: false };
+    let fork = |id| Request::SessionFork { cmd_id: Uuid::new_v4(), session: id, workspace: false, before: None };
     // nothing said yet: nothing to fork.
     assert!(c.request(fork(s.id)).await.unwrap_err().to_string().contains("send it a message first"));
 

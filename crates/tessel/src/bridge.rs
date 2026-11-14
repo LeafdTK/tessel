@@ -28,7 +28,9 @@ pub enum Cmd {
     BrowserHost,
     Create { cwd: String, worktree: bool, prompt: String, attachments: Vec<tessel_proto::Attachment> },
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
-    Fork { session: SessionId, workspace: bool },
+    /// a new session carrying on this one's conversation; `before` a message of
+    /// yours: only what came before it, with `draft` in its message box.
+    Fork { session: SessionId, workspace: bool, before: Option<tessel_proto::ItemId>, draft: Option<String> },
     Send { session: SessionId, text: String, attachments: Vec<Attachment> },
     SetModel { session: SessionId, model: String },
     SetEffort { session: SessionId, effort: Option<String> },
@@ -98,6 +100,8 @@ pub enum UiEvent {
     Pr { session: SessionId, status: PrStatus },
     /// a session we asked for was created and is now the open one.
     Created,
+    /// what a session's message box starts with (a fork from before a message).
+    Draft { session: SessionId, text: String },
     /// a script wants a window command run.
     Call { call: u64, cmd: String, args: serde_json::Value },
     /// whether anyone listens to what the window publishes.
@@ -544,9 +548,12 @@ async fn session(
                             Err(e) => Err(e),
                         }
                     }
-                    Cmd::Fork { session, workspace } => match client.request(Request::SessionFork { cmd_id: Uuid::new_v4(), session, workspace }).await {
+                    Cmd::Fork { session, workspace, before, draft } => match client.request(Request::SessionFork { cmd_id: Uuid::new_v4(), session, workspace, before }).await {
                         Ok(Response::Session { summary }) => {
                             let id = summary.id;
+                            if let Some(text) = draft {
+                                let _ = ui.send(UiEvent::Draft { session: id, text });
+                            }
                             let _ = ui.send(UiEvent::Session(summary));
                             let _ = ui.send(UiEvent::Created);
                             open.open = Some(id);

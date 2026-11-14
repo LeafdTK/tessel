@@ -15,6 +15,9 @@ pub struct SpawnOpts {
     pub resume: bool,
     /// with `resume`: carry on from that conversation under a new id, leaving it as it was.
     pub fork: bool,
+    /// with `resume`: only the conversation up to and including this message
+    /// (the agent's own id for it); what came after is left out.
+    pub resume_at: Option<String>,
     pub model: Option<String>,
     /// start in this permission mode instead of the user's default.
     pub permission_mode: Option<String>,

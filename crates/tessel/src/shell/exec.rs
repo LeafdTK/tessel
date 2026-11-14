@@ -280,7 +280,26 @@ impl Shell {
             "session.fork" => {
                 let id = self.session_arg(args)?;
                 let workspace = args.get("workspace").and_then(Value::as_bool).unwrap_or(false);
-                self.cmd(Cmd::Fork { session: id, workspace });
+                let (before, draft) = match arg(args, "before") {
+                    None => (None, None),
+                    Some(item) => {
+                        let open = self.model.open_of(id).ok_or("open the session first")?;
+                        let found = open.items().iter().find(|i| i.id.as_str() == item).ok_or_else(|| format!("no message {item} in this session"))?;
+                        let ItemBody::User { text, .. } = &found.body else { return Err(format!("{item} isn't a message of yours")) };
+                        (Some(found.id.clone()), Some(text.clone()))
+                    }
+                };
+                self.cmd(Cmd::Fork { session: id, workspace, before, draft });
+                done
+            }
+            "session.retry" => {
+                let id = self.session_arg(args)?;
+                let open = self.model.open_of(id).ok_or("open the session first")?;
+                let text = super::last_said(open).map(|(_, t)| t).ok_or("there's no message of yours to send again")?;
+                if let Some(model) = arg(args, "model") {
+                    self.cmd(Cmd::SetModel { session: id, model: model.to_owned() });
+                }
+                self.cmd(Cmd::Send { session: id, text, attachments: Vec::new() });
                 done
             }
             "session.mode" => {
