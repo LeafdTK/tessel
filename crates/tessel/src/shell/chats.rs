@@ -232,7 +232,7 @@ impl Shell {
             )
             .children(status.map(|(ink, what)| div().flex_shrink_0().max_w(px(260.)).truncate().set(Type::Callout).text_color(ink).child(what)));
         let body: AnyElement = if loaded {
-            self.transcript_el_for(view.scroller.clone(), view.session, cx).size_full().into_any_element()
+            self.transcript_el_for(view.scroller.clone(), view.session, 0., cx).size_full().into_any_element()
         } else {
             h_flex().size_full().justify_center().items_center().set(Type::Callout).text_color(p.tertiary).child("Loading…").into_any_element()
         };

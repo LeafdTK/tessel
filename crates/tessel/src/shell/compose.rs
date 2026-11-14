@@ -560,19 +560,22 @@ impl Shell {
 
     pub(crate) fn transcript_el(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let session = self.model.open.as_ref().map(|o| o.id).or(self.awaiting).unwrap_or(SessionId(uuid::Uuid::nil()));
-        self.transcript_el_for(self.scroller.clone(), session, cx)
+        self.transcript_el_for(self.scroller.clone(), session, 0., cx)
     }
 
     /// a chat's transcript with its own scroll. built the same way whether its
     /// pane is focused or not, so the elements keep their identity when focus
     /// moves under a click.
-    pub(crate) fn transcript_el_for(&self, scroller: Entity<MessageScrollerState>, session: SessionId, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// `inset`: room under the last row, for something floating over the
+    /// list's end (the message box, as glass) to sit over without hiding it.
+    pub(crate) fn transcript_el_for(&self, scroller: Entity<MessageScrollerState>, session: SessionId, inset: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = self.palette.get();
         let this = cx.entity();
         // the list's default puts 2rem under every row, which suits chat
         // bubbles and not a dense log of tool calls. rows space themselves.
         let list = MessageScroller::new("transcript", scroller, move |ix, _window, cx| this.read(cx).row_in(session, ix, &this, cx))
-            .with_row_style(StyleRefinement::default().pb_0().px_0());
+            .with_row_style(StyleRefinement::default().pb_0().px_0())
+            .with_list_style(if inset > 0. { StyleRefinement::default().pb(px(inset)) } else { StyleRefinement::default() });
         let truncated = self.model.open_of(session).is_some_and(|o| o.has_more);
         div()
             .id("transcript-pane")

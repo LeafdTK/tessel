@@ -181,6 +181,8 @@ pub struct Shell {
     /// half-written messages, one per chat, so every pane showing a chat
     /// shares its draft and moving between chats keeps each one.
     pub(crate) drafts: HashMap<SessionId, String>,
+    /// how tall the message box floating over the chat is (liquid glass).
+    pub(crate) dock_h: std::rc::Rc<std::cell::Cell<f32>>,
     /// a draft to put in the message box at the next frame (it needs the window).
     pub(crate) draft_to_set: Option<String>,
     /// put the cursor in the message box at the next frame.
@@ -392,8 +394,6 @@ pub struct Shell {
     bench_on_launch: bool,
     bench_from: Option<Instant>,
     have_sessions: bool,
-    /// a modal is up over a picture of the window, under liquid glass.
-    pub(crate) frozen: bool,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
 }
@@ -681,6 +681,7 @@ impl Shell {
             chat_pane: None,
             views: HashMap::new(),
             drafts: HashMap::new(),
+            dock_h: std::rc::Rc::new(std::cell::Cell::new(0.)),
             draft_to_set: None,
             focus_composer_next: false,
             followed: Vec::new(),
@@ -802,7 +803,6 @@ impl Shell {
             bench_on_launch: launch.bench_motion,
             bench_from: launch.bench_from,
             have_sessions: false,
-            frozen: false,
             _subscriptions: subscriptions,
             _tasks: vec![pump, clock, beat],
         };
@@ -1660,7 +1660,9 @@ impl Shell {
             .pl(px(SESSION_INDENT))
             .pr_2()
             .rounded(px(theme::R_TILE))
-            .when(selected, |d| d.bg(p.selection))
+            // liquid: the chat you're in is a bead of glass tinted with the accent.
+            .when(selected && crate::glass::liquid(), |d| d.child(glass_spot_tinted(theme::R_TILE, p.accent.opacity(0.28))))
+            .when(selected && !crate::glass::liquid(), |d| d.bg(p.selection))
             .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
             .child(
@@ -1990,7 +1992,9 @@ impl Shell {
             ),
             ItemBody::User { text, attachments } => {
                 // it hugs what you wrote; a full-width bar would read as a heading.
-                let bubble = div().max_w(relative(0.8)).px(px(16.)).py(px(10.)).rounded(px(18.)).bg(p.fill).set(Type::Prose).text_color(p.label).child(text.clone());
+                let bubble = div().max_w(relative(0.8)).px(px(16.)).py(px(10.)).rounded(px(18.)).set(Type::Prose).text_color(p.label);
+                // liquid: a bead of glass with the accent in it; the pane's colour shows through.
+                let bubble = if crate::glass::liquid() { bubble.relative().child(glass_tinted(18., p.accent.opacity(0.14))) } else { bubble.bg(p.fill) }.child(text.clone());
                 let sent = (!attachments.is_empty()).then(|| div().px_1().set(Type::Subheadline).text_color(p.secondary).child(format!("With {}", attachments.join(", "))));
                 let col = if self.transcript_opts.user_left { v_flex().items_start() } else { v_flex().items_end() };
                 Some(col.gap_1().when(!text.trim().is_empty(), |d| d.child(bubble)).children(sent).into_any_element())
@@ -2390,7 +2394,9 @@ impl Shell {
         for (ix, req) in pending.iter().enumerate() {
             // orchard's card: raised on a hairline, a soft shadow; what it needs from
             // you is said by the blue dot and the words, not by a coloured frame.
-            let mut card = v_flex().p(px(14.)).gap(px(10.)).rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.raised).shadow_sm();
+            let mut card = v_flex().relative().p(px(14.)).gap(px(10.)).rounded(px(theme::R_CARD)).border_1().border_color(p.separator);
+            // liquid: glass with the colour of waiting on you in it, over the chat it floats on.
+            card = if crate::glass::liquid() { card.child(glass_tinted(theme::R_CARD, p.blocked.opacity(0.22))) } else { card.bg(p.raised).shadow_sm() };
             if req.plan.is_some() {
                 // the plan itself is in the transcript, right above.
                 let (approve, back) = (req.request_id.clone(), req.request_id.clone());
@@ -2635,14 +2641,12 @@ impl Render for Shell {
         // felt: the cloth is drawn under everything, and the frame is clear over it.
         let glass = self.ui.theme.glass.unwrap_or(false);
         let felt = self.felt_on();
-        self.freeze_for_modal(window);
-        let frozen = self.frozen;
         div()
             .id("shell")
             .relative()
             .size_full()
-            .when(!glass && !frozen, |d| d.bg(p.window))
-            .when(felt && !frozen, |d| d.child(self.felt_el(cx)))
+            .when(!glass, |d| d.bg(p.window))
+            .when(felt, |d| d.child(self.felt_el(cx)))
             .text_color(p.label)
             .set(Type::Body)
             .when_some(font, |d, f| d.font_family(f))
@@ -2698,8 +2702,7 @@ impl Render for Shell {
             .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| this.dictate_modifiers(&ev.modifiers, window, cx)))
             // a click outside a page takes the keyboard back from it.
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, window, cx| this.page_focus(ev.position, window, cx)))
-            // under a modal the window is a picture of itself (see `freeze_for_modal`).
-            .children(root.filter(|_| !frozen))
+            .children(root)
             // a broken layout file is said over the top of everything, so no
             // layout can hide its own mistake.
             .when_some(self.ui_error.clone(), |d, e| {
@@ -3238,32 +3241,25 @@ impl Render for TurnTip {
 }
 
 impl Shell {
-    /// a modal opening: the window as it is becomes a picture under native
-    /// liquid glass, and only the modal is drawn over it (so the glass bends the
-    /// window itself). closing: the window comes back.
-    fn freeze_for_modal(&mut self, window: &mut Window) {
-        // not on yet: the picture doesn't show through gpui's view so far.
-        // `TESSEL_GLASS_MODALS=1` tries it.
-        let modal = (self.settings_open || self.flow_open()) && std::env::var_os("TESSEL_GLASS_MODALS").is_some();
-        if modal == self.frozen || !crate::glass::available() {
-            return;
-        }
-        let view = view_of(window).unwrap_or(0);
-        if !modal {
-            crate::glass::backdrop(view, None);
-            crate::glass::hold(false);
-            self.frozen = false;
-            return;
-        }
-        // the frame before this one: the window without the modal.
-        let Ok(frame) = window.render_to_image() else { return };
-        let scale = window.scale_factor();
-        if (frame.width() as f32 - f32::from(window.viewport_size().width) * scale).abs() > 2.0 {
-            return;
-        }
-        crate::glass::backdrop(view, Some((frame.as_raw(), frame.width(), frame.height(), scale)));
-        crate::glass::hold(true);
-        self.frozen = true;
+    /// colour washed through a solid pane, for the glass in front of it to
+    /// bend: soft light in the accent and the project's hue, from the corners.
+    pub(crate) fn wash_el(&self) -> AnyElement {
+        let p = self.palette.get();
+        let strength = if p.dark { 0.6 } else { 0.8 };
+        let hues = [p.accent.h, self.backdrop_hue(), (p.accent.h + 0.42).rem_euclid(1.0)];
+        let blob = |hue: f32, size: f32| {
+            let c = gpui_kit::hsla(hue, 0.95, if p.dark { 0.48 } else { 0.6 }, strength);
+            div().absolute().size(px(size)).rounded_full().shadow(vec![gpui_kit::BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(size * 0.9), spread_radius: px(size * 0.15), inset: false }])
+        };
+        div()
+            .absolute()
+            .inset_0()
+            .overflow_hidden()
+            .rounded(px(theme::R_PANEL))
+            .child(blob(hues[0], 420.).top(px(-160.)).right(px(-140.)))
+            .child(blob(hues[1], 460.).bottom(px(-180.)).left(px(-160.)))
+            .child(blob(hues[2], 300.).top(relative(0.4)).right(px(-120.)))
+            .into_any_element()
     }
 }
 
@@ -3327,10 +3323,50 @@ impl Shell {
 /// its place each frame, and a native pane of glass is laid under it (see
 /// `glass`). where the system has no liquid glass, nothing.
 pub(crate) fn glass_spot(radius: f32) -> impl IntoElement {
+    glass_el(radius, false, None)
+}
+
+/// liquid glass floating over the window's own drawing (a sheet, the message
+/// box): what's drawn before it and under it shows through it, bent and lit,
+/// live. put it first in the surface, before what's on it: the renderer draws
+/// what's painted after it, over it, above the glass.
+pub(crate) fn glass_float(radius: f32) -> impl IntoElement {
+    glass_el(radius, true, None)
+}
+
+/// floating glass with a colour in it.
+pub(crate) fn glass_tinted(radius: f32, tint: Hsla) -> impl IntoElement {
+    glass_el(radius, true, Some(tint))
+}
+
+/// glass under the window's drawing (it bends the desktop) with a colour in it.
+pub(crate) fn glass_spot_tinted(radius: f32, tint: Hsla) -> impl IntoElement {
+    glass_el(radius, false, Some(tint))
+}
+
+fn glass_el(radius: f32, float: bool, tint: Option<Hsla>) -> impl IntoElement {
     canvas(
         |_, _, _| {},
-        move |b, _, _, _| crate::glass::spot(crate::glass::Spot { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height), radius }),
+        move |b, _, window, _| {
+            // only as much of it as shows: a bubble scrolled half out of its
+            // pane has glass only where it's still in it.
+            let b = if float { b.intersect(&window.content_mask().bounds) } else { b };
+            if b.size.width <= px(0.) || b.size.height <= px(0.) {
+                return;
+            }
+            crate::glass::set_scale(window.scale_factor());
+            let spot = crate::glass::Spot { x: f32::from(b.origin.x), y: f32::from(b.origin.y), w: f32::from(b.size.width), h: f32::from(b.size.height), radius, tint };
+            if !float {
+                return crate::glass::spot(spot);
+            }
+            // the mark: over the glass, so all painted after it there is drawn
+            // over the glass. clear, so never seen.
+            if let Some(i) = crate::glass::float(spot) {
+                window.paint_quad(gpui_kit::fill(b, gpui_kit::hsla(0., 0., 0., 0.0005)).border_color(crate::glass::mark(i)));
+            }
+        },
     )
     .absolute()
     .inset_0()
 }
+

@@ -285,7 +285,7 @@ impl Shell {
     }
 
     /// the hue for the room: the open session's project, else the one a new session would start in.
-    fn backdrop_hue(&self) -> f32 {
+    pub(crate) fn backdrop_hue(&self) -> f32 {
         let name = match self.model.open_summary().filter(|_| !self.show_new) {
             Some(s) => project_name(s),
             None => self.new_folder().as_deref().map(projects::folder_name).unwrap_or_default(),

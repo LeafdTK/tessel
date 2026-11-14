@@ -65,3 +65,9 @@ opt-level = 0
 [profile.release]
 lto = "thin"
 codegen-units = 4
+
+# gpui's metal renderer, patched so apple's liquid glass can sit between two
+# layers of tessel's drawing and bend what's under it (see
+# vendor/gpui-pre-apple/src/glass_split.rs). same version as gpui-kit pins.
+[patch.crates-io]
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }

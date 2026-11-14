@@ -43,3 +43,6 @@ rich = ["dep:tessel-rich"]
 objc2 = "0.6"
 block2 = "0.6"
 raw-window-handle = "0.6"
+# gpui's renderer (patched, see the workspace manifest): told where the layer
+# over the liquid glass is.
+gpui-pre-apple = { version = "=0.3.12", default-features = false }

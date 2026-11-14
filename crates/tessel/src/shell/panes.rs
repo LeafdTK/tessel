@@ -517,9 +517,6 @@ impl Shell {
         if live {
             controls = controls.child(self.new_pane_menu(id, &trail, cx)).child(self.pane_menu(id, &trail, module, cx));
         }
-        // only worth marking when there is more than one pane to choose between.
-        let open_panes = self.ui.panes().iter().filter(|p| self.pane_open(p)).count();
-        let focused = self.pane_focus.as_deref() == Some(id) && open_panes > 1 && self.pane_zoom.is_none();
         let pid = id.to_owned();
         // the grip: hold it to carry the pane somewhere else.
         let grip = div()
@@ -609,10 +606,8 @@ impl Shell {
             })
             // one floating over the others casts a deeper shadow.
             .when(pane.is_some_and(|p| p.pip.is_some()) && !compact, |d| d.shadow_xl())
-            // the pane your keys act on wears a faint ring of the accent.
-            .border_color(if focused {
-                p.accent.opacity(0.35)
-            } else if felt {
+            // every pane wears the same quiet edge, focused or not.
+            .border_color(if felt {
                 gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.12 })
             } else {
                 p.separator
@@ -626,9 +621,11 @@ impl Shell {
                     this.focus_chat_pane(&fid, cx);
                 }
             }))
-            // liquid glass: the pane is a pane of glass, drawn on clear.
-            .when(!open_sky && !crate::glass::liquid(), |d| d.bg(p.window))
-            .when(!open_sky && crate::glass::liquid() && !compact, |d| d.relative().child(super::glass_spot(theme::R_PANEL)))
+            .when(!open_sky, |d| d.bg(p.window))
+            // liquid glass: the pane is solid, with colour washed through it,
+            // so the glass in front of it (the bubbles, the message box) has
+            // something to bend.
+            .when(!open_sky && crate::glass::liquid(), |d| d.relative().child(self.wash_el()))
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))
@@ -769,7 +766,7 @@ impl Shell {
             .border_1()
             .border_color(p.separator)
             .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_md())
-            .when(crate::glass::liquid(), |d| d.child(super::glass_spot(f32::from(theme::z(theme::R_CARD + 4.)))))
+            .when(crate::glass::liquid(), |d| d.child(super::glass_float(f32::from(theme::z(theme::R_CARD + 4.)))))
             // while a menu is up, its keys are its own.
             .children(self.mention_menu(cx))
             .children(self.attachment_chips(cx))
@@ -840,16 +837,71 @@ impl Shell {
                     )
                 })
         });
-        let composer = v_flex().children(working).child(composer).child(hints);
-        v_flex()
+        let session = self.model.open.as_ref().map(|o| o.id).or(self.awaiting).unwrap_or(SessionId(uuid::Uuid::nil()));
+        let top = v_flex()
             .size_full()
             .children(self.workspace_tabs_el(cx))
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
-            .children(self.shipped_el(cx))
-            .child(div().flex_1().min_h_0().relative().child(self.transcript_el(cx).size_full()).child(self.message_rail(cx)))
-            .child(h_flex().justify_center().children(self.prompts_el(cx).map(|d| column().child(d))))
-            .child(h_flex().justify_center().pb_4().pt_1().child(column().child(composer)))
-            .into_any_element()
+            .children(self.shipped_el(cx));
+        if !crate::glass::liquid() {
+            let composer = v_flex().children(working).child(composer).child(hints);
+            return top
+                .child(div().flex_1().min_h_0().relative().child(self.transcript_el_for(self.scroller.clone(), session, 0., cx).size_full()).child(self.message_rail(cx)))
+                .child(h_flex().justify_center().children(self.prompts_el(cx).map(|d| column().child(d))))
+                .child(h_flex().justify_center().pb_4().pt_1().child(column().child(composer)))
+                .into_any_element();
+        }
+        // liquid glass: the message box floats over the end of the chat, which
+        // scrolls on under it and shows through, bent. the chat keeps room at
+        // its end as tall as what floats, so the last line still comes clear.
+        let dock_h = self.dock_h.clone();
+        let scroller = self.scroller.clone();
+        let measure = canvas(
+            move |b, _, cx| {
+                let h = f32::from(b.size.height);
+                if (h - dock_h.get()).abs() > 1. {
+                    dock_h.set(h);
+                    let scroller = scroller.clone();
+                    cx.defer(move |cx| {
+                        scroller.update(cx, |s, cx| {
+                            let n = s.item_count();
+                            if n > 0 {
+                                s.remeasure_items(n - 1..n, cx);
+                            }
+                        });
+                    });
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        let dock = v_flex()
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .items_center()
+            .child(measure)
+            .children(self.prompts_el(cx).map(|d| column().child(d)))
+            .child(column().child(v_flex().children(working.map(|w| {
+                // what it's doing, on a little pane of glass of its own: tinted
+                // with the colour of work going on.
+                h_flex().mb(theme::z(8.)).child(
+                    div().relative().pt(theme::z(7.)).pr(theme::z(4.)).rounded_full().child(super::glass_tinted(f32::from(theme::z(15.)), p.blocked.opacity(0.18))).child(w),
+                )
+            })).child(composer)));
+        top.child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .relative()
+                .child(self.transcript_el_for(self.scroller.clone(), session, self.dock_h.get() + 14., cx).size_full())
+                .child(self.message_rail(cx))
+                .child(dock),
+        )
+        .child(h_flex().justify_center().pt(theme::z(4.)).pb_3().child(column().child(hints)))
+        .into_any_element()
     }
 
     /// an empty pane offers every module.
