@@ -121,6 +121,7 @@ pub(crate) fn layers(scene: &Scene, marks: &[(usize, DrawOrder, Bounds<ScaledPix
         surfaces: scene.surfaces.iter().map(|p| of(p.order, &p.bounds, &p.content_mask.bounds)).collect(),
         top: 0,
     };
+    lift(scene, &mut l);
     l.top = [&l.shadows, &l.quads, &l.paths, &l.underlines, &l.monochrome_sprites, &l.polychrome_sprites, &l.surfaces]
         .iter()
         .flat_map(|v| v.iter())
@@ -128,6 +129,70 @@ pub(crate) fn layers(scene: &Scene, marks: &[(usize, DrawOrder, Bounds<ScaledPix
         .max()
         .unwrap_or(0) as usize;
     l
+}
+
+/// keep the frame's order across layers: whatever is drawn after something it
+/// overlaps must be in that thing's layer or one over it. (a menu over the
+/// message box: its sheet reaches onto the glass and is lifted over it, so the
+/// words on the sheet, though they don't reach the glass, must be lifted too.)
+/// walked in draw order over a coarse grid of the frame, each cell holding the
+/// highest layer drawn into it so far.
+fn lift(scene: &Scene, l: &mut Layers) {
+    if l.shadows.iter().chain(&l.quads).chain(&l.paths).chain(&l.underlines).chain(&l.monochrome_sprites).chain(&l.polychrome_sprites).chain(&l.surfaces).all(|x| *x == 0) {
+        return;
+    }
+    const CELL: f32 = 32.0;
+    // every primitive as (order, kind, index, its visible bounds).
+    let mut all: Vec<(DrawOrder, u8, usize, Bounds<ScaledPixels>)> = Vec::new();
+    let mut add = |kind: u8, i: usize, order: DrawOrder, b: &Bounds<ScaledPixels>, mask: &Bounds<ScaledPixels>| all.push((order, kind, i, b.intersect(mask)));
+    for (i, p) in scene.shadows.iter().enumerate() { add(0, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.quads.iter().enumerate() { add(1, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.paths.iter().enumerate() { add(2, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.underlines.iter().enumerate() { add(3, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.monochrome_sprites.iter().enumerate() { add(4, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.polychrome_sprites.iter().enumerate() { add(5, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    for (i, p) in scene.surfaces.iter().enumerate() { add(6, i, p.order, &p.bounds, &p.content_mask.bounds) }
+    all.sort_by_key(|p| p.0);
+    let (mut cols, mut rows) = (1usize, 1usize);
+    for (_, _, _, b) in &all {
+        cols = cols.max(((b.origin.x.0 + b.size.width.0) / CELL).ceil().max(0.0) as usize + 1);
+        rows = rows.max(((b.origin.y.0 + b.size.height.0) / CELL).ceil().max(0.0) as usize + 1);
+    }
+    let (cols, rows) = (cols.min(512), rows.min(512));
+    let mut grid = vec![0u8; cols * rows];
+    for (_, kind, i, b) in all {
+        if b.size.width.0 <= 0.0 || b.size.height.0 <= 0.0 {
+            continue;
+        }
+        let x0 = ((b.origin.x.0 / CELL).floor().max(0.0) as usize).min(cols - 1);
+        let y0 = ((b.origin.y.0 / CELL).floor().max(0.0) as usize).min(rows - 1);
+        let x1 = (((b.origin.x.0 + b.size.width.0) / CELL).ceil().max(0.0) as usize).clamp(x0 + 1, cols);
+        let y1 = (((b.origin.y.0 + b.size.height.0) / CELL).ceil().max(0.0) as usize).clamp(y0 + 1, rows);
+        let slot = match kind {
+            0 => &mut l.shadows[i],
+            1 => &mut l.quads[i],
+            2 => &mut l.paths[i],
+            3 => &mut l.underlines[i],
+            4 => &mut l.monochrome_sprites[i],
+            5 => &mut l.polychrome_sprites[i],
+            _ => &mut l.surfaces[i],
+        };
+        let mut layer = *slot;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                layer = layer.max(grid[y * cols + x]);
+            }
+        }
+        *slot = layer;
+        if layer > 0 {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let c = &mut grid[y * cols + x];
+                    *c = (*c).max(layer);
+                }
+            }
+        }
+    }
 }
 
 /// the runs of `range` whose primitives are in `layer`.

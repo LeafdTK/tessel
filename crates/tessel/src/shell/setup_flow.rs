@@ -408,9 +408,16 @@ impl Shell {
             .border_1()
             .border_color(BONE.opacity(0.09))
             .shadow_lg()
-            .child(div().absolute().inset_0().child(frost))
-            // light catches the top edge of the glass.
-            .child(div().absolute().inset_0().rounded(px(20.)).bg(linear_gradient(180., linear_color_stop(BONE.opacity(0.06), 0.0), linear_color_stop(BONE.opacity(0.0), 0.3))))
+            // where the system has it, real liquid glass over the meadow; else
+            // a frosted picture of it, with light catching the top edge.
+            .map(|d| {
+                if crate::glass::liquid() {
+                    d.child(super::glass_tinted(20., gpui_kit::hsla(0.62, 0.3, 0.05, 0.72)))
+                } else {
+                    d.child(div().absolute().inset_0().child(frost))
+                        .child(div().absolute().inset_0().rounded(px(20.)).bg(linear_gradient(180., linear_color_stop(BONE.opacity(0.06), 0.0), linear_color_stop(BONE.opacity(0.0), 0.3))))
+                }
+            })
             .child(
                 v_flex()
                     .relative()

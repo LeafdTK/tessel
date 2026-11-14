@@ -181,10 +181,6 @@ pub struct Shell {
     /// half-written messages, one per chat, so every pane showing a chat
     /// shares its draft and moving between chats keeps each one.
     pub(crate) drafts: HashMap<SessionId, String>,
-    /// how tall the message box floating over the chat is (liquid glass).
-    pub(crate) dock_h: std::rc::Rc<std::cell::Cell<f32>>,
-    /// how tall the conversation's title bar floating over it is (liquid glass).
-    pub(crate) top_h: std::rc::Rc<std::cell::Cell<f32>>,
     /// a draft to put in the message box at the next frame (it needs the window).
     pub(crate) draft_to_set: Option<String>,
     /// put the cursor in the message box at the next frame.
@@ -683,8 +679,6 @@ impl Shell {
             chat_pane: None,
             views: HashMap::new(),
             drafts: HashMap::new(),
-            dock_h: std::rc::Rc::new(std::cell::Cell::new(0.)),
-            top_h: std::rc::Rc::new(std::cell::Cell::new(0.)),
             draft_to_set: None,
             focus_composer_next: false,
             followed: Vec::new(),

@@ -49,6 +49,8 @@ impl Shell {
             .gap(px(4.))
             .items_center()
             .rounded(px(theme::R_TILE))
+            // liquid: each project's header is a strip of glass over the desktop.
+            .when(crate::glass::liquid(), |d| d.relative().child(super::glass_spot(theme::R_TILE)))
             .when(!queue, |d| {
                 let n = name.clone();
                 d.hover(|d| d.bg(p.hover)).on_click(cx.listener(move |this, _, _, cx| this.toggle_project(&n, cx)))
