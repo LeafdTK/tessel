@@ -36,6 +36,9 @@ pub(crate) struct Key {
     pub oy: u32,
     pub fw: u32,
     pub fh: u32,
+    /// the colour washed through a pane in liquid glass (see `draw_wash`),
+    /// around `hue`, over `bg`.
+    pub wash: bool,
 }
 
 #[derive(Default)]
@@ -199,8 +202,47 @@ fn draw_meadow(key: &Key) -> Vec<u8> {
     out
 }
 
+/// light pooled in a pane, for the glass in front of it to bend: three soft
+/// glows in neighbouring hues (one colour family, so they never mix to mud),
+/// on the pane's own colour, with a fine grain so the gradients don't band.
+/// smooth, so it's drawn small and the gpu stretches it.
+fn draw_wash(key: &Key) -> Vec<u8> {
+    let (w, h) = (key.w.max(1) as usize, key.h.max(1) as usize);
+    let mut out = vec![0u8; w * h * 4];
+    let bg = key.bg.map(|c| c as f32 / 255.0);
+    let s = w.max(h) as f32;
+    // (where, as a share of the pane; how far it reaches; hue step; how strong)
+    let glows: [((f32, f32), f32, f32, f32); 3] = [((1.0, 0.0), 0.75, 0.0, 1.0), ((0.0, 1.0), 0.8, 0.07, 0.85), ((0.85, 0.62), 0.45, -0.06, 0.6)];
+    let (sat, light, amount) = if key.dark { (0.7, 0.42, 0.42) } else { (0.85, 0.72, 0.55) };
+    let colours: Vec<[f32; 3]> = glows.iter().map(|g| hsl(key.hue + g.2, sat, light)).collect();
+    for y in 0..h {
+        for x in 0..w {
+            let mut c = bg;
+            for (g, col) in glows.iter().zip(&colours) {
+                let dx = (x as f32 - g.0.0 * w as f32) / (g.1 * s);
+                let dy = (y as f32 - g.0.1 * h as f32) / (g.1 * s);
+                let t = (-(dx * dx + dy * dy) * 2.2).exp() * g.3 * amount;
+                for k in 0..3 {
+                    c[k] += (col[k] - c[k]) * t;
+                }
+            }
+            let grain = (noise(x as u32, y as u32, 3) - 0.5) * (2.0 / 255.0);
+            let i = (y * w + x) * 4;
+            let to8 = |v: f32| ((v + grain).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            out[i] = to8(c[2]);
+            out[i + 1] = to8(c[1]);
+            out[i + 2] = to8(c[0]);
+            out[i + 3] = 255;
+        }
+    }
+    out
+}
+
 /// an image's pixels, bgra, `key.w` × `key.h`.
 pub(crate) fn draw(key: &Key) -> Vec<u8> {
+    if key.wash {
+        return draw_wash(key);
+    }
     if key.meadow {
         return draw_meadow(key);
     }
@@ -300,7 +342,7 @@ impl Shell {
         let bg = rgb8(p.window);
         // a dot of about two points, whatever the screen, drawn 1:1 so its edges stay sharp.
         image_el(self.backdrop.clone(), cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
-            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 })
+            Some(Key { w: (w * scale).round() as u32, h: (h * scale).round() as u32, cell: (2.0 * scale).round().max(2.0) as u32, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false })
         })
     }
 
@@ -316,7 +358,7 @@ impl Shell {
         let bg = rgb8(p.sidebar.opacity(1.0));
         let dark = p.dark;
         // a point per pixel: the gpu's smoothing softens the grain, as cloth is soft.
-        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 }))
+        image_el(self.felt.clone(), cx.entity().downgrade(), 0.0, move |w, h, _| Some(Key { w: w.round() as u32, h: h.round() as u32, cell: 1, hue: 0.0, dark, bg, felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false }))
     }
 }
 
@@ -414,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_backdrop_is_dots_with_gaps_and_cheap_to_draw() {
-        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
+        let key = Key { w: 2880, h: 1800, cell: 4, hue: 0.6, dark: true, bg: [30, 30, 30], felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 2880 * 1800 * 4);
         // the last column and row of every dot are the gap, all one colour.
@@ -429,7 +471,7 @@ mod tests {
 
     #[test]
     fn felt_stays_close_to_its_colour_and_is_cheap_to_draw() {
-        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 };
+        let key = Key { w: 1440, h: 900, cell: 1, hue: 0.0, dark: true, bg: [58, 18, 24], felt: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: false };
         let (px, took) = fastest(&key);
         assert_eq!(px.len(), 1440 * 900 * 4);
         // grain, not pattern: every pixel within a few steps of the cloth's colour.

@@ -273,6 +273,25 @@ fn passthrough_class() -> &'static objc2::runtime::AnyClass {
     unsafe { &*(class as *const AnyClass) }
 }
 
+/// clip a pane of glass to its rounded corners: the glass rounds its rim, but
+/// a tint fills the whole rectangle unless the layer's cut to it too.
+#[cfg(target_os = "macos")]
+unsafe fn round(v: *mut objc2::runtime::AnyObject, radius: f32) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    unsafe {
+        let _: () = msg_send![v, setWantsLayer: Bool::YES];
+        let layer: *mut AnyObject = msg_send![v, layer];
+        if layer.is_null() {
+            return;
+        }
+        let _: () = msg_send![layer, setCornerRadius: f64::from(radius)];
+        let _: () = msg_send![layer, setMasksToBounds: Bool::YES];
+        let curve: *mut AnyObject = msg_send![AnyClass::get(c"NSString").expect("Foundation"), stringWithUTF8String: c"continuous".as_ptr()];
+        let _: () = msg_send![layer, setCornerCurve: curve];
+    }
+}
+
 /// an NSColor for `c`, or nil for none.
 #[cfg(target_os = "macos")]
 unsafe fn ns_color(c: Option<gpui_kit::Hsla>) -> *mut objc2::runtime::AnyObject {
@@ -409,6 +428,7 @@ fn place_floats(view: usize, floats: &[Spot], dark: bool) {
                 let _: () = msg_send![*g, setHidden: Bool::NO];
                 let _: () = msg_send![*g, setFrame: NsRect { x: f64::from(s.x), y, w: f64::from(s.w), h: f64::from(s.h) }];
                 let _: () = msg_send![*g, setCornerRadius: f64::from(s.radius)];
+                round(*g, s.radius);
                 let _: () = msg_send![*g, setAppearance: look];
                 let _: () = msg_send![*g, setTintColor: ns_color(s.tint)];
             }
@@ -488,6 +508,7 @@ fn place(view: usize, spots: &[Spot], dark: bool) {
             let y = if flipped.as_bool() { f64::from(s.y) } else { bounds.h - f64::from(s.y) - f64::from(s.h) };
             let _: () = msg_send![v, setFrame: Rect { x: f64::from(s.x), y, w: f64::from(s.w), h: f64::from(s.h) }];
             let _: () = msg_send![v, setCornerRadius: f64::from(s.radius)];
+            round(v, s.radius);
             let _: () = msg_send![v, setAppearance: look];
             let _: () = msg_send![v, setTintColor: ns_color(s.tint)];
         }

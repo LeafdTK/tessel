@@ -625,7 +625,7 @@ impl Shell {
             // liquid glass: the pane is solid, with colour washed through it,
             // so the glass in front of it (the bubbles, the message box) has
             // something to bend.
-            .when(!open_sky && crate::glass::liquid(), |d| d.relative().child(self.wash_el()))
+            .when(!open_sky && crate::glass::liquid() && !compact, |d| d.relative().child(self.wash_el(id, cx)))
             .overflow_hidden()
             .child(header)
             .child(div().flex_1().min_h_0().overflow_hidden().child(body))

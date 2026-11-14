@@ -320,6 +320,8 @@ pub struct Shell {
     pub(crate) backdrop: backdrop::Shared,
     /// the felt under the window, once drawn.
     pub(crate) felt: backdrop::Shared,
+    /// each pane's colour wash (liquid glass), by pane.
+    pub(crate) washes: std::cell::RefCell<HashMap<String, backdrop::Shared>>,
     /// the space backdrop's photo.
     pub(crate) space: space::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
@@ -763,6 +765,7 @@ impl Shell {
             changes_scope: "all",
             changes_search,
             backdrop: Default::default(),
+            washes: Default::default(),
             felt: Default::default(),
             space: Default::default(),
             thumbs: Default::default(),
@@ -3242,24 +3245,19 @@ impl Render for TurnTip {
 
 impl Shell {
     /// colour washed through a solid pane, for the glass in front of it to
-    /// bend: soft light in the accent and the project's hue, from the corners.
-    pub(crate) fn wash_el(&self) -> AnyElement {
+    /// bend: an image in the accent's family of hues, rounded with the pane.
+    pub(crate) fn wash_el(&self, pane: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
-        let strength = if p.dark { 0.6 } else { 0.8 };
-        let hues = [p.accent.h, self.backdrop_hue(), (p.accent.h + 0.42).rem_euclid(1.0)];
-        let blob = |hue: f32, size: f32| {
-            let c = gpui_kit::hsla(hue, 0.95, if p.dark { 0.48 } else { 0.6 }, strength);
-            div().absolute().size(px(size)).rounded_full().shadow(vec![gpui_kit::BoxShadow { color: c, offset: point(px(0.), px(0.)), blur_radius: px(size * 0.9), spread_radius: px(size * 0.15), inset: false }])
+        let state = self.washes.borrow_mut().entry(pane.to_owned()).or_default().clone();
+        let (hue, dark) = (p.accent.h, p.dark);
+        let bg = {
+            let c = p.window.to_rgb();
+            [(c.r * 255.0).round() as u8, (c.g * 255.0).round() as u8, (c.b * 255.0).round() as u8]
         };
-        div()
-            .absolute()
-            .inset_0()
-            .overflow_hidden()
-            .rounded(px(theme::R_PANEL))
-            .child(blob(hues[0], 420.).top(px(-160.)).right(px(-140.)))
-            .child(blob(hues[1], 460.).bottom(px(-180.)).left(px(-160.)))
-            .child(blob(hues[2], 300.).top(relative(0.4)).right(px(-120.)))
-            .into_any_element()
+        // smooth, so a quarter of the pixels is plenty: the gpu stretches it.
+        backdrop::image_el(state, cx.entity().downgrade(), theme::R_PANEL, move |w, h, scale| {
+            Some(backdrop::Key { w: (w * scale / 4.).round() as u32, h: (h * scale / 4.).round() as u32, cell: 1, hue, dark, bg, felt: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0, wash: true })
+        })
     }
 }
 
