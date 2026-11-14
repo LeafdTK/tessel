@@ -472,6 +472,26 @@ impl Shell {
         cx.notify();
     }
 
+    /// the way to the debug panel: a quiet fish in the bottom right corner.
+    pub(crate) fn critters_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .absolute()
+            .bottom(px(12.))
+            .right(px(12.))
+            .child(
+                Button::new("critters-open")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::empty().path("icons/fish.svg"))
+                    .tooltip("Critters")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.critters_panel_open = !this.critters_panel_open;
+                        cx.notify();
+                    })),
+            )
+            .into_any_element()
+    }
+
     /// the debug panel: a switch for each kind, over the top right of the new-session screen.
     pub(crate) fn critters_panel(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.critters_panel_open {

@@ -733,6 +733,7 @@ impl Shell {
                 .size_full()
                 .child(self.critters_el())
                 .child(v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)))
+                .child(self.critters_button(cx))
                 .children(self.critters_panel(cx))
                 .into_any_element();
         }
