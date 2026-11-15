@@ -181,6 +181,9 @@ pub struct Shell {
     /// half-written messages, one per chat, so every pane showing a chat
     /// shares its draft and moving between chats keeps each one.
     pub(crate) drafts: HashMap<SessionId, String>,
+    /// pictures and promised files dropped on the window, handed over as paths
+    /// (see `drops`); installed once the window has its view.
+    drops: Option<tokio::sync::mpsc::UnboundedSender<Vec<PathBuf>>>,
     /// when each session's last turn ended, for the green that fades under glass.
     pub(crate) done_at: HashMap<SessionId, Millis>,
     /// a draft to put in the message box at the next frame (it needs the window).
@@ -232,6 +235,8 @@ pub struct Shell {
     pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
     pub(crate) draft_append: Option<String>,
+    /// the same, for the new-session box.
+    pub(crate) new_append: Option<String>,
     /// Settings → Scripts, while it's showing.
     pub(crate) scripts_form: Option<scripts::ScriptsForm>,
     /// what each desktop you aren't looking at had on it.
@@ -689,6 +694,7 @@ impl Shell {
             views: HashMap::new(),
             drafts: HashMap::new(),
             done_at: HashMap::new(),
+            drops: None,
             draft_to_set: None,
             focus_composer_next: false,
             followed: Vec::new(),
@@ -715,6 +721,7 @@ impl Shell {
             page_opening: HashSet::new(),
             browser_moved: None,
             draft_append: None,
+            new_append: None,
             shipping: false,
             usage: Vec::new(),
             tour: launch.tour_seen.as_ref().is_some_and(|p| !p.exists()).then_some(0),
@@ -832,6 +839,19 @@ impl Shell {
                 }
             });
             this._tasks.push(poll);
+        }
+        {
+            // what's dropped that gpui doesn't take (pictures, promised files) comes here.
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
+            this.drops = Some(tx);
+            let task = cx.spawn_in(window, async move |this, cx| {
+                while let Some(paths) = rx.recv().await {
+                    if in_window(&this, cx, |this, window, cx| this.attach_paths(paths, window, cx)).is_err() {
+                        break;
+                    }
+                }
+            });
+            this._tasks.push(task);
         }
         if launch.focus {
             // only the open session: every drawer starts shut.
@@ -1076,6 +1096,19 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
+            UiEvent::Answer { tag: tag @ ("drop.new" | "drop.open"), result } => match result {
+                // a file sent to the box: named by where it's kept there.
+                Ok(tessel_proto::Response::Dropped { path }) => {
+                    let mention = format!(" `{path}` ");
+                    if tag == "drop.new" {
+                        self.new_append = Some(mention);
+                    } else {
+                        self.draft_append = Some(mention);
+                    }
+                }
+                Ok(_) => self.error = Some("The box's tessel is too old to take files. Update tessel there.".into()),
+                Err(e) => self.error = Some(format!("Couldn't send it to the box: {e}")),
+            },
             UiEvent::Answer { tag: "folder.info", result } => {
                 if let Some(path) = self.folder_asked.borrow_mut().take() {
                     let git = match result {
@@ -2554,6 +2587,13 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // once the window has its view: drops of pictures and promised files.
+        if let Some(tx) = self.drops.take() {
+            match view_of(window) {
+                Some(v) => crate::drops::install(v, tx),
+                None => self.drops = Some(tx),
+            }
+        }
         MARK_PALETTE.with(|c| c.set(self.palette.get()));
         browser::floats_reset();
         // which pane shows which chat, now that the layout may have changed.
@@ -2568,6 +2608,14 @@ impl Render for Shell {
             let next = format!("{}{more}", self.composer.read(cx).value().trim_end());
             let last = next.split('\n').count().saturating_sub(1) as u32;
             self.composer.update(cx, |s, cx| {
+                s.set_value(next, window, cx);
+                s.set_cursor_position(gpui_kit::component::input::Position { line: last, character: u32::MAX }, window, cx);
+            });
+        }
+        if let Some(more) = self.new_append.take() {
+            let next = format!("{}{more}", self.new_prompt.read(cx).value().trim_end());
+            let last = next.split('\n').count().saturating_sub(1) as u32;
+            self.new_prompt.update(cx, |s, cx| {
                 s.set_value(next, window, cx);
                 s.set_cursor_position(gpui_kit::component::input::Position { line: last, character: u32::MAX }, window, cx);
             });

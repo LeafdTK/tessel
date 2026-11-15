@@ -979,6 +979,20 @@ impl Hub {
                     Ok(Response::Preview { mime, data: base64::engine::general_purpose::STANDARD.encode(bytes), note })
                 });
             }
+            Request::DropFile { name, data } => {
+                let home = self.cfg.paths.home.clone();
+                return self.later(client, id, async move {
+                    use base64::Engine as _;
+                    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| format!("the file came garbled: {e}"))?;
+                    // only its name, never a path that climbs out.
+                    let name = std::path::Path::new(&name).file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty() && n != "..").unwrap_or_else(|| "file".into());
+                    let dir = home.join("drops").join(uuid::Uuid::new_v4().simple().to_string()[..8].to_owned());
+                    tokio::fs::create_dir_all(&dir).await.map_err(|e| format!("couldn't make a place for it: {e}"))?;
+                    let path = dir.join(&name);
+                    tokio::fs::write(&path, bytes).await.map_err(|e| format!("couldn't keep {name}: {e}"))?;
+                    Ok(Response::Dropped { path: path.to_string_lossy().into_owned() })
+                });
+            }
             Request::ProjectMake { parent, how } => {
                 let home = self.cfg.paths.home.clone();
                 return self.later(client, id, async move {

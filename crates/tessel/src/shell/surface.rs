@@ -178,6 +178,26 @@ impl Shell {
                     Some("semibold") => FontWeight::SEMIBOLD,
                     _ => style.base().2,
                 };
+                // a status line (done, warning, failed): a mark in its own column,
+                // the words in ink, as the working lines beside it are drawn. a
+                // tick or bullet the agent typed itself is dropped for the mark.
+                if s(&p, "size").is_none()
+                    && let Some((ink, failing)) = self.status_tone(&p)
+                {
+                    let text = shown(p.get("text"));
+                    let text = text.trim_start_matches(['✓', '✔', '✅', '✗', '✘', '❌', '•', '-', '*', '⚠', '️']).trim_start().to_owned();
+                    let mark = match s(&p, "tone") {
+                        Some("success") => Icon::empty().path("icons/check.svg").size(z(13.)).text_color(ink).into_any_element(),
+                        Some("error") => Icon::empty().path("icons/x.svg").size(z(13.)).text_color(ink).into_any_element(),
+                        _ => status_dot(ink, false, &pal).into_any_element(),
+                    };
+                    return h_flex()
+                        .gap(z(8.))
+                        .items_start()
+                        .child(h_flex().w(z(18.)).h(z(20.)).flex_shrink_0().justify_center().items_center().child(mark))
+                        .child(div().flex_1().min_w_0().set(Type::Callout).font_weight(if failing { FontWeight::MEDIUM } else { weight }).text_color(pal.label).child(text))
+                        .into_any_element();
+                }
                 div().set(style).font_weight(weight).text_color(self.tone(&p, pal.label)).child(shown(p.get("text"))).into_any_element()
             }
             "markdown" => div()
@@ -229,7 +249,8 @@ impl Shell {
             // a working line: orchard's orbiting dot, not a shimmer.
             "shimmer" => h_flex()
                 .gap(z(8.))
-                .child(live_dot(pal.blocked, &pal))
+                .items_start()
+                .child(h_flex().w(z(18.)).h(z(20.)).flex_shrink_0().justify_center().items_center().child(live_dot(pal.blocked, &pal)))
                 .child(div().set(Type::Callout).text_color(pal.label).child(s(&p, "text").unwrap_or("Working").to_owned()))
                 .into_any_element(),
             "checkbox" => {

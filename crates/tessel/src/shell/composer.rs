@@ -58,6 +58,9 @@ const MAX_PDF: u64 = 20 * 1024 * 1024;
 
 /// what a file would be sent as. `None` is a kind the agent can't be handed
 /// directly; those are mentioned by path instead, and it reads them itself.
+/// the most a file sent to a dev box can be.
+const MAX_SENT: u64 = 64 * 1_048_576;
+
 pub(crate) fn media_type(path: &Path) -> Option<&'static str> {
     match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "png" => Some("image/png"),
@@ -128,6 +131,25 @@ impl Shell {
         // the box being written in: a new session's, or the open chat's.
         let new = self.show_new;
         for path in paths {
+            // the window shows a dev box: a file on this mac means nothing there, so
+            // it's sent, and named by where it's kept (pictures and PDFs go as they are).
+            if media_type(&path).is_none() && self.on_host() {
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+                match std::fs::metadata(&path) {
+                    Ok(m) if m.is_dir() => self.error = Some(format!("{name} is a folder: send its files, or zip it first.")),
+                    Ok(m) if m.len() > MAX_SENT => self.error = Some(format!("{name} is over {} MB, too big to send to the box.", MAX_SENT / 1_048_576)),
+                    Ok(_) => match std::fs::read(&path) {
+                        Ok(bytes) => {
+                            use base64::Engine as _;
+                            let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+                            self.cmd(Cmd::Ask { tag: if new { "drop.new" } else { "drop.open" }, req: tessel_proto::Request::DropFile { name, data } });
+                        }
+                        Err(e) => self.error = Some(format!("Couldn't read {name}: {e}.")),
+                    },
+                    Err(e) => self.error = Some(format!("Couldn't read {name}: {e}.")),
+                }
+                continue;
+            }
             if media_type(&path).is_none() {
                 let mention = format!("`{}` ", path.to_string_lossy());
                 if new {

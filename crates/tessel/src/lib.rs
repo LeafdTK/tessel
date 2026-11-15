@@ -5,6 +5,7 @@
 
 pub mod bridge;
 pub mod commands;
+pub mod drops;
 pub mod glass;
 pub mod graph;
 pub mod model;

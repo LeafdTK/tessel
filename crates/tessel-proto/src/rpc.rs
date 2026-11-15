@@ -287,6 +287,14 @@ pub enum Request {
         path: String,
     },
     // ---- projects ---------------------------------------------------------------
+    /// a file dropped on a window showing this machine from another: kept
+    /// here (under tessel's home, not in anyone's project) so what's said
+    /// about it can name a path that's real on this machine.
+    DropFile {
+        name: String,
+        /// the file's bytes, base64 encoded.
+        data: String,
+    },
     /// a project made on the daemon's machine, ready for a session: a
     /// repository cloned, or a new one from a template. `parent` may start
     /// with `~`, the daemon's own home.
@@ -746,6 +754,10 @@ pub enum Response {
         procs: Vec<crate::procs::AgentProcess>,
     },
     /// a project's folder, and what its first session is asked (if anything).
+    /// where a dropped file was kept.
+    Dropped {
+        path: String,
+    },
     ProjectMade {
         dir: String,
         #[serde(default)]

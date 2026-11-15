@@ -726,7 +726,9 @@ impl Shell {
             return self.chat_view_el(id, view, cx);
         }
         let p = self.palette.get();
-        if self.show_new || self.model.open_summary().is_none() {
+        // a chat being loaded (just switched to) keeps the chat's own layout,
+        // empty for the moment, rather than flashing the new-session card.
+        if self.show_new || (self.model.open_summary().is_none() && self.awaiting.is_none()) {
             return v_flex().size_full().children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e))).child(self.new_session_form(cx)).into_any_element();
         }
         let t = self.transcript_opts;
