@@ -175,6 +175,9 @@ pub struct Shell {
     /// how tall the file tree is above an open file, and the drag changing it (pointer y, height then).
     pub(crate) tree_h: f32,
     pub(crate) tree_drag: Option<(f32, f32)>,
+    /// redrawing on the display's frames for the working rings, and when it last did.
+    spinning: bool,
+    spun_at: Option<Instant>,
     /// the pane last clicked in: the one keys act on.
     pub(crate) pane_focus: Option<String>,
     /// the conversation pane typing goes to. its chat is `model.open`.
@@ -624,17 +627,14 @@ impl Shell {
         });
         // the working glyph steps while anything works, and the window is left
         // alone when nothing does.
+        // the working rings turn on the display's own frames, so they move evenly; this
+        // only starts them (and restarts them should they stop) when something works.
         let beat = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(Duration::from_millis(BEAT_MS)).await;
-                let alive = this.update(cx, |this, cx| {
-                    let fading = |s: &SessionSummary| {
-                        this.glow_on()
-                            && (s.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Finished && now_ms().saturating_sub(a.since_ms) < GLOW_FADE_MS)
-                                || this.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
-                    };
-                    if this.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || fading(s)) {
-                        cx.notify();
+                let alive = in_window(&this, cx, |this, window, cx| {
+                    if this.wants_spin() {
+                        this.spin(window, cx);
                     }
                 });
                 if alive.is_err() {
@@ -701,6 +701,8 @@ impl Shell {
             pane_gaps: Vec::new(),
             pane_drag: None,
             tree_h: 220.,
+            spinning: false,
+            spun_at: None,
             tree_drag: None,
             pane_focus: None,
             chat_pane: None,
@@ -2662,6 +2664,9 @@ impl Render for Shell {
             FRAME_START.with(|f| f.set(Some(now)));
             eprintln!("frame: {gap:?} ms since the last");
         }
+        if !self.spinning && self.wants_spin() {
+            self.spin(window, cx);
+        }
         let active = window.is_window_active();
         if active && !self.window_active {
             // coming back to the window counts as looking at what's open.
@@ -2970,9 +2975,12 @@ fn state_mark(s: &SessionSummary, p: &Palette) -> Mark {
     }
 }
 
-/// how often a working dot's ring moves on: about thirty times a second, and
-/// only while something is working (see the beat in `Shell::new`).
-pub(crate) const BEAT_MS: u64 = 33;
+/// how often the beat in `Shell::new` looks for something to set turning.
+pub(crate) const BEAT_MS: u64 = 250;
+
+/// the least time between two frames of the working rings: 60 a second, on the
+/// display's beat, however fast it refreshes.
+const SPIN_FRAME: Duration = Duration::from_millis(15);
 
 /// one orbit of the working ring, as orchard's StatusDot turns it.
 const ORBIT_MS: u64 = 950;
@@ -3356,6 +3364,44 @@ impl Render for TurnTip {
 
 impl Shell {
     /// the glow is on: glass, and asked for (it's off unless it is).
+    /// is anything on screen turning or fading: a working ring, a glow dying away.
+    pub(crate) fn wants_spin(&self) -> bool {
+        let fading = |s: &SessionSummary| {
+            self.glow_on()
+                && (s.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Finished && now_ms().saturating_sub(a.since_ms) < GLOW_FADE_MS)
+                    || self.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
+        };
+        self.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || fading(s))
+    }
+
+    /// keep redrawing on the display's frames while something turns, at most
+    /// every `SPIN_FRAME`; stops by itself once nothing does.
+    pub(crate) fn spin(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // tests step time themselves: a loop asking for every frame would never let them rest.
+        if self.spinning || cfg!(test) {
+            return;
+        }
+        self.spinning = true;
+        Self::spin_next(cx.entity().downgrade(), window);
+    }
+
+    fn spin_next(this: WeakEntity<Self>, window: &mut Window) {
+        window.on_next_frame(move |window, cx| {
+            let _ = this.clone().update(cx, |s, cx| {
+                if !s.wants_spin() {
+                    s.spinning = false;
+                    return;
+                }
+                let now = Instant::now();
+                if s.spun_at.is_none_or(|t| now.duration_since(t) >= SPIN_FRAME) {
+                    s.spun_at = Some(now);
+                    cx.notify();
+                }
+                Self::spin_next(this, window);
+            });
+        });
+    }
+
     pub(crate) fn glow_on(&self) -> bool {
         crate::glass::liquid() && self.ui.theme.glow.unwrap_or(false)
     }
