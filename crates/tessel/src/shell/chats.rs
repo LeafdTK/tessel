@@ -17,6 +17,9 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 use tessel_proto::{RunState, SessionId};
 
+/// how many chats are kept loaded besides the ones on screen.
+const WARM: usize = 6;
+
 /// a conversation pane that isn't the one you type into.
 pub(crate) struct ChatView {
     pub(crate) session: SessionId,
@@ -61,8 +64,9 @@ impl Shell {
     pub(crate) fn sync_follow(&mut self) {
         let open = self.model.open.as_ref().map(|o| o.id).or(self.awaiting);
         let mut extra: Vec<SessionId> = Vec::new();
-        // what other panes show, and what other desktops do: switching back is instant.
-        for s in self.views.values().map(|v| v.session).chain(self.stashed_sessions()) {
+        // what other panes show, what other desktops do, and the chats you were in
+        // lately: switching back is instant.
+        for s in self.views.values().map(|v| v.session).chain(self.stashed_sessions()).chain(self.warm.iter().copied()) {
             if Some(s) != open && !extra.contains(&s) {
                 extra.push(s);
             }
@@ -97,9 +101,9 @@ impl Shell {
             }
         }
         self.draft_to_set = Some(self.drafts.remove(&session).unwrap_or_default());
-        if let Some(old) = self.model.open.take()
-            && self.in_a_view(old.id)
-        {
+        // the chat you leave stays loaded, and live, for a while.
+        if let Some(old) = self.model.open.take() {
+            self.keep_warm(old.id);
             self.model.others.insert(old.id, old);
         }
         self.answers.clear();
@@ -127,8 +131,42 @@ impl Shell {
                 }
             }
         }
-        self.sync_follow();
+        // open first: told what else to follow before it, the daemon would let go
+        // of this chat and send all of it again.
         self.cmd(Cmd::Open(Some(session)));
+        self.sync_follow();
+    }
+
+    /// keep a chat followed (and so loaded) for a while: the latest first, a few at most.
+    pub(crate) fn keep_warm(&mut self, id: SessionId) {
+        self.warm.retain(|s| *s != id);
+        self.warm.insert(0, id);
+        self.warm.truncate(WARM);
+    }
+
+    /// the pointer resting on a chat in the list loads it, so clicking it shows it at once.
+    pub(crate) fn hover_warm(&mut self, id: SessionId, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            if self.warming == Some(id) {
+                self.warming = None;
+            }
+            return;
+        }
+        if self.awaiting == Some(id) || self.model.open_of(id).is_some() {
+            return;
+        }
+        self.warming = Some(id);
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+            let _ = this.update(cx, |this, _| {
+                if this.warming == Some(id) {
+                    this.warming = None;
+                    this.keep_warm(id);
+                    this.sync_follow();
+                }
+            });
+        })
+        .detach();
     }
 
     /// move typing to another conversation pane. it brings its chat and its

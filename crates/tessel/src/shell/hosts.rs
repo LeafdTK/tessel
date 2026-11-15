@@ -37,6 +37,8 @@ pub(crate) struct HostsView {
     pub(crate) confirm_remove: Option<String>,
     /// what the last thing done to a host said.
     pub(crate) said: Option<String>,
+    /// what's being done to the machine shown, or how it went, said under its name in the picker.
+    pub(crate) doing: Option<String>,
     /// how sandboxes are reached (`remote.json`).
     pub(crate) net: tessel_remote::net::Net,
     /// your own relay's address, as typed (made when the page shows, inputs need the window).
@@ -238,6 +240,8 @@ impl Shell {
         self.awaiting = None;
         self.views.clear();
         self.followed.clear();
+        self.warm.clear();
+        self.warming = None;
         self.stashed.clear();
         self.scripts.clear();
         self.scripts_tried.clear();
@@ -462,6 +466,86 @@ impl Shell {
         cx.notify();
     }
 
+    /// say something under the shown machine's name; `fade` takes it away after a while.
+    fn host_doing(&mut self, what: impl Into<String>, fade: bool, cx: &mut Context<Self>) {
+        let what = what.into();
+        self.hosts.doing = Some(what.clone());
+        if fade {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_secs(6)).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.hosts.doing.as_deref() == Some(what.as_str()) {
+                        this.hosts.doing = None;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+        cx.notify();
+    }
+
+    /// drop the connection to the machine shown and dial it again, keeping what's on screen.
+    pub(crate) fn host_redial(&mut self, cx: &mut Context<Self>) {
+        self.model.connection = crate::model::Connection::Connecting;
+        self.cmd(Cmd::Redial);
+        cx.notify();
+    }
+
+    /// restart tessel on the machine shown: its terminals and agents carry on
+    /// under the new daemon (agents mid-turn are waited for).
+    pub(crate) fn host_restart_tessel(&mut self, cx: &mut Context<Self>) {
+        self.host_doing("Restarting tessel… (agents mid-turn finish first)", false, cx);
+        self.cmd(Cmd::Ask { tag: "host.restart", req: tessel_proto::Request::DaemonRestart { now: false, wait_secs: None, bin: None } });
+    }
+
+    pub(crate) fn host_restart_answer(&mut self, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        match result {
+            Ok(tessel_proto::Response::Restarted { terminals, agents, cut_short, .. }) => {
+                let n = |k: u32, one: &str| if k == 1 { format!("1 {one}") } else { format!("{k} {one}s") };
+                let mut said = format!("Restarted. {} and {} carried on", n(terminals, "terminal"), n(agents, "agent"));
+                if cut_short > 0 {
+                    said.push_str(&format!(", {} cut short", n(cut_short, "turn")));
+                }
+                self.host_doing(said, true, cx);
+            }
+            Ok(_) => self.host_doing("Its tessel is too old to restart this way. Update tessel there.", true, cx),
+            Err(e) => {
+                self.hosts.doing = None;
+                self.error = Some(format!("Couldn't restart tessel there: {e}"));
+                cx.notify();
+            }
+        }
+    }
+
+    /// stop a sandbox and start it again: a fresh machine on the same disk.
+    /// what was running there stops; the window dials it again, which starts it.
+    pub(crate) fn host_reboot(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(host) = self.hosts.list.get(id).cloned() else { return };
+        let home = self.hosts.home.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let r = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string()).and_then(|rt| rt.block_on(tessel_remote::vercel::stop(&home, &host)).map_err(|e| format!("{e:#}")));
+            let _ = tx.send(r);
+        });
+        self.host_doing("Stopping the sandbox…", false, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let r = rx.await.unwrap_or_else(|_| Err("it went away".into()));
+            let _ = in_window(&this, cx, |this, _, cx| match r {
+                Ok(_) => {
+                    this.host_doing("Starting it again…", true, cx);
+                    this.host_redial(cx);
+                }
+                Err(e) => {
+                    this.hosts.doing = None;
+                    this.error = Some(format!("Couldn't restart the sandbox: {e}"));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     /// take a host off this mac's list. a sandbox goes from vercel too
     /// (`in_vercel`): it, and the disk it kept. asked twice, either way.
     fn host_remove(&mut self, id: &str, in_vercel: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -547,7 +631,9 @@ impl Shell {
         if remote {
             about.push(self.hosts.via.clone());
         }
-        let about = if down && remote {
+        let about = if let Some(d) = self.hosts.doing.clone().filter(|_| remote) {
+            d
+        } else if down && remote {
             "Reconnecting…".to_owned()
         } else if connecting {
             "Connecting…".to_owned()
@@ -634,6 +720,54 @@ impl Shell {
                     };
                     let on = current.as_deref() == Some(h.id.as_str());
                     list = list.child(machine(SharedString::from(format!("host-{}", h.id)), machine_icon(Some(h)), h.name.clone(), note, on).on_click(go(Some(h.id.clone()))));
+                }
+                // what can be done to the machine shown, right here.
+                if let Some(h) = current.as_deref().and_then(|id| this.hosts.list.get(id)) {
+                    let (id, sandbox) = (h.id.clone(), h.vercel.is_some());
+                    let busy = this.hosts.run.as_ref().is_some_and(|r| r.done.is_none());
+                    let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>| {
+                        let (me, popover) = (me.clone(), popover.clone());
+                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                            popover.update(cx, |st, cx| st.dismiss(window, cx));
+                            let _ = me.update(cx, |this, cx| f(this, window, cx));
+                        }
+                    };
+                    list = list
+                        .child(theme::float_sep(&p))
+                        .child(theme::float_item(&p, "host-redial", Some("refresh-ccw"), "Reconnect", None, false).test_support().on_click(act(Box::new(|this, _, cx| this.host_redial(cx)))))
+                        .child(
+                            theme::float_item(&p, "host-restart", Some("rotate-cw"), "Restart tessel there", Some("Terminals and agents carry on"), false)
+                                .test_support()
+                                .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(cx)))),
+                        );
+                    if !busy {
+                        let to = id.clone();
+                        list = list.child(
+                            theme::float_item(&p, "host-update", Some("download"), "Update tessel there", None, false)
+                                .test_support()
+                                .on_click(act(Box::new(move |this, w, cx| this.host_setup(to.clone(), Options::default(), false, w, cx)))),
+                        );
+                    }
+                    if sandbox {
+                        let (again, stop) = (id.clone(), id.clone());
+                        list = list
+                            .child(
+                                theme::float_item(&p, "host-reboot", Some("power"), "Restart the sandbox", Some("Its disk is kept; what's running stops"), false)
+                                    .test_support()
+                                    .on_click(act(Box::new(move |this, w, cx| this.host_reboot(&again, w, cx)))),
+                            )
+                            .child(
+                                theme::float_item(&p, "host-stop", Some("square"), "Stop the sandbox", Some("Showing it again starts it"), false)
+                                    .test_support()
+                                    .on_click(act(Box::new(move |this, w, cx| this.host_stop(&stop, w, cx)))),
+                            );
+                    }
+                    list = list.child(
+                        theme::float_item(&p, "host-disconnect", Some("unplug"), "Disconnect", Some("Back to This Mac"), false)
+                            .test_support()
+                            .on_click(act(Box::new(|this, _, cx| this.switch_host(None, cx)))),
+                    );
+                    list = list.child(theme::float_sep(&p));
                 }
                 let settings = |adding: bool| {
                     let (me, popover) = (me.clone(), popover.clone());

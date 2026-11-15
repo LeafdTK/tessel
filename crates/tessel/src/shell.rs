@@ -192,6 +192,10 @@ pub struct Shell {
     pub(crate) focus_composer_next: bool,
     /// the chats other panes show, as last told to the daemon.
     pub(crate) followed: Vec<SessionId>,
+    /// chats you were in lately, or are pointing at: kept followed, so going to one is instant.
+    pub(crate) warm: Vec<SessionId>,
+    /// the chat under the pointer, about to be warmed if it stays there.
+    pub(crate) warming: Option<SessionId>,
     /// the chat the focused pane is waiting on a snapshot of.
     pub(crate) awaiting: Option<SessionId>,
     /// each workspace's scripts and first port, by folder, as the daemon said.
@@ -702,6 +706,8 @@ impl Shell {
             draft_to_set: None,
             focus_composer_next: false,
             followed: Vec::new(),
+            warm: Vec::new(),
+            warming: None,
             awaiting: None,
             stashed: HashMap::new(),
             scripts: HashMap::new(),
@@ -1029,7 +1035,7 @@ impl Shell {
                 let (id, n) = (open.id, open.len());
                 // a chat another pane is waiting for, not the one you're typing into.
                 let focused = self.awaiting == Some(id) || self.model.open.as_ref().is_some_and(|o| o.id == id);
-                if !focused && self.in_a_view(id) {
+                if !focused && (self.in_a_view(id) || self.warm.contains(&id)) {
                     self.model.others.insert(id, open);
                     self.reset_views_of(id, n, cx);
                     return;
@@ -1100,6 +1106,7 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
             UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
+            UiEvent::Answer { tag: "host.restart", result } => self.host_restart_answer(result, cx),
             UiEvent::Answer { tag: "file.download", result } => self.download_answer(result, cx),
             UiEvent::Answer { tag: "file.promise", result } => self.promise_answer(result),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
@@ -1735,7 +1742,6 @@ impl Shell {
             .pl(px(SESSION_INDENT))
             .pr_2()
             .rounded(px(theme::R_TILE))
-            // liquid: the chat you're in is a bead of glass tinted with the accent.
             // liquid: the chat you're in is a bead of glass tinted with the accent;
             // one that's working (or wants you) glows under its glass.
             .map(|d| match (crate::glass::liquid(), if self.glow_on() { glow_of(s, &p, now, self.done_at.get(&s.id).copied()) } else { None }) {
@@ -1745,6 +1751,7 @@ impl Shell {
             })
             .when(selected && !crate::glass::liquid(), |d| d.bg(p.selection))
             .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
+            .on_hover(cx.listener(move |this, on: &bool, _, cx| this.hover_warm(sid, *on, cx)))
             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
             .child(
                 v_flex()

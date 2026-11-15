@@ -75,6 +75,8 @@ pub enum Cmd {
     Ask { tag: &'static str, req: Request },
     /// show another machine's daemon (a host's id), or this mac's (none).
     Host(Option<String>),
+    /// drop the connection and dial the same machine again, at once: the window keeps what it shows.
+    Redial,
 }
 
 #[derive(Debug)]
@@ -265,6 +267,10 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                                 backoff = Duration::from_millis(100);
                                 break;
                             }
+                            Some(Cmd::Redial) => {
+                                backoff = Duration::from_millis(100);
+                                break;
+                            }
                             Some(other) => cmds.held.push_back(other),
                         },
                     }
@@ -323,6 +329,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                             return;
                         }
                     }
+                    Ended::Redial => {}
                 }
             }
         }
@@ -334,6 +341,8 @@ enum Ended {
     Lost,
     /// the window shows another machine now.
     Switch(Option<String>),
+    /// the same machine, dialed again.
+    Redial,
 }
 
 /// the whole picture: every session, then each followed chat.
@@ -502,7 +511,13 @@ async fn session(
                 let Some(cmd) = cmd else { return Ended::UiGone };
                 let result = match cmd {
                     Cmd::Host(h) => return Ended::Switch(h),
+                    Cmd::Redial => return Ended::Redial,
                     Cmd::Open(id) => {
+                        // the chat it leaves stays followed until the window says what else it
+                        // wants (it usually keeps it): let go of it now and it'd be sent again.
+                        if let Some(prev) = open.open.filter(|p| Some(*p) != id && !open.extra.contains(p)) {
+                            open.extra.push(prev);
+                        }
                         open.open = id;
                         follow(client, ui, open).await
                     }

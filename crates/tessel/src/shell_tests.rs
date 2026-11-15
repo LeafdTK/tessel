@@ -162,6 +162,11 @@ impl Rig {
     }
 
     /// everything the window has asked the daemon to do since last asked.
+    /// what was asked, without the follows that keep chats you left loaded.
+    fn opened(&mut self) -> Vec<Cmd> {
+        self.asked().into_iter().filter(|c| !matches!(c, Cmd::Follow(_))).collect()
+    }
+
     fn asked(&mut self) -> Vec<Cmd> {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
@@ -448,7 +453,7 @@ fn rows_hold_their_places_under_the_pointer_and_settle_when_it_leaves(cx: &mut T
     assert_eq!(order(&rig, cx), [3, 2, 1], "nothing moved under the pointer");
     // the click lands on the row that was there when the pointer arrived.
     rig.click(cx, sid(2).0);
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
+    assert!(matches!(rig.opened().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
 
     // the pointer leaves the list: still nothing moves; its mark says it wants you.
     cx.update_window(rig.window, |_, window, cx| window.hover("toolbar-overview", cx)).unwrap();
@@ -490,7 +495,7 @@ fn the_overview_shows_every_session_and_picking_a_card_opens_it(cx: &mut TestApp
         assert!(rig.exists(cx, card(n)), "session {n} has a card");
     }
     rig.click(cx, card(2));
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
+    assert!(matches!(rig.opened().as_slice(), [Cmd::Open(Some(id))] if *id == sid(2)));
     assert!(!rig.exists(cx, card(2)), "the overview has gone once it finished closing");
     assert!(rig.exists(cx, sid(2).0), "and the sidebar row is back in reach");
 }
@@ -532,7 +537,7 @@ fn arrows_and_return_pick_a_card_from_the_keyboard(cx: &mut TestAppContext) {
     let (key, target) = if open_at + 1 < order.len() { ("right", order[open_at + 1]) } else { ("left", order[open_at - 1]) };
     rig.press(cx, key);
     rig.press(cx, "enter");
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == target), "return opens the card the arrows landed on");
+    assert!(matches!(rig.opened().as_slice(), [Cmd::Open(Some(id))] if *id == target), "return opens the card the arrows landed on");
 }
 
 #[gpui_kit::test]
@@ -1496,7 +1501,7 @@ fn a_workspaces_sessions_are_its_tabs_and_a_turn_forks_into_a_new_one(cx: &mut T
     assert!(!rig.exists(cx, tab(&elsewhere)), "another folder is another workspace");
     rig.asked();
     rig.click(cx, tab(&b));
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == b.id));
+    assert!(matches!(rig.opened().as_slice(), [Cmd::Open(Some(id))] if *id == b.id));
     rig.feed(cx, vec![snapshot(b.clone(), vec![])]);
 
     // + is a new chat at once: the same folder, in place, no form.
@@ -1543,7 +1548,7 @@ fn a_tab_closes_an_empty_chat_at_once_and_asks_before_losing_history(cx: &mut Te
 
     // the open tab gone, the one beside it opens.
     rig.feed(cx, vec![UiEvent::Removed(a.id)]);
-    assert!(matches!(rig.asked().as_slice(), [Cmd::Open(Some(id))] if *id == c.id), "its neighbour, not the new-session form");
+    assert!(matches!(rig.opened().as_slice(), [Cmd::Open(Some(id))] if *id == c.id), "its neighbour, not the new-session form");
 }
 
 #[gpui_kit::test]
@@ -1880,7 +1885,7 @@ fn the_palette_finds_a_command_by_a_few_letters_and_runs_it(cx: &mut TestAppCont
     rig.press(cx, "cmd-k");
     rig.typed(cx, "split the auth");
     rig.press(cx, "enter");
-    assert!(matches!(rig.asked().last(), Some(Cmd::Open(Some(id))) if *id == sid(2)));
+    assert!(matches!(rig.opened().last(), Some(Cmd::Open(Some(id))) if *id == sid(2)));
 }
 
 // ---- surfaces ---------------------------------------------------------------------
@@ -2849,4 +2854,38 @@ fn how_sandboxes_are_reached_is_set_in_settings(cx: &mut TestAppContext) {
     rig.settle(cx);
     assert!(!rig.exists(cx, "net-relay-n0"), "websockets have no relay to choose");
     assert!(Net { relay: Relay::None, lookup: false, ..Net::default() }.check().is_err());
+}
+
+#[gpui_kit::test]
+fn a_chat_you_just_left_is_back_at_once_and_one_pointed_at_loads_ahead(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let b = session(2, "Split the auth module", RunState::Idle, None);
+    let c = session(3, "Write the docs", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.feed(cx, vec![UiEvent::Sessions(vec![a.clone(), b.clone(), c.clone()])]);
+    let open = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| (s.model.open.as_ref().map(|o| o.id), s.awaiting));
+
+    rig.shell.update(cx, |s, cx| s.open(b.id, cx));
+    let asked = rig.asked();
+    // open comes first: told to follow only `a` before it, the daemon would drop `b` and send all of it again.
+    let at = |want: &dyn Fn(&Cmd) -> bool| asked.iter().position(want);
+    assert!(at(&|c| matches!(c, Cmd::Open(Some(id)) if *id == b.id)) < at(&|c| matches!(c, Cmd::Follow(extra) if extra.contains(&a.id))), "{asked:?}");
+    rig.feed(cx, vec![snapshot(b.clone(), vec![])]);
+    assert_eq!(open(&rig, cx), (Some(b.id), None));
+
+    // back to `a`: it's still loaded, so it shows with nothing to wait for.
+    rig.shell.update(cx, |s, cx| s.open(a.id, cx));
+    assert_eq!(open(&rig, cx), (Some(a.id), None), "no wait for the daemon");
+    rig.asked();
+
+    // pointing at `c` for a moment follows it; its copy waits aside, and opening it is instant.
+    rig.shell.update(cx, |s, cx| {
+        s.keep_warm(c.id);
+        s.sync_follow();
+    });
+    assert!(rig.asked().iter().any(|cmd| matches!(cmd, Cmd::Follow(extra) if extra.contains(&c.id))));
+    rig.feed(cx, vec![snapshot(c.clone(), vec![])]);
+    assert_eq!(open(&rig, cx), (Some(a.id), None), "a chat loaded ahead doesn't take the pane");
+    rig.shell.update(cx, |s, cx| s.open(c.id, cx));
+    assert_eq!(open(&rig, cx), (Some(c.id), None));
 }
