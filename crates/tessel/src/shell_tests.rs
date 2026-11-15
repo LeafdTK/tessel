@@ -1237,7 +1237,7 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings {
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None,
                 agent_tools: true,
                 models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
             }),
@@ -1302,7 +1302,7 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
         ],
     );
     rig.shell.update(cx, |s, cx| {
@@ -1944,7 +1944,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { agent_tools: true, ..Default::default() })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
@@ -2316,51 +2316,65 @@ fn the_sidebar_stays_while_desktops_change_their_panes_and_a_swipe_switches(cx: 
     assert!(saved["desktops"][1]["layout"].is_object() && saved["desktops"][1].get("root").is_none(), "a desktop keeps panes, not a whole window");
 
     // two fingers to the left: the panes follow them, and the next desktop comes in beside.
+    // the events of one gesture come close together (the app's clock moves only when
+    // the test says); `settle` lets the springs finish once the fingers are off.
     let swipe = |rig: &mut Rig, cx: &mut TestAppContext, phase: TouchPhase, dx: f32| {
         let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(dx), px(1.))), touch_phase: phase, ..ScrollEvent::default() };
         cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
-        rig.settle(cx);
+        cx.run_until_parked();
+        rig.frame(cx);
     };
+    let wait = |cx: &mut TestAppContext, ms: u64| cx.executor().advance_clock(std::time::Duration::from_millis(ms));
     let moved = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| (s.desk.x.value(), s.desk.peek.as_ref().map(|p| p.0)));
     let width = rig.shell.read_with(cx, |s, _| s.pane_area.get().map(|b| f32::from(b.size.width))).unwrap();
     swipe(&mut rig, cx, TouchPhase::Started, -20.);
     // a slow hand: inside one gesture, how long it takes doesn't matter.
-    std::thread::sleep(std::time::Duration::from_millis(350));
+    wait(cx, 350);
     swipe(&mut rig, cx, TouchPhase::Moved, -50.);
     let (x, peek) = moved(&rig, cx);
     assert!((x + 70.).abs() < 1.0 && peek == Some(1), "the panes are where the fingers took them, the next desktop beside: {x} {peek:?}");
     assert_eq!(showing(&rig, cx), 0, "nothing switches while the fingers are down");
     // let go short of a third, and slowly: back it goes.
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    wait(cx, 120);
     swipe(&mut rig, cx, TouchPhase::Ended, 0.);
+    rig.settle(cx);
     assert_eq!((showing(&rig, cx), moved(&rig, cx)), (0, (0.0, None)), "springs back");
     // most of the way, then let go: on to the next desktop, once.
     swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    wait(cx, 16);
     swipe(&mut rig, cx, TouchPhase::Moved, -(width * 0.5));
-    std::thread::sleep(std::time::Duration::from_millis(120));
+    wait(cx, 120);
     swipe(&mut rig, cx, TouchPhase::Ended, 0.);
-    assert_eq!(showing(&rig, cx), 1);
-    assert_eq!(moved(&rig, cx), (0.0, None), "and the panes are home");
-    // the trackpad coasting afterwards switches nothing more.
+    // the trackpad coasting just after switches nothing more.
+    wait(cx, 30);
     swipe(&mut rig, cx, TouchPhase::Moved, -90.);
+    rig.settle(cx);
     assert_eq!(showing(&rig, cx), 1, "one swipe, one desktop");
+    assert_eq!(moved(&rig, cx), (0.0, None), "and the panes are home");
     // past the last desktop it only gives a little.
-    std::thread::sleep(std::time::Duration::from_millis(950));
+    wait(cx, 950);
     swipe(&mut rig, cx, TouchPhase::Started, -20.);
+    wait(cx, 16);
     swipe(&mut rig, cx, TouchPhase::Moved, -400.);
     assert!(moved(&rig, cx).0.abs() <= 60.0 && moved(&rig, cx).1.is_none(), "{:?}", moved(&rig, cx));
+    wait(cx, 120);
     swipe(&mut rig, cx, TouchPhase::Ended, 0.);
+    rig.settle(cx);
     assert_eq!(showing(&rig, cx), 1);
     // up and down is the list's, not a switch.
     swipe(&mut rig, cx, TouchPhase::Started, 0.);
     let ev = ScrollEvent { delta: ScrollDelta::Pixels(point(px(30.), px(120.))), touch_phase: TouchPhase::Moved, ..ScrollEvent::default() };
     cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.sidebar_swipe(&ev, window, cx))).unwrap();
     swipe(&mut rig, cx, TouchPhase::Ended, 0.);
+    rig.settle(cx);
     assert_eq!(showing(&rig, cx), 1);
     // a quick flick to the right goes back, however short.
     swipe(&mut rig, cx, TouchPhase::Started, 10.);
+    wait(cx, 16);
     swipe(&mut rig, cx, TouchPhase::Moved, 30.);
+    wait(cx, 8);
     swipe(&mut rig, cx, TouchPhase::Ended, 30.);
+    rig.settle(cx);
     assert_eq!(showing(&rig, cx), 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }

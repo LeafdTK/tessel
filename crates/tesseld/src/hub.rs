@@ -194,6 +194,8 @@ pub struct Hub {
     procs_seen: Arc<std::sync::Mutex<HashMap<i32, (SessionId, u64)>>>,
     /// when what's under the agents was last looked at.
     procs_looked: std::time::Instant,
+    /// when the sign-in files last changed, as last seen.
+    sign_ins_at: Option<std::time::SystemTime>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
@@ -278,6 +280,7 @@ impl Hub {
             mirrors: HashMap::new(),
             procs_seen: Default::default(),
             procs_looked: std::time::Instant::now(),
+            sign_ins_at: None,
             next_term: 1,
             restart: None,
             git_undo: Default::default(),
@@ -288,6 +291,8 @@ impl Hub {
         };
         hub.usage = std::fs::read_to_string(hub.cfg.paths.home.join("usage.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         hub.settings = load_settings(&hub.cfg.paths.settings());
+        // what's there now isn't a change: only signing in again later restarts the agents.
+        hub.sign_ins_at = hub.sign_ins_changed_at();
         let now = now_ms();
         for p in hub.store.load_sessions().await? {
             let id = p.meta.id;
@@ -1554,8 +1559,15 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let root = live.state.meta.worktree.as_ref().map_or_else(|| cwd.clone(), |w| w.repo.clone());
         let port = self.ports.of(&cwd);
         let mut env = crate::setup::env(&cwd, &root, port);
-        // sign-ins a mac brought here since the daemon started.
-        for (name, file) in [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token"), ("GH_TOKEN", "gh-token")] {
+        env.extend(self.sign_in_env());
+        env
+    }
+
+    /// the sign-ins a mac brought here, as they are now (not as they were when the
+    /// daemon started): for every agent and terminal it starts.
+    fn sign_in_env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        for (name, file) in SIGN_INS {
             if let Ok(t) = std::fs::read_to_string(self.cfg.paths.home.join("remote").join(file))
                 && !t.trim().is_empty()
             {
@@ -1563,6 +1575,11 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
         }
         env
+    }
+
+    /// when the sign-in files last changed.
+    fn sign_ins_changed_at(&self) -> Option<std::time::SystemTime> {
+        SIGN_INS.iter().filter_map(|(_, f)| std::fs::metadata(self.cfg.paths.home.join("remote").join(f)).and_then(|m| m.modified()).ok()).max()
     }
 
     /// the session's mirror terminal, headed for one more of its agent's Bash
@@ -1619,9 +1636,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         self.next_term += 1;
         let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: cols.max(2), rows: rows.max(1), session, command, exited: None, keep_open: true, agent };
         let mut env = vec![("TESSEL_HOME".to_owned(), self.cfg.paths.home.to_string_lossy().into_owned())];
-        if let Some(s) = session {
-            env.push(("TESSEL_SESSION".into(), s.to_string()));
-            env.extend(self.workspace_env(s));
+        match session {
+            Some(s) => {
+                env.push(("TESSEL_SESSION".into(), s.to_string()));
+                env.extend(self.workspace_env(s));
+            }
+            None => env.extend(self.sign_in_env()),
         }
         match crate::term::spawn(info.clone(), env, self.tx.clone()) {
             Ok(handle) => {
@@ -2018,6 +2038,15 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 *memory.lock().unwrap() = seen;
             });
         }
+        // signed in again (another account, a new token): every agent running starts
+        // again on it once it's between turns, carrying its conversation on.
+        let signed = self.sign_ins_changed_at();
+        if signed != self.sign_ins_at {
+            self.sign_ins_at = signed;
+            for live in self.sessions.values_mut().filter(|l| l.agent.is_some()) {
+                live.restart_when_idle = true;
+            }
+        }
         let reap_after = self.cfg.idle_reap.as_millis() as Millis;
         let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in ids {
@@ -2188,7 +2217,17 @@ fn not_found_item(item: &tessel_proto::ItemId) -> RpcError {
 }
 
 /// the settings file, or the defaults when there is none or it can't be read.
+/// the sign-ins a mac can bring: the variable each sets, and the file under `remote/` it's kept in.
+const SIGN_INS: [(&str, &str); 2] = [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token"), ("GH_TOKEN", "gh-token")];
+
 fn load_settings(path: &std::path::Path) -> tessel_proto::DaemonSettings {
+    let mut s = load_settings_as_saved(path);
+    // settings saved before projects were kept: there are none yet, which isn't "can't".
+    s.projects.get_or_insert_with(Vec::new);
+    s
+}
+
+fn load_settings_as_saved(path: &std::path::Path) -> tessel_proto::DaemonSettings {
     match std::fs::read(path) {
         Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
             eprintln!("tesseld: {} isn't readable ({e}); using the defaults", path.display());

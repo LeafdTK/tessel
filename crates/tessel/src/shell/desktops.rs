@@ -456,7 +456,9 @@ impl Shell {
         if self.ui.desktops.len() < 2 {
             return;
         }
-        let now = std::time::Instant::now();
+        // the app's clock, which a test steps itself: the wall clock under a busy machine
+        // made a quick flick look slow.
+        let now = cx.background_executor().now();
         let d = match ev.delta {
             ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
             ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
@@ -468,7 +470,8 @@ impl Shell {
                 g.gone = (0.0, 0.0);
                 g.sideways = None;
                 g.speed = 0.0;
-                g.last = Some(now);
+                // the first movement starts the timing; it has nothing to be timed against.
+                g.last = None;
                 // caught mid-flight: carry on from where it is, toward neither end yet.
                 g.commit = None;
                 let at = g.x.value();
@@ -517,10 +520,11 @@ impl Shell {
             return;
         }
         if let Some(last) = g.last {
-            let dt = now.duration_since(last).as_secs_f32();
-            if dt > 0.0 && d.0 != 0.0 {
+            // events arriving together count as a few milliseconds apart.
+            let dt = now.saturating_duration_since(last).as_secs_f32().max(0.004);
+            if d.0 != 0.0 {
                 // smoothed, so one odd event doesn't decide a flick.
-                g.speed = g.speed * 0.4 + (d.0 / dt.max(0.004)) * 0.6;
+                g.speed = g.speed * 0.4 + (d.0 / dt) * 0.6;
             }
         }
         g.last = Some(now);

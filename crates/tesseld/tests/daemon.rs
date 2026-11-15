@@ -1549,3 +1549,24 @@ async fn a_short_dictation_is_tidied_without_a_model() {
     let Response::Tidied { text, by } = c.request(Request::VoiceTidy { session: None, text: "um, ship it.".into() }).await.unwrap() else { panic!() };
     assert_eq!((text.as_str(), by.as_str()), ("Ship it.", "filter"), "a couple of words: the noises go, nothing more is asked");
 }
+
+#[tokio::test]
+async fn signing_in_again_moves_the_agents_onto_the_new_sign_in() {
+    let d = Daemon::start(&["plain", "resume"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), Some("hi")).await;
+    let done = until(&c, s.id, "a warm agent, between turns", |s| s.warm && wants(s) == Some(AttentionReason::Finished)).await;
+
+    // a new token, brought from a mac (or pasted): the agent is let go, its chat kept.
+    let remote = d.cfg.paths.home.join("remote");
+    std::fs::create_dir_all(&remote).unwrap();
+    std::fs::write(remote.join("claude-token"), "sk-ant-oat01-another-account").unwrap();
+    until(&c, s.id, "let go", |s| !s.warm).await;
+
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "still there?".into(), attachments: vec![] }).await.unwrap();
+    until(&c, s.id, "second turn", |s| s.last_seq > done.last_seq && wants(s) == Some(AttentionReason::Finished)).await;
+    let spawned = d.backend.spawned.lock().unwrap().clone();
+    assert_eq!(spawned.len(), 2);
+    assert!(spawned[1].resume, "the conversation carries on");
+    assert!(spawned[1].env.iter().any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat01-another-account"), "on the new sign-in");
+}

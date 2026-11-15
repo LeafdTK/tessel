@@ -575,6 +575,10 @@ pub struct DaemonSettings {
     /// the models offered first, in order (at most five), each with how it
     /// runs when picked. the rest are a search away.
     pub models: Vec<FavoriteModel>,
+    /// the projects the sidebar lists (their folders), kept when their last
+    /// session goes. none: a daemon from before it kept them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projects: Option<Vec<String>>,
 }
 
 /// a model in the loadout, and how it runs when picked.
@@ -594,7 +598,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")] }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()) }
     }
 }
 

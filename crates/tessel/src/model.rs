@@ -19,6 +19,13 @@ pub struct Model {
     pub connection: Connection,
     /// projects folded shut in the sidebar: their header shows, their sessions don't.
     pub collapsed: std::collections::HashSet<String>,
+    /// the folders of the projects the machine remembers: listed even with no sessions.
+    pub projects: Vec<String>,
+}
+
+/// the name a project goes by: its folder's last part.
+pub fn folder_name(folder: &str) -> String {
+    folder.trim_end_matches('/').rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("/").to_owned()
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -343,10 +350,19 @@ impl SidebarLayout {
         // moving to a section of its own and back, under your pointer.
         let mut rest: Vec<&SessionSummary> = model.sessions.iter().filter(|s| shown(s)).collect();
         rest.sort_by(|a, b| project_name(a).cmp(&project_name(b)).then(b.created_ms.cmp(&a.created_ms)).then(a.id.cmp(&b.id)));
+        // the projects remembered without a session in them now, in their places by name.
+        let mut empty: Vec<String> = model.projects.iter().map(|f| folder_name(f)).filter(|n| model.scope.is_empty() || model.scope.contains(n)).collect();
+        empty.sort();
+        empty.dedup();
+        let has: std::collections::HashSet<String> = rest.iter().map(|s| project_name(s)).collect();
+        let mut empty = empty.into_iter().filter(|n| !has.contains(n)).peekable();
         let mut current: Option<String> = None;
         for s in rest {
             let project = project_name(s);
             if current.as_ref() != Some(&project) {
+                while let Some(e) = empty.next_if(|e| *e < project) {
+                    entries.push(Entry::Header(e));
+                }
                 entries.push(Entry::Header(project.clone()));
                 current = Some(project);
             }
@@ -356,6 +372,7 @@ impl SidebarLayout {
             entries.push(Entry::Row(s.id));
             entries.extend(subs(s));
         }
+        entries.extend(empty.map(Entry::Header));
         Self { entries }
     }
 
@@ -797,6 +814,16 @@ mod tests {
                 Entry::Sub(id, task) => format!("{}/{task}", id.0.as_u128()),
             })
             .collect()
+    }
+
+    #[test]
+    fn a_project_stays_listed_after_its_last_session_goes() {
+        let mut m = Model::default();
+        m.set_sessions(vec![in_project(1, "/work/api", None), in_project(2, "/work/web", None)]);
+        m.projects = vec!["/work/api".into(), "/work/docs".into(), "/work/web".into(), "/work/zed".into(), "/work/aaa/".into()];
+        assert_eq!(shape(&SidebarLayout::build(&m)), ["[aaa]", "[api]", "1", "[docs]", "[web]", "2", "[zed]"], "the empty ones in their places by name");
+        m.scope = vec!["docs".into()];
+        assert_eq!(shape(&SidebarLayout::build(&m)), ["[docs]"], "a desktop's scope holds for them too");
     }
 
     #[test]

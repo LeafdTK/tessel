@@ -966,6 +966,7 @@ impl Shell {
             UiEvent::Sessions(sessions) => {
                 self.have_sessions = true;
                 self.model.set_sessions(sessions);
+                self.remember_projects();
                 self.reflow_sidebar();
                 self.mark_open_seen();
                 if let Some(prefix) = self.open_on_launch.take() {
@@ -1002,6 +1003,7 @@ impl Shell {
                     self.scripts_tried.remove(&summary.cwd);
                 }
                 let newly = self.model.update_session(summary);
+                self.remember_projects();
                 self.reflow_sidebar();
                 if is_open && self.window_active {
                     self.mark_open_seen();
@@ -1108,7 +1110,12 @@ impl Shell {
             }
             UiEvent::Call { call, cmd, args } => self.ui_calls.push((call, cmd, args)),
             UiEvent::Watched(w) => self.ui_watched = w,
-            UiEvent::DaemonSettings(d) => self.daemon_settings = Some(d),
+            UiEvent::DaemonSettings(d) => {
+                self.model.projects = d.projects.clone().unwrap_or_default();
+                self.daemon_settings = Some(d);
+                self.remember_projects();
+                self.reflow_sidebar();
+            }
             UiEvent::Answer { tag, result } if tag.starts_with("git.") => self.git_answer(tag, result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
             UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),

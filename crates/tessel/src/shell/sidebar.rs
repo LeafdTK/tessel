@@ -8,7 +8,47 @@ use gpui_kit::component::popover::Popover;
 impl Shell {
     /// the folder a project's sessions run in: its repository for worktrees.
     pub(crate) fn project_folder(&self, project: &str) -> Option<String> {
-        self.model.sessions.iter().find(|s| project_name(s) == project).map(|s| s.worktree.as_ref().map_or(s.cwd.clone(), |w| w.repo.clone()))
+        self.model
+            .sessions
+            .iter()
+            .find(|s| project_name(s) == project)
+            .map(|s| s.worktree.as_ref().map_or(s.cwd.clone(), |w| w.repo.clone()))
+            .or_else(|| self.model.projects.iter().find(|f| crate::model::folder_name(f) == project).cloned())
+    }
+
+    /// every project a session runs in is remembered by the machine, so it stays
+    /// in the list after its last session goes. not on a daemon too old to keep them.
+    pub(crate) fn remember_projects(&mut self) {
+        let Some(known) = self.daemon_settings.as_ref().and_then(|d| d.projects.clone()) else { return };
+        // a tab opened in a worktree may not know it is one: its workspace's other tabs do.
+        let repo_of: std::collections::HashMap<&str, &str> = self.model.sessions.iter().filter_map(|s| s.worktree.as_ref().map(|w| (s.cwd.as_str(), w.repo.as_str()))).collect();
+        let mut next = known.clone();
+        for s in &self.model.sessions {
+            let folder = s.worktree.as_ref().map(|w| w.repo.as_str()).or_else(|| repo_of.get(s.cwd.as_str()).copied()).unwrap_or(s.cwd.as_str());
+            let folder = folder.trim_end_matches('/');
+            if !folder.is_empty() && !next.iter().any(|f| f == folder) {
+                next.push(folder.to_owned());
+            }
+        }
+        if next != known {
+            self.set_projects(next);
+        }
+    }
+
+    fn set_projects(&mut self, projects: Vec<String>) {
+        self.model.projects = projects.clone();
+        if let Some(d) = self.daemon_settings.as_mut() {
+            d.projects = Some(projects.clone());
+        }
+        self.cmd(Cmd::SetSettings(serde_json::json!({ "projects": projects })));
+    }
+
+    /// take a project with no sessions off the list.
+    pub(crate) fn forget_project(&mut self, folder: &str, cx: &mut Context<Self>) {
+        let next: Vec<String> = self.model.projects.iter().filter(|f| *f != folder).cloned().collect();
+        self.set_projects(next);
+        self.reflow_sidebar();
+        cx.notify();
     }
 
     pub(crate) fn toggle_project(&mut self, project: &str, cx: &mut Context<Self>) {
@@ -104,6 +144,7 @@ impl Shell {
                             let Some(shell) = me.upgrade() else { return div().into_any_element() };
                             let p = shell.read(cx).palette.get();
                             let folded = shell.read(cx).model.collapsed.contains(&name);
+                            let empty = !shell.read(cx).model.sessions.iter().any(|s| project_name(s) == name);
                             let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>| {
                                 let (me, popover) = (me.clone(), popover.clone());
                                 move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -111,7 +152,7 @@ impl Shell {
                                     let _ = me.update(cx, |this, cx| f(this, window, cx));
                                 }
                             };
-                            let (f1, f2, f3, f4, n) = (folder.clone(), folder.clone(), folder.clone(), folder.clone(), name.clone());
+                            let (f1, f2, f3, f4, f5, n) = (folder.clone(), folder.clone(), folder.clone(), folder.clone(), folder.clone(), name.clone());
                             theme::float_list(&p)
                                 .w(px(240.))
                                 .child(theme::float_item(&p, "project-menu-new", Some("plus"), "New session, in place", None, false).on_click(act(Box::new(move |this, w, cx| {
@@ -126,6 +167,12 @@ impl Shell {
                                 .child(theme::float_item(&p, "project-menu-finder", Some("folder-open"), "Open in Finder", None, false).on_click(act(Box::new(move |_, _, _| reveal(&f3)))))
                                 .child(theme::float_item(&p, "project-menu-copy", Some("copy"), "Copy path", None, false).on_click(act(Box::new(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(f4.clone()))))))
                                 .child(theme::float_item(&p, "project-menu-fold", Some(if folded { "eye" } else { "eye-off" }), if folded { "Show its sessions" } else { "Hide its sessions" }, None, false).on_click(act(Box::new(move |this, _, cx| this.toggle_project(&n, cx)))))
+                                .when(empty, |d| {
+                                    d.child(theme::float_sep(&p)).child(
+                                        theme::float_item(&p, "project-menu-forget", Some("x"), "Remove from the sidebar", Some("The folder stays where it is"), false)
+                                            .on_click(act(Box::new(move |this, _, cx| this.forget_project(&f5, cx)))),
+                                    )
+                                })
                                 .into_any_element()
                         }),
                     ),
