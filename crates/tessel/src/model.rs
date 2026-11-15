@@ -53,6 +53,10 @@ pub enum Change {
     Appended(usize),
     /// one existing row changed and may be a different height now.
     Row(usize),
+    /// rows `at..at + removed` became `added` new ones (one landed in the
+    /// middle: a subagent's step under its call). the rest stayed put, so
+    /// the list keeps where it was scrolled to.
+    Spliced { at: usize, removed: usize, added: usize },
     /// everything may have changed.
     Reset,
 }
@@ -125,11 +129,13 @@ impl Open {
             let moved = self.items[i].parent != item.parent;
             self.items[i] = item;
             if moved {
+                let before = self.row_ids();
                 self.arrange();
-                return Change::Reset;
+                return self.spliced(&before);
             }
             return Change::Row(self.row_of[i]);
         }
+        let before = self.row_ids();
         let in_order = self.items.last().is_none_or(|last| item.order >= last.order);
         if in_order {
             self.index.insert(item.id.clone(), self.items.len());
@@ -140,14 +146,28 @@ impl Open {
             self.items.insert(at, item);
             self.index = self.items.iter().enumerate().map(|(i, it)| (it.id.clone(), i)).collect();
         }
-        let before = self.rows.len();
         self.arrange();
         // the common case: the new row landed at the very end.
-        if in_order && self.rows.last().map(|r| r.0) == Some(self.items.len() - 1) && self.rows.len() == before + 1 {
+        if in_order && self.rows.last().map(|r| r.0) == Some(self.items.len() - 1) && self.rows.len() == before.len() + 1 {
             Change::Appended(1)
         } else {
-            Change::Reset
+            self.spliced(&before)
         }
+    }
+
+    /// each row's item and depth, as the list is now.
+    fn row_ids(&self) -> Vec<(ItemId, u8)> {
+        self.rows.iter().map(|&(i, d)| (self.items[i].id.clone(), d)).collect()
+    }
+
+    /// the smallest change from `before` to the rows now: what's the same at
+    /// the start and the end stays, the middle is replaced.
+    fn spliced(&self, before: &[(ItemId, u8)]) -> Change {
+        let now = self.row_ids();
+        let head = before.iter().zip(&now).take_while(|(a, b)| a == b).count();
+        let room = before.len().min(now.len()) - head;
+        let tail = before.iter().rev().zip(now.iter().rev()).take(room).take_while(|(a, b)| a == b).count();
+        Change::Spliced { at: head, removed: before.len() - head - tail, added: now.len() - head - tail }
     }
 
     /// append streaming text. a delta that doesn't start where our text ends
@@ -679,7 +699,7 @@ mod tests {
         assert_eq!(o.upsert(text("b", 2, 3, "stale", true)), Change::None, "an older version must not overwrite a newer one");
         assert!(matches!(&o.row(1).unwrap().0.body, ItemBody::Text { text, streaming: false } if text == "done"));
         // out of order arrival is placed correctly rather than corrupting the list.
-        assert_eq!(o.upsert(text("z", 0, 9, "first", false)), Change::Reset);
+        assert_eq!(o.upsert(text("z", 0, 9, "first", false)), Change::Spliced { at: 0, removed: 0, added: 1 });
         assert_eq!(o.shown(), [("z", 0), ("a", 0), ("b", 0)]);
         assert_eq!(o.upsert(text("a", 1, 10, "one!", false)), Change::Row(1), "the index survives a reorder");
     }
@@ -710,9 +730,9 @@ mod tests {
     fn work_inside_a_call_sits_under_that_call_even_when_two_run_at_once() {
         // two subagents started together; their steps arrive interleaved.
         let mut o = open(vec![text("user", 1, 1, "go", false), text("agent-a", 2, 2, "", false), text("agent-b", 3, 3, "", false)]);
-        assert_eq!(o.upsert(child("a1", "agent-a", 4)), Change::Reset, "it lands in the middle, not at the end");
+        assert_eq!(o.upsert(child("a1", "agent-a", 4)), Change::Spliced { at: 2, removed: 0, added: 1 }, "it lands in the middle, not at the end, and only it changes");
         assert_eq!(o.upsert(child("b1", "agent-b", 5)), Change::Appended(1), "under the last call is still the end");
-        assert_eq!(o.upsert(child("a2", "agent-a", 6)), Change::Reset);
+        assert_eq!(o.upsert(child("a2", "agent-a", 6)), Change::Spliced { at: 3, removed: 0, added: 1 });
         assert_eq!(o.upsert(child("b2", "agent-b", 7)), Change::Appended(1));
         assert_eq!(o.upsert(text("done", 8, 8, "done", false)), Change::Appended(1));
         assert_eq!(

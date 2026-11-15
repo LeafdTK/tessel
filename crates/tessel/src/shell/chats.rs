@@ -168,6 +168,11 @@ impl Shell {
                 Change::Row(i) => {
                     s.remeasure_items(i..i + 1, cx);
                 }
+                Change::Spliced { at, removed, added } => {
+                    if !s.splice(at..at + removed, added, cx) {
+                        s.reset(len, cx);
+                    }
+                }
                 Change::Reset => {
                     s.reset(len, cx);
                 }

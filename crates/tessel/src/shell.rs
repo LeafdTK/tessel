@@ -891,6 +891,19 @@ impl Shell {
     // ---- events from the daemon ------------------------------------------------
 
     fn apply(&mut self, ev: UiEvent, cx: &mut Context<Self>) {
+        // TESSEL_EVENT_LOG: what the daemon's connection brings, as it comes.
+        if std::env::var_os("TESSEL_EVENT_LOG").is_some() {
+            let what = match &ev {
+                UiEvent::Snapshot(s) => format!("snapshot {} ({} items)", s.summary.id, s.items.len()),
+                UiEvent::Down(e) => format!("down: {e}"),
+                UiEvent::On { host, via } => format!("on {host:?} via {via}"),
+                UiEvent::Connected => "connected".into(),
+                _ => String::new(),
+            };
+            if !what.is_empty() {
+                eprintln!("tessel event: {what}");
+            }
+        }
         match ev {
             UiEvent::On { host, via } => self.host_connected(host, via),
             UiEvent::Connected => {
@@ -1122,6 +1135,12 @@ impl Shell {
             }
             Change::Row(i) => {
                 s.remeasure_items(i..i + 1, cx);
+            }
+            Change::Spliced { at, removed, added } => {
+                // in the middle: the list keeps where you'd scrolled to.
+                if !s.splice(at..at + removed, added, cx) {
+                    s.reset(len, cx);
+                }
             }
             Change::Reset => s.reset(len, cx),
         });
