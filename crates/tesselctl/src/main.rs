@@ -213,11 +213,29 @@ async fn run() -> anyhow::Result<()> {
     }
 
     if cmd == "daemon" {
-        return match args.next("start, stop or restart")?.as_str() {
+        let what = args.next("start, stop or restart")?;
+        // a host's daemon can be restarted from here; starting and stopping it is the host's own business.
+        if on_host.is_some() && what != "restart" {
+            bail!("`daemon {what}` is for this machine's daemon; a host's is started by `tesselctl host setup`, and stopped with its machine");
+        }
+        return match what.as_str() {
             "restart" => {
                 let now = args.flag("--now");
                 let wait_secs = args.opt("--wait")?.map(|s| s.parse()).transpose()?;
-                let (c, _, w) = Client::connect(&tessel_proto::local::socket(&home), "tesselctl").await?;
+                let mut _link = None;
+                let (c, w) = match &on_host {
+                    Some(which) => {
+                        let hosts = tessel_remote::hosts::Hosts::load(&home);
+                        let host = hosts.find(which).with_context(|| format!("no host {which} (tesselctl host ls)"))?;
+                        let r = tessel_remote::connect(&home, host, "tesselctl").await.with_context(|| format!("reaching {}", host.name))?;
+                        _link = Some(r.link);
+                        (r.client, r.welcome)
+                    }
+                    None => {
+                        let (c, _, w) = Client::connect(&tessel_proto::local::socket(&home), "tesselctl").await?;
+                        (c, w)
+                    }
+                };
                 if !w.capabilities.iter().any(|c| c == "handoff") {
                     bail!("this daemon (pid {}) can't hand over to a new one; `tesselctl daemon stop` stops it, and what it runs with it", w.daemon_pid);
                 }
@@ -230,8 +248,9 @@ async fn run() -> anyhow::Result<()> {
                         eprintln!("waiting for {busy} agent(s) to finish their turn (--now cuts them short)");
                     }
                 }
+                // a host's daemon is replaced by its own binary on disk (`host update` puts a new one there).
                 let bin = tessel_client::daemon_binary();
-                let bin = bin.is_absolute().then(|| bin.to_string_lossy().into_owned());
+                let bin = (on_host.is_none() && bin.is_absolute()).then(|| bin.to_string_lossy().into_owned());
                 match c.request(Request::DaemonRestart { now, wait_secs, bin }).await? {
                     Response::Restarted { pid, terminals, agents, cut_short } => {
                         println!("restarted: tesseld pid {} took over from pid {}", pid, w.daemon_pid);
