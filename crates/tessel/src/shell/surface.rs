@@ -251,7 +251,7 @@ impl Shell {
                 .gap(z(8.))
                 .items_start()
                 .child(h_flex().w(z(18.)).h(z(20.)).flex_shrink_0().justify_center().items_center().child(live_dot(pal.blocked, &pal)))
-                .child(div().set(Type::Callout).text_color(pal.label).child(s(&p, "text").unwrap_or("Working").to_owned()))
+                .child(div().flex_1().min_w_0().set(Type::Callout).text_color(pal.label).child(s(&p, "text").unwrap_or("Working").to_owned()))
                 .into_any_element(),
             "checkbox" => {
                 let checked = p.get("checked").and_then(Value::as_bool).unwrap_or(false);

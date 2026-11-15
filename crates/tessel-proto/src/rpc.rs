@@ -286,6 +286,12 @@ pub enum Request {
         session: SessionId,
         path: String,
     },
+    /// a file in the session's folder, as it is: for taking it to another
+    /// machine (a download from a dev box). up to `MAX_BYTES`.
+    FsBytes {
+        session: SessionId,
+        path: String,
+    },
     // ---- projects ---------------------------------------------------------------
     /// a file dropped on a window showing this machine from another: kept
     /// here (under tessel's home, not in anyone's project) so what's said
@@ -754,6 +760,11 @@ pub enum Response {
         procs: Vec<crate::procs::AgentProcess>,
     },
     /// a project's folder, and what its first session is asked (if anything).
+    /// a file's bytes (`FsBytes`), base64 encoded, and its name.
+    Bytes {
+        name: String,
+        data: String,
+    },
     /// where a dropped file was kept.
     Dropped {
         path: String,
@@ -1035,3 +1046,6 @@ pub enum ProjectHow {
         github: bool,
     },
 }
+
+/// the most a file sent whole (`FsBytes`) can be: base64 of it fits in a frame.
+pub const MAX_BYTES: u64 = 22 * 1024 * 1024;

@@ -972,6 +972,9 @@ impl Hub {
             Request::FsIndex { session } => {
                 return self.in_workdir(client, id, session, |dir| async move { workspace::index(&dir).await.map(|(paths, more)| Response::Paths { paths, more }) });
             }
+            Request::FsBytes { session, path } => {
+                return self.in_workdir(client, id, session, |dir| async move { workspace::bytes(&dir, &path).await.map(|(name, data)| Response::Bytes { name, data }) });
+            }
             Request::FsPreview { session, path } => {
                 return self.in_workdir(client, id, session, |dir| async move {
                     use base64::Engine as _;

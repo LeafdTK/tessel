@@ -11,6 +11,7 @@ pub mod graph;
 pub mod model;
 pub mod motion;
 pub mod notch;
+pub mod pdf;
 pub mod rich;
 pub mod shell;
 #[cfg(test)]

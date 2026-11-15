@@ -10,6 +10,7 @@ use super::*;
 use gpui_kit::component::diff::{Diff, DiffFile, DiffLineRange, DiffMode, DiffState};
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::menu::ContextMenuExt as _;
 use tessel_proto::{ChangeStatus, CheckState, DirEntry, FileContent, FileDiff, GitSummary, PrStatus};
 use std::collections::HashSet;
 
@@ -62,6 +63,8 @@ pub(crate) struct OpenFile {
     _watch: Option<Subscription>,
     /// for a file that is looked at, not edited: the image, and what it is.
     pub(crate) preview: Option<(std::sync::Arc<gpui_kit::Image>, Option<String>)>,
+    /// a pdf's pages, drawn here.
+    pub(crate) pages: Option<Vec<std::sync::Arc<gpui_kit::RenderImage>>>,
     /// what changed, marked in the gutter.
     pub(crate) marks: Option<gpui_kit::component::input::GutterDecorationCollection>,
     /// markdown read as a document rather than edited as source.
@@ -83,6 +86,8 @@ pub(crate) struct Workspace {
     pub(crate) diff: Option<Entity<DiffState>>,
     /// shown in place of a diff: binary, too large, or nothing changed.
     pub(crate) diff_note: Option<String>,
+    /// what a download from the tree did, said over it.
+    pub(crate) files_note: Option<String>,
     pub(crate) split: bool,
     /// folders we have listed, by path from the session's folder ("" is the top).
     pub(crate) dirs: HashMap<String, Vec<DirEntry>>,
@@ -132,6 +137,130 @@ impl Workspace {
             }
         }
     }
+}
+
+impl Shell {
+    /// what a right click on a file or folder in the tree offers: on a dev box,
+    /// to download it here; on this mac, to show it in the Finder. and its path.
+    fn file_menu(&self, rel: String, is_dir: bool, cx: &mut Context<Self>) -> impl Fn(gpui_kit::component::menu::PopupMenu, &mut Window, &mut Context<gpui_kit::component::menu::PopupMenu>) -> gpui_kit::component::menu::PopupMenu + 'static {
+        use gpui_kit::component::menu::PopupMenuItem;
+        let me = cx.entity().downgrade();
+        let remote = self.on_host();
+        let cwd = self.ws_session.and_then(|s| self.model.summary(s)).map(|s| s.cwd.clone()).unwrap_or_default();
+        move |menu, _, _| {
+            let full = if rel.is_empty() { cwd.clone() } else { format!("{}/{}", cwd.trim_end_matches('/'), rel) };
+            let menu = if remote && !is_dir {
+                let (me, rel) = (me.clone(), rel.clone());
+                menu.item(PopupMenuItem::new("Download").on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |this, cx| this.download_file(rel.clone(), cx));
+                }))
+            } else if !remote {
+                let full = full.clone();
+                menu.item(PopupMenuItem::new("Show in Finder").on_click(move |_, _, _| {
+                    let _ = std::process::Command::new("open").arg("-R").arg(&full).spawn();
+                }))
+            } else {
+                menu
+            };
+            let full = full.clone();
+            menu.item(PopupMenuItem::new("Copy path").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(full.clone()))))
+        }
+    }
+
+    /// a file pressed in the tree and moved far enough: a drag out of the window.
+    fn file_drag_move(&mut self, rel: &str, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((from, at)) = self.file_drag_from.clone() else { return };
+        if from != rel || ev.pressed_button != Some(MouseButton::Left) {
+            if ev.pressed_button.is_none() {
+                self.file_drag_from = None;
+            }
+            return;
+        }
+        let (dx, dy) = (f32::from(ev.position.x - at.x), f32::from(ev.position.y - at.y));
+        if dx * dx + dy * dy < 36.0 {
+            return;
+        }
+        self.file_drag_from = None;
+        let Some(view) = super::view_of(window) else { return };
+        let Some(session) = self.ws_session else { return };
+        let cwd = self.model.summary(session).map(|s| s.cwd.clone()).unwrap_or_default();
+        let name = rel.rsplit('/').next().unwrap_or(rel).to_owned();
+        let what = if self.on_host() {
+            // fetched from the box when it's dropped, off the main thread.
+            let (cmds, rel) = (self.bridge.cmds.clone(), rel.to_owned());
+            crate::drops::Outgoing::There {
+                name,
+                fetch: Box::new(move || {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    PROMISED.lock().unwrap_or_else(|e| e.into_inner()).push_back(tx);
+                    cmds.send(Cmd::Ask { tag: "file.promise", req: tessel_proto::Request::FsBytes { session, path: rel.clone() } }).map_err(|_| "tessel went".to_owned())?;
+                    rx.recv_timeout(std::time::Duration::from_secs(180)).map_err(|_| "it took too long".to_owned())?
+                }),
+            }
+        } else {
+            crate::drops::Outgoing::Here(std::path::PathBuf::from(format!("{}/{}", cwd.trim_end_matches('/'), rel)))
+        };
+        crate::drops::drag_out(view, what);
+        cx.notify();
+    }
+
+    /// the box sent a file being dragged out: to whoever's waiting on it, first come first served.
+    pub(crate) fn promise_answer(&mut self, result: Result<tessel_proto::Response, String>) {
+        use base64::Engine as _;
+        let Some(tx) = PROMISED.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else { return };
+        let _ = tx.send(match result {
+            Ok(tessel_proto::Response::Bytes { data, .. }) => base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string()),
+            Ok(_) => Err("the box's tessel is too old to send files".into()),
+            Err(e) => Err(e),
+        });
+    }
+
+    /// a file on the dev box, brought here: into Downloads, then shown.
+    pub(crate) fn download_file(&mut self, rel: String, cx: &mut Context<Self>) {
+        let Some(session) = self.ws_session else { return };
+        self.ws.files_note = Some(format!("Downloading {}…", rel.rsplit('/').next().unwrap_or(&rel)));
+        self.cmd(Cmd::Ask { tag: "file.download", req: tessel_proto::Request::FsBytes { session, path: rel } });
+        cx.notify();
+    }
+
+    pub(crate) fn download_answer(&mut self, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        use base64::Engine as _;
+        self.ws.files_note = Some(match result {
+            Ok(tessel_proto::Response::Bytes { name, data }) => match base64::engine::general_purpose::STANDARD.decode(data) {
+                Ok(bytes) => {
+                    let dir = std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Downloads")).unwrap_or_else(std::env::temp_dir);
+                    let path = free_name(&dir, &name);
+                    match std::fs::write(&path, bytes) {
+                        Ok(()) => {
+                            let _ = std::process::Command::new("open").arg("-R").arg(&path).spawn();
+                            format!("Downloaded {} to Downloads.", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(name))
+                        }
+                        Err(e) => format!("Couldn't save {name}: {e}."),
+                    }
+                }
+                Err(e) => format!("It came garbled: {e}."),
+            },
+            Ok(_) => "The box's tessel is too old to send files. Update tessel there.".into(),
+            Err(e) => format!("Couldn't download it: {e}."),
+        });
+        cx.notify();
+    }
+}
+
+/// files being dragged out of a dev box, waiting on its bytes, in the order asked.
+static PROMISED: std::sync::Mutex<std::collections::VecDeque<std::sync::mpsc::Sender<Result<Vec<u8>, String>>>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// `name` in `dir`, or "name 2", "name 3"… if it's taken.
+fn free_name(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_owned(), format!(".{e}")),
+        _ => (name.to_owned(), String::new()),
+    };
+    (2..1000).map(|n| dir.join(format!("{stem} {n}{ext}"))).find(|p| !p.exists()).unwrap_or(first)
 }
 
 /// a plan the agent wrote, or a file it created.
@@ -411,7 +540,7 @@ impl Shell {
         };
         let rendered = super::files::is_markdown(&f.path) && editor.is_some() && self.file_caret.is_none();
         let note = if f.binary { Some("Looking at it…".to_owned()) } else { note };
-        let next = OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch, preview: None, marks: None, rendered, saved_once: false, reverted: false };
+        let next = OpenFile { path: f.path, editor, saved: text, dirty: false, note, saving: None, _watch: watch, preview: None, pages: None, marks: None, rendered, saved_once: false, reverted: false };
         if let Some(old) = self.ws.file.replace(next).filter(|o| self.ws.file.as_ref().is_some_and(|n| n.path != o.path)) {
             self.file_closed(&old);
         }
@@ -781,6 +910,9 @@ impl Shell {
         let showing_file = self.ws.file.is_some();
         let mut tree = v_flex().id("files-tree").overflow_y_scroll().py_1();
         tree = if showing_file { tree.flex_shrink_0().h(px(220.)) } else { tree.flex_1().min_h_0() };
+        if let Some(n) = self.ws.files_note.clone() {
+            tree = tree.child(self.quiet(n));
+        }
         if rows.is_empty() {
             tree = tree.child(self.quiet("This folder is empty."));
         }
@@ -789,8 +921,10 @@ impl Shell {
             let selected = self.ws.file.as_ref().is_some_and(|f| f.path == row.path);
             let path = row.path.clone();
             let is_dir = row.is_dir;
-            tree = tree.child(
-                h_flex()
+            let menu = self.file_menu(row.path.clone(), row.is_dir, cx);
+            let (drag_path, drag_move) = (row.path.clone(), row.path.clone());
+            let menu_id = ElementId::from(SharedString::from(format!("file-menu-{}", row.path)));
+            let row_el = h_flex()
                     .id(ElementId::from(SharedString::from(format!("file-{}", row.path))))
                     .test_support()
                     .aria_label(SharedString::from(row.path.clone()))
@@ -803,13 +937,19 @@ impl Shell {
                     .when(selected, |d| d.bg(p.selection))
                     .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
                     .on_click(cx.listener(move |this, _, _, cx| if is_dir { this.toggle_dir(path.clone(), cx) } else { this.open_file(path.clone(), cx) }))
+                    // pressed and moved a little: dragged out of the window, to the Finder or anywhere.
+                    .when(!is_dir, |d| {
+                        d.on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, _| this.file_drag_from = Some((drag_path.clone(), ev.position))))
+                            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| this.file_drag_move(&drag_move, ev, window, cx)))
+                    })
                     .child(div().w(px(12.)).flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(match (row.is_dir, row.open) {
                         (true, true) => "▾",
                         (true, false) => "▸",
                         _ => "",
                     }))
-                    .child(div().flex_1().overflow_hidden().set(Type::Callout).text_color(if row.is_dir { p.secondary } else { p.label }).truncate().child(row.name)),
-            );
+                    .child(div().flex_1().overflow_hidden().set(Type::Callout).text_color(if row.is_dir { p.secondary } else { p.label }).truncate().child(row.name));
+            // a right click: download it, show it, copy its path.
+            tree = tree.child(div().id(menu_id).child(row_el).context_menu(menu));
         }
         if full {
             tree = tree.child(self.quiet("There is more here than fits. Close a folder to see the rest."));
@@ -852,6 +992,7 @@ impl Shell {
             })
             .child(Button::new("file-close").xsmall().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
         let body: AnyElement = match (&file.preview, &file.editor) {
+            _ if file.pages.is_some() => self.pages_el(file.pages.as_deref().unwrap_or_default()),
             (Some((image, note)), _) => self.preview_el(image, note.as_deref()),
             (None, Some(editor)) if file.rendered => self.document_el(editor.read(cx).value().to_string(), cx),
             (None, Some(editor)) => div().size_full().child(Editor::new(editor).h(relative(1.)).bordered(false).readonly(!editable)).into_any_element(),

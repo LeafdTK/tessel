@@ -280,3 +280,178 @@ mod mac {
         }
     }
 }
+
+/// a file dragged out of the window: one on this mac (its path), or one on a
+/// dev box, written where it's dropped once it is (fetched by `fetch`).
+pub enum Outgoing {
+    Here(PathBuf),
+    There { name: String, fetch: Box<dyn Fn() -> Result<Vec<u8>, String> + Send + Sync> },
+}
+
+/// start dragging `what` out of `view`'s window, from the mouse event being
+/// handled now. false if it couldn't start.
+pub fn drag_out(view: usize, what: Outgoing) -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe {
+        out::start(view, what)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (view, what);
+        false
+    }
+}
+
+#[cfg(target_os = "macos")]
+mod out {
+    use super::Outgoing;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+    use objc2::sel;
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Point {
+        x: f64,
+        y: f64,
+    }
+    unsafe impl objc2::encode::Encode for Point {
+        const ENCODING: objc2::encode::Encoding = objc2::encode::Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]);
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+    unsafe impl objc2::encode::Encode for Rect {
+        const ENCODING: objc2::encode::Encoding = {
+            use objc2::encode::Encoding;
+            Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])])
+        };
+    }
+
+    fn nsstring(s: &str) -> *mut AnyObject {
+        let c = std::ffi::CString::new(s).unwrap_or_default();
+        unsafe { msg_send![AnyClass::get(c"NSString").expect("Foundation"), stringWithUTF8String: c.as_ptr()] }
+    }
+
+    /// what a promise is of: kept alive as long as its delegate is (leaked: a drag at a time).
+    struct Promise {
+        name: String,
+        fetch: Box<dyn Fn() -> Result<Vec<u8>, String> + Send + Sync>,
+    }
+
+    extern "C-unwind" fn op_mask(_: &AnyObject, _: Sel, _: *mut AnyObject, _: isize) -> usize {
+        1 // copy
+    }
+
+    extern "C-unwind" fn file_name(this: &AnyObject, _: Sel, _: *mut AnyObject, _: *mut AnyObject) -> *mut AnyObject {
+        let p = unsafe { promise_of(this) };
+        nsstring(p.map_or("file", |p| p.name.as_str()))
+    }
+
+    extern "C-unwind" fn queue(_: &AnyObject, _: Sel, _: *mut AnyObject) -> *mut AnyObject {
+        // written off the main thread: fetching it waits on the window, which is the main thread.
+        static Q: OnceLock<usize> = OnceLock::new();
+        *Q.get_or_init(|| {
+            let q: *mut AnyObject = unsafe { msg_send![AnyClass::get(c"NSOperationQueue").expect("Foundation"), new] };
+            q as usize
+        }) as *mut AnyObject
+    }
+
+    extern "C-unwind" fn write(this: &AnyObject, _: Sel, _: *mut AnyObject, url: *mut AnyObject, done: *mut c_void) {
+        let block = done as *const block2::Block<dyn Fn(*mut AnyObject)>;
+        let result = unsafe { promise_of(this) }.ok_or_else(|| "it went".to_owned()).and_then(|p| (p.fetch)()).and_then(|bytes| {
+            let path: *mut AnyObject = unsafe { msg_send![url, path] };
+            let c: *const std::ffi::c_char = unsafe { msg_send![path, UTF8String] };
+            let path = unsafe { std::ffi::CStr::from_ptr(c) }.to_string_lossy().into_owned();
+            std::fs::write(&path, bytes).map_err(|e| e.to_string())
+        });
+        let error: *mut AnyObject = match result {
+            Ok(()) => std::ptr::null_mut(),
+            Err(e) => unsafe {
+                let info: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary").expect("Foundation"), dictionaryWithObject: nsstring(&e), forKey: nsstring("NSLocalizedDescription")];
+                msg_send![AnyClass::get(c"NSError").expect("Foundation"), errorWithDomain: nsstring("tessel"), code: 1isize, userInfo: info]
+            },
+        };
+        if !block.is_null() {
+            unsafe { (*block).call((error,)) };
+        }
+    }
+
+    unsafe fn promise_of(this: &AnyObject) -> Option<&'static Promise> {
+        let ivar = this.class().instance_variable(c"promise")?;
+        let p: *mut c_void = unsafe { *ivar.load::<*mut c_void>(this) };
+        (!p.is_null()).then(|| unsafe { &*(p as *const Promise) })
+    }
+
+    fn classes() -> (&'static AnyClass, &'static AnyClass) {
+        static C: OnceLock<(usize, usize)> = OnceLock::new();
+        let (s, d) = *C.get_or_init(|| unsafe {
+            let source = AnyClass::get(c"TesselDragSource").map(|c| c as *const AnyClass as usize).unwrap_or_else(|| {
+                let mut b = ClassBuilder::new(c"TesselDragSource", AnyClass::get(c"NSObject").expect("Foundation")).expect("a class");
+                b.add_method(sel!(draggingSession:sourceOperationMaskForDraggingContext:), op_mask as extern "C-unwind" fn(_, _, _, _) -> _);
+                b.register() as *const AnyClass as usize
+            });
+            let delegate = AnyClass::get(c"TesselPromiseDelegate").map(|c| c as *const AnyClass as usize).unwrap_or_else(|| {
+                let mut b = ClassBuilder::new(c"TesselPromiseDelegate", AnyClass::get(c"NSObject").expect("Foundation")).expect("a class");
+                b.add_ivar::<*mut c_void>(c"promise");
+                b.add_method(sel!(filePromiseProvider:fileNameForType:), file_name as extern "C-unwind" fn(_, _, _, _) -> _);
+                b.add_method(sel!(operationQueueForFilePromiseProvider:), queue as extern "C-unwind" fn(_, _, _) -> _);
+                b.add_method(sel!(filePromiseProvider:writePromiseToURL:completionHandler:), write as extern "C-unwind" fn(_, _, _, _, _));
+                b.register() as *const AnyClass as usize
+            });
+            (source, delegate)
+        });
+        unsafe { (&*(s as *const AnyClass), &*(d as *const AnyClass)) }
+    }
+
+    pub(super) unsafe fn start(view: usize, what: Outgoing) -> bool {
+        let view = view as *mut AnyObject;
+        if view.is_null() {
+            return false;
+        }
+        unsafe {
+            let app: *mut AnyObject = msg_send![AnyClass::get(c"NSApplication").expect("AppKit"), sharedApplication];
+            let event: *mut AnyObject = msg_send![app, currentEvent];
+            if event.is_null() {
+                return false;
+            }
+            let (source_class, delegate_class) = classes();
+            let (writer, ext): (*mut AnyObject, String) = match what {
+                Outgoing::Here(path) => {
+                    let url: *mut AnyObject = msg_send![AnyClass::get(c"NSURL").expect("Foundation"), fileURLWithPath: nsstring(&path.to_string_lossy())];
+                    (url, path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default())
+                }
+                Outgoing::There { name, fetch } => {
+                    let Some(provider_class) = AnyClass::get(c"NSFilePromiseProvider") else { return false };
+                    let delegate: *mut AnyObject = msg_send![delegate_class, new];
+                    let ext = name.rsplit_once('.').map(|(_, e)| e.to_owned()).unwrap_or_default();
+                    let promise = Box::into_raw(Box::new(Promise { name, fetch })) as *mut c_void;
+                    if let Some(ivar) = delegate_class.instance_variable(c"promise") {
+                        *ivar.load_mut::<*mut c_void>(&mut *delegate) = promise;
+                    }
+                    let provider: *mut AnyObject = msg_send![provider_class, alloc];
+                    let provider: *mut AnyObject = msg_send![provider, initWithFileType: nsstring("public.data"), delegate: delegate];
+                    (provider, ext)
+                }
+            };
+            let item: *mut AnyObject = msg_send![AnyClass::get(c"NSDraggingItem").expect("AppKit"), alloc];
+            let item: *mut AnyObject = msg_send![item, initWithPasteboardWriter: writer];
+            let ws: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace").expect("AppKit"), sharedWorkspace];
+            let icon: *mut AnyObject = msg_send![ws, iconForFileType: nsstring(if ext.is_empty() { "public.data" } else { &ext })];
+            let at: Point = msg_send![event, locationInWindow];
+            let at: Point = msg_send![view, convertPoint: at, fromView: std::ptr::null_mut::<AnyObject>()];
+            let _: () = msg_send![item, setDraggingFrame: Rect { x: at.x - 16.0, y: at.y - 16.0, w: 32.0, h: 32.0 }, contents: icon];
+            let items: *mut AnyObject = msg_send![AnyClass::get(c"NSArray").expect("Foundation"), arrayWithObject: item];
+            let source: *mut AnyObject = msg_send![source_class, new];
+            let session: *mut AnyObject = msg_send![view, beginDraggingSessionWithItems: items, event: event, source: source];
+            !session.is_null()
+        }
+    }
+}

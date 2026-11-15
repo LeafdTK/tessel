@@ -1127,6 +1127,21 @@ fn thumbnail_note(path: &str) -> &'static str {
     }
 }
 
+/// a file as it is, base64 encoded, with its name: what a download takes.
+pub async fn bytes(dir: &Path, rel: &str) -> Result<(String, String), RpcError> {
+    use base64::Engine as _;
+    let full = resolve(dir, rel)?;
+    let meta = tokio::fs::metadata(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't open {rel}: {e}")))?;
+    if meta.is_dir() {
+        return Err(RpcError::new(ErrorCode::Invalid, format!("{} is a folder", short(rel))));
+    }
+    if meta.len() > tessel_proto::MAX_BYTES {
+        return Err(RpcError::new(ErrorCode::Invalid, format!("{} is over {} MB, too big to send whole", short(rel), tessel_proto::MAX_BYTES / 1_048_576)));
+    }
+    let bytes = tokio::fs::read(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't read {rel}: {e}")))?;
+    Ok((short(rel).to_owned(), base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
 /// an image for a file: images as they are; anything else Quick Look can
 /// draw, as a thumbnail made here, on the daemon's machine.
 pub async fn preview(dir: &Path, rel: &str) -> Result<(String, Vec<u8>, Option<String>), RpcError> {
@@ -1137,6 +1152,11 @@ pub async fn preview(dir: &Path, rel: &str) -> Result<(String, Vec<u8>, Option<S
     {
         let bytes = tokio::fs::read(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't read {rel}: {e}")))?;
         return Ok((mime.to_owned(), bytes, None));
+    }
+    // a pdf goes as it is: the window draws its pages (a linux box has no previewer).
+    if rel.to_ascii_lowercase().ends_with(".pdf") && meta.len() as usize <= MAX_PREVIEW {
+        let bytes = tokio::fs::read(&full).await.map_err(|e| RpcError::new(ErrorCode::NotFound, format!("can't read {rel}: {e}")))?;
+        return Ok(("application/pdf".to_owned(), bytes, None));
     }
     let out_dir = std::env::temp_dir().join(format!("tessel-preview-{}", std::process::id()));
     tokio::fs::create_dir_all(&out_dir).await.map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))?;

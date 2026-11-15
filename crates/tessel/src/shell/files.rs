@@ -120,6 +120,29 @@ impl Shell {
         let p = self.palette.get();
         let Some(file) = self.ws.file.as_mut() else { return };
         match (tag, result) {
+            ("file.preview", Ok(Response::Preview { mime, data, note })) if mime == "application/pdf" => {
+                use base64::Engine as _;
+                let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_default();
+                let path = file.path.clone();
+                let _ = note;
+                file.note = Some("Opening it…".into());
+                // drawn off the ui thread: a long pdf takes a moment.
+                cx.spawn(async move |this, cx| {
+                    let pages = cx.background_executor().spawn(async move { crate::pdf::pages(&bytes, 1400) }).await;
+                    let _ = this.update(cx, |this, cx| {
+                        let Some(file) = this.ws.file.as_mut().filter(|f| f.path == path) else { return };
+                        match pages {
+                            Some(p) => {
+                                file.note = (p.len() == crate::pdf::MAX_PAGES).then(|| format!("The first {} pages.", crate::pdf::MAX_PAGES));
+                                file.pages = Some(p);
+                            }
+                            None => file.note = Some("This PDF couldn't be read.".into()),
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
             ("file.preview", Ok(Response::Preview { mime, data, note })) => {
                 use base64::Engine as _;
                 let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_default();
@@ -168,6 +191,22 @@ impl Shell {
             .bg(p.fill.opacity(0.4))
             .child(img(image.clone()).max_w_full().flex_1().min_h_0().object_fit(ObjectFit::Contain))
             .children(note.map(|n| div().set(Type::Subheadline).text_color(p.tertiary).child(n.to_owned())))
+            .into_any_element()
+    }
+
+    /// a pdf: its pages, one under another, each the pane's width.
+    pub(crate) fn pages_el(&self, pages: &[Arc<gpui_kit::RenderImage>]) -> AnyElement {
+        let p = self.palette.get();
+        v_flex()
+            .id("pdf-pages")
+            .test_support()
+            .size_full()
+            .overflow_y_scroll()
+            .p(theme::z(16.))
+            .gap(theme::z(12.))
+            .items_center()
+            .bg(p.fill.opacity(0.4))
+            .children(pages.iter().map(|page| img(page.clone()).w_full().max_w(px(900.)).rounded(theme::z(4.)).shadow_sm()))
             .into_any_element()
     }
 

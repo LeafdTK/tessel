@@ -235,6 +235,8 @@ pub struct Shell {
     pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
     pub(crate) draft_append: Option<String>,
+    /// a file pressed in the tree, and where: moved far enough, it's dragged out.
+    pub(crate) file_drag_from: Option<(String, Point<Pixels>)>,
     /// bring the browser pane up at the next frame (the agent opened a page).
     reveal_browser: bool,
     /// the same, for the new-session box.
@@ -724,6 +726,7 @@ impl Shell {
             browser_moved: None,
             draft_append: None,
             reveal_browser: false,
+            file_drag_from: None,
             new_append: None,
             shipping: false,
             usage: Vec::new(),
@@ -1097,6 +1100,8 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("kube.") => self.kube_answer(tag, result, cx),
             UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
+            UiEvent::Answer { tag: "file.download", result } => self.download_answer(result, cx),
+            UiEvent::Answer { tag: "file.promise", result } => self.promise_answer(result),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
             UiEvent::Answer { tag: "palette.files", result } => self.palette_answer(result, cx),
             UiEvent::Answer { tag: tag @ ("drop.new" | "drop.open"), result } => match result {
