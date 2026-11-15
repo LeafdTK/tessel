@@ -175,6 +175,13 @@ impl Shell {
     /// take what is on the clipboard if it is something to attach. returns
     /// false for plain text, which the message box pastes as usual.
     pub(crate) fn paste(&mut self, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        // read from the clipboard itself first: gpui gives text before pictures, so a
+        // picture copied with its address came out as the address, and a screenshot
+        // (a tiff) as nothing at all.
+        if let Some(paths) = crate::drops::clipboard_files() {
+            self.attach_paths(paths, window, cx);
+            return true;
+        }
         let mut took = false;
         for entry in item.entries() {
             match entry {

@@ -455,3 +455,169 @@ mod out {
         }
     }
 }
+
+/// what's on the clipboard to attach, as files: copied files (from the
+/// Finder), or a copied picture (written to a png first). none when it's text
+/// to paste as text. which one the copying app offered first wins: a browser's
+/// "Copy Image" leads with the picture (its address trails), a spreadsheet's cells
+/// lead with their text (a picture of them trails). tests never read the real one.
+pub fn clipboard_files() -> Option<Vec<PathBuf>> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    unsafe {
+        clip::files()
+    }
+    #[cfg(any(not(target_os = "macos"), test))]
+    None
+}
+
+#[cfg(target_os = "macos")]
+mod clip {
+    use super::drop_dir;
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use std::ffi::CStr;
+    use std::path::PathBuf;
+
+    fn nsstring(s: &CStr) -> *mut AnyObject {
+        unsafe { msg_send![AnyClass::get(c"NSString").expect("Foundation"), stringWithUTF8String: s.as_ptr()] }
+    }
+
+    unsafe fn text_of(o: *mut AnyObject) -> Option<String> {
+        if o.is_null() {
+            return None;
+        }
+        let c: *const std::ffi::c_char = unsafe { msg_send![o, UTF8String] };
+        (!c.is_null()).then(|| unsafe { CStr::from_ptr(c) }.to_string_lossy().into_owned())
+    }
+
+    #[cfg_attr(test, allow(dead_code))]
+    pub(super) unsafe fn files() -> Option<Vec<PathBuf>> {
+        unsafe { files_on(msg_send![AnyClass::get(c"NSPasteboard").expect("AppKit"), generalPasteboard]) }
+    }
+
+    pub(super) unsafe fn files_on(pb: *mut AnyObject) -> Option<Vec<PathBuf>> {
+        unsafe {
+            let types: *mut AnyObject = msg_send![pb, types];
+            if types.is_null() {
+                return None;
+            }
+            let has = |t: &CStr| -> bool {
+                let b: Bool = msg_send![types, containsObject: nsstring(t)];
+                b.as_bool()
+            };
+            let place = |t: &CStr| -> usize { msg_send![types, indexOfObject: nsstring(t)] };
+            // files copied in the Finder.
+            if has(c"NSFilenamesPboardType") || has(c"public.file-url") {
+                let yes: *mut AnyObject = msg_send![AnyClass::get(c"NSNumber").expect("Foundation"), numberWithBool: Bool::YES];
+                let classes: *mut AnyObject = msg_send![AnyClass::get(c"NSArray").expect("Foundation"), arrayWithObject: AnyClass::get(c"NSURL").expect("Foundation") as *const AnyClass as *mut AnyObject];
+                let only_files: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary").expect("Foundation"), dictionaryWithObject: yes, forKey: nsstring(c"NSPasteboardURLReadingFileURLsOnlyKey")];
+                let urls: *mut AnyObject = msg_send![pb, readObjectsForClasses: classes, options: only_files];
+                if !urls.is_null() {
+                    let n: usize = msg_send![urls, count];
+                    let paths: Vec<PathBuf> = (0..n)
+                        .filter_map(|i| {
+                            let u: *mut AnyObject = msg_send![urls, objectAtIndex: i];
+                            text_of(msg_send![u, path]).map(PathBuf::from)
+                        })
+                        .collect();
+                    if !paths.is_empty() {
+                        return Some(paths);
+                    }
+                }
+            }
+            let picture = [c"public.png", c"public.tiff", c"public.jpeg"].into_iter().filter(|t| has(t)).min_by_key(|t| place(t))?;
+            // NSNotFound is usize::MAX, so a clipboard without text never beats the picture.
+            let text = [c"public.utf8-plain-text", c"NSStringPboardType", c"public.rtf"].into_iter().map(|t| place(t)).min().unwrap_or(usize::MAX);
+            if text < place(picture) {
+                return None;
+            }
+            let data: *mut AnyObject = msg_send![pb, dataForType: nsstring(picture)];
+            if data.is_null() {
+                return None;
+            }
+            let png = if picture == c"public.png" {
+                data
+            } else {
+                let rep: *mut AnyObject = msg_send![AnyClass::get(c"NSBitmapImageRep").expect("AppKit"), imageRepWithData: data];
+                if rep.is_null() {
+                    return None;
+                }
+                let props: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary").expect("Foundation"), dictionary];
+                msg_send![rep, representationUsingType: 4usize, properties: props]
+            };
+            if png.is_null() {
+                return None;
+            }
+            let len: usize = msg_send![png, length];
+            let bytes: *const std::ffi::c_void = msg_send![png, bytes];
+            if bytes.is_null() || len == 0 {
+                return None;
+            }
+            let dir = drop_dir()?;
+            let path = dir.join("Pasted image.png");
+            std::fs::write(&path, std::slice::from_raw_parts(bytes.cast::<u8>(), len)).ok()?;
+            Some(vec![path])
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod clip_tests {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use std::ffi::CStr;
+
+    fn ns(s: &CStr) -> *mut AnyObject {
+        unsafe { msg_send![AnyClass::get(c"NSString").unwrap(), stringWithUTF8String: s.as_ptr()] }
+    }
+
+    /// a private pasteboard holding `items` (type, bytes), in that order.
+    fn board(items: &[(&CStr, &[u8])]) -> *mut AnyObject {
+        unsafe {
+            let pb: *mut AnyObject = msg_send![AnyClass::get(c"NSPasteboard").unwrap(), pasteboardWithUniqueName];
+            let types: *mut AnyObject = msg_send![AnyClass::get(c"NSMutableArray").unwrap(), array];
+            for (t, _) in items {
+                let _: () = msg_send![types, addObject: ns(t)];
+            }
+            let _: isize = msg_send![pb, declareTypes: types, owner: std::ptr::null_mut::<AnyObject>()];
+            for (t, bytes) in items {
+                let data: *mut AnyObject = msg_send![AnyClass::get(c"NSData").unwrap(), dataWithBytes: bytes.as_ptr().cast::<std::ffi::c_void>(), length: bytes.len()];
+                let ok: Bool = msg_send![pb, setData: data, forType: ns(t)];
+                assert!(ok.as_bool());
+            }
+            pb
+        }
+    }
+
+    fn png() -> Vec<u8> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255])).write_to(&mut out, image::ImageFormat::Png).unwrap();
+        out.into_inner()
+    }
+
+    #[test]
+    fn a_copied_picture_pastes_as_a_png_and_copied_text_stays_text() {
+        let pic = png();
+        // a browser's copy image: the picture first, its address after.
+        let got = unsafe { super::clip::files_on(board(&[(c"public.png", &pic), (c"public.utf8-plain-text", b"https://x.test/a.png")])) }.expect("the picture");
+        assert_eq!(std::fs::read(&got[0]).unwrap(), pic);
+        // a screenshot is only a tiff: it comes out a png.
+        let mut tiff = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 255, 255])).write_to(&mut tiff, image::ImageFormat::Tiff).unwrap();
+        let got = unsafe { super::clip::files_on(board(&[(c"public.tiff", tiff.get_ref())])) }.expect("the screenshot");
+        let back = image::open(&got[0]).unwrap();
+        assert_eq!((back.width(), back.height()), (3, 2));
+        assert!(std::fs::read(&got[0]).unwrap().starts_with(b"\x89PNG"));
+        // cells copied from a spreadsheet: text first, a picture of them after.
+        assert!(unsafe { super::clip::files_on(board(&[(c"public.utf8-plain-text", b"42"), (c"public.png", &pic)])) }.is_none());
+        assert!(unsafe { super::clip::files_on(board(&[(c"public.utf8-plain-text", b"hi")])) }.is_none());
+        // files copied in the finder.
+        let dir = std::env::temp_dir().join(format!("tessel-clip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("notes.txt");
+        std::fs::write(&f, "x").unwrap();
+        let url = format!("file://{}", f.display());
+        let got = unsafe { super::clip::files_on(board(&[(c"public.file-url", url.as_bytes()), (c"public.utf8-plain-text", b"notes.txt")])) }.expect("the file");
+        assert_eq!(got, vec![f]);
+    }
+}
