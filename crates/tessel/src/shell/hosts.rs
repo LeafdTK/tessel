@@ -936,10 +936,16 @@ impl Shell {
                 (Some(Err(_)), true) => ("circle-x", p.failed),
                 _ => ("circle-check", p.finished),
             };
+            // the step under way spins; the rest are marked done or failed.
+            let mark = if last && run.done.is_none() {
+                gpui_kit::component::spinner::Spinner::new().xsmall().color(ink).into_any_element()
+            } else {
+                Icon::empty().path(format!("icons/{icon}.svg")).size(z(13.)).text_color(ink).into_any_element()
+            };
             list = list.child(
                 h_flex()
                     .gap_2()
-                    .child(Icon::empty().path(format!("icons/{icon}.svg")).size(z(13.)).text_color(ink))
+                    .child(mark)
                     .child(div().set(Type::Callout).text_color(if last && run.done.is_none() { p.label } else { p.secondary }).child(step.clone())),
             );
             for note in notes {

@@ -640,7 +640,20 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     say(Said::Step("Connecting".into()));
     host.address = Some(url);
     host.transport = Transport::Vercel;
-    let c = crate::connect(home, host, "tessel-setup").await?;
+    // its service was started a moment ago: its key can take a while to be
+    // found by, so a first try that misses isn't the end.
+    let mut tries = 0;
+    let c = loop {
+        tries += 1;
+        match crate::connect(home, host, "tessel-setup").await {
+            Ok(c) => break c,
+            Err(e) if tries < 3 => {
+                say(Said::Note(format!("not yet ({e:#}); trying again")));
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    };
     host.build = Some(c.welcome.build.clone());
     Ok(())
 }
