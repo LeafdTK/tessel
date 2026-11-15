@@ -235,6 +235,8 @@ pub struct Shell {
     pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
     pub(crate) draft_append: Option<String>,
+    /// bring the browser pane up at the next frame (the agent opened a page).
+    reveal_browser: bool,
     /// the same, for the new-session box.
     pub(crate) new_append: Option<String>,
     /// Settings → Scripts, while it's showing.
@@ -721,6 +723,7 @@ impl Shell {
             page_opening: HashSet::new(),
             browser_moved: None,
             draft_append: None,
+            reveal_browser: false,
             new_append: None,
             shipping: false,
             usage: Vec::new(),
@@ -1131,6 +1134,11 @@ impl Shell {
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
             UiEvent::BrowserCall { call, session, act, agent, first } => {
+                // the agent went somewhere in the chat you're in: the page comes up
+                // where you can see it, not into a browser pane that isn't shown.
+                if agent && matches!(act, tessel_proto::BrowserAct::Open { url: Some(_) } | tessel_proto::BrowserAct::Navigate { .. }) && self.model.open.as_ref().is_some_and(|o| o.id == session) {
+                    self.reveal_browser = true;
+                }
                 if self.native_view.is_some() {
                     self.page_calls.push(browser::PageCall { session, act, agent, call: Some(call), first: Some(first) });
                 } else {
@@ -2611,6 +2619,9 @@ impl Render for Shell {
                 s.set_value(next, window, cx);
                 s.set_cursor_position(gpui_kit::component::input::Position { line: last, character: u32::MAX }, window, cx);
             });
+        }
+        if std::mem::take(&mut self.reveal_browser) && !self.browser_visible() {
+            self.show_browser(window, cx);
         }
         if let Some(more) = self.new_append.take() {
             let next = format!("{}{more}", self.new_prompt.read(cx).value().trim_end());
