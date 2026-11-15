@@ -1,5 +1,70 @@
 # Changelog
 
+## [0.4.0](https://github.com/LeafdTK/tessel/compare/v0.3.0...v0.4.0) (2026-11-15)
+
+
+### Features
+
+* a dev box's ports open in the window's browser ([f2d163b](https://github.com/LeafdTK/tessel/commit/f2d163b277da7bba385ac7c28f6e35742dcd85b7))
+* a host can name its ssh key ([cb04709](https://github.com/LeafdTK/tessel/commit/cb047097c4fba1f7e202c07d6ecc2789f354c50d))
+* agents glow under the glass while they work ([6c60a7d](https://github.com/LeafdTK/tessel/commit/6c60a7d15a95874dc54802ac57e6efa1230bfa28))
+* apple music style colour field behind glass ([6309a8e](https://github.com/LeafdTK/tessel/commit/6309a8e238b7d39017d7cc14657b9bc62fa60167))
+* dev boxes in vercel sandboxes ([4a680b5](https://github.com/LeafdTK/tessel/commit/4a680b51e03f57b69712da1a549b26e6d198e2e4))
+* dictation is tidied, groq or haiku ([df0b093](https://github.com/LeafdTK/tessel/commit/df0b093a92e5605737f57ec8f9bdbcf082888743))
+* dot critters behind the new-session card ([4321305](https://github.com/LeafdTK/tessel/commit/43213051b384284c9ebe86638236e57208be6378))
+* every claude model in the picker, or any id ([083f8fe](https://github.com/LeafdTK/tessel/commit/083f8fed32c6a8d57a34aab5ad02c43bf13cc269))
+* file tree icons and git marks, editor pane ([c05dc34](https://github.com/LeafdTK/tessel/commit/c05dc3411e8bc05071395ef0ac1f4c44abc8c336))
+* fish button opens the critters panel ([e353dbc](https://github.com/LeafdTK/tessel/commit/e353dbc202c3acffd3cd2da4a497f7ae4a949194))
+* frozen backdrop for glass modals, off for now ([5bd4bbf](https://github.com/LeafdTK/tessel/commit/5bd4bbf3b8a02800de012b23af4d879a2879c647))
+* glass title bars and every claude model ([a0f46ae](https://github.com/LeafdTK/tessel/commit/a0f46ae482a8a3e97e26eb282237fe68118855c1))
+* glow under glass is a setting, off by default ([e4adc40](https://github.com/LeafdTK/tessel/commit/e4adc40dac0d79ae16e938d2cbb82353a45db6fd))
+* hands-free talking, background tasks shown as such ([3343083](https://github.com/LeafdTK/tessel/commit/3343083eb4de93982700e23ed36e3022c6e3be50))
+* hold option to talk in the message box ([482a9f1](https://github.com/LeafdTK/tessel/commit/482a9f171cc4649e8e0cda80f8090a85b05aab5f))
+* host picker box actions, warm chat switching ([0e778d3](https://github.com/LeafdTK/tessel/commit/0e778d3f0334d43c0d82f2c17159f34df57c39e9))
+* hosts in the window, projects made by the daemon ([f902aab](https://github.com/LeafdTK/tessel/commit/f902aab4e42cd43271e48e3b8a52d94a78c9025c))
+* keep a vercel token in the keychain ([06f7a87](https://github.com/LeafdTK/tessel/commit/06f7a870bd688efb3d6794947feb5b6100682f56))
+* linux dev boxes, reached over quic ([66dca43](https://github.com/LeafdTK/tessel/commit/66dca4358218c6d0124077086aeec2ad9396db72))
+* liquid glass for the glass material ([7ef757a](https://github.com/LeafdTK/tessel/commit/7ef757a9cabbde2878056bf54ee4332ea2f4b59b))
+* panes and cards are native liquid glass ([f80b302](https://github.com/LeafdTK/tessel/commit/f80b302efde67b6e6ec94e7f5fe80a48fcdde167))
+* paste a claude token for a box ([07ee4f2](https://github.com/LeafdTK/tessel/commit/07ee4f2b53f7e863925815e258777a950076e1b7))
+* pdf pages, downloads and drags out of the file tree ([be18238](https://github.com/LeafdTK/tessel/commit/be18238c8b80e5107c1d377bf2e5cea637addade))
+* predictive echo for terminals on a box ([4faf1ee](https://github.com/LeafdTK/tessel/commit/4faf1eee0f8123be6e4feb3457146ae85195ab81))
+* processes pane, what agents left running ([4e73a1e](https://github.com/LeafdTK/tessel/commit/4e73a1edff1089edd2b39b39670a447a3816faf9))
+* real liquid glass over the chat ([a7e3831](https://github.com/LeafdTK/tessel/commit/a7e3831884e7f63b52aa0732f86226c24a212bba))
+* retry, switch model or edit after a failed turn ([860f5ab](https://github.com/LeafdTK/tessel/commit/860f5ab0228694471b121de61a2699146df45b93))
+* sandbox connections are set in settings ([aadff17](https://github.com/LeafdTK/tessel/commit/aadff172e9a9295af2826fe1ddbc57ab456a5732))
+* sandboxes delete from vercel, any size, disk optional ([a2ed5b1](https://github.com/LeafdTK/tessel/commit/a2ed5b1e3f57c124f76e46f62d2639d1926e3f8f))
+* setup flow that brings your claude ([e170468](https://github.com/LeafdTK/tessel/commit/e170468fe0c5b702f1834804afca7780c1ad3d6a))
+* sidebar with machine card and quiet rows ([cdb8486](https://github.com/LeafdTK/tessel/commit/cdb8486f92b5167894aec5b6a3897d725b9f6037))
+* vercel sandboxes over quic by key, like tern ([f388a12](https://github.com/LeafdTK/tessel/commit/f388a122b7a47103efb9801e9f37b91604e228e4))
+
+
+### Fixes
+
+* a dead terminal's server counts as left behind ([1c885c7](https://github.com/LeafdTK/tessel/commit/1c885c7515bcc80badf07062083cc9ca3276907e))
+* a new tab stays in its worktree's project ([3f08d1c](https://github.com/LeafdTK/tessel/commit/3f08d1c786c8136ef4a23366d09c56767eacc077))
+* agent tools survive a daemon restart ([92b1d11](https://github.com/LeafdTK/tessel/commit/92b1d11584a4d362a6a47890bc0ef49c1cb5d929))
+* agents run servers with bash, waits fail fast ([04f0cec](https://github.com/LeafdTK/tessel/commit/04f0cec087c6349a8bacd761656c9bf5b350bfb1))
+* chats keep your scroll while subagents add rows ([9692881](https://github.com/LeafdTK/tessel/commit/969288196bd1e431e982e1940df03e9dcd1b13e1))
+* chats stay in their project, one-line subagents ([37b3272](https://github.com/LeafdTK/tessel/commit/37b32724ae8f1f333369d3bcc449581532103892))
+* clones on a box can bring your github sign-in ([9ac0ca9](https://github.com/LeafdTK/tessel/commit/9ac0ca93b4c3d03b32dee6bf9a01a6c6eeca20de))
+* cmd+v pastes pictures and copied files ([f4e5ed7](https://github.com/LeafdTK/tessel/commit/f4e5ed7ddd9e51c46ba4e97ff1da5455046690e2))
+* drops of pictures, files sent to boxes, steadier switching ([811a537](https://github.com/LeafdTK/tessel/commit/811a5376667fa9063e91926802eace0014adc74f))
+* glass keeps the solid layout, menus draw whole ([697bea8](https://github.com/LeafdTK/tessel/commit/697bea8a6de33f50dbfd2b83555531f970a7bfbf))
+* glass wash rounded and in one hue family ([2b80bee](https://github.com/LeafdTK/tessel/commit/2b80bee4e0cc31cf91dd60e4991104469bedd5b1))
+* hosts settings, one menu per machine ([600b0d5](https://github.com/LeafdTK/tessel/commit/600b0d56a7f8f616d477c41e77992aba9f396fd3))
+* model picker shows only the loadout ([b860383](https://github.com/LeafdTK/tessel/commit/b86038302a75a17cf9e7f423a85a2ad3a4c94416))
+* picker test expects every model listed ([dd196eb](https://github.com/LeafdTK/tessel/commit/dd196eb3232437a8fa8dea068ddc45aca7060d2a))
+* plain neutral panes, glass only over content ([b6d3805](https://github.com/LeafdTK/tessel/commit/b6d380568741ce23d41dc9261ea8e3b0f6668596))
+* plain tiles for machines and projects ([095ab3b](https://github.com/LeafdTK/tessel/commit/095ab3b32cf5087a6a23189caf635719d6d504a3))
+* process rows keep their names in narrow panes ([1a09338](https://github.com/LeafdTK/tessel/commit/1a09338b71d328176fa1c00e1504b4521fdf9785))
+* projects outlive sessions, agents follow sign-in ([45d641a](https://github.com/LeafdTK/tessel/commit/45d641af4d1af9d3e41505c4855b97dc9663af1d))
+* sandbox uploads retry when stuck and show progress ([9c43355](https://github.com/LeafdTK/tessel/commit/9c43355328a1ad2cc1e65240c9b05dc053302730))
+* setup waits for the box and its spinner spins ([8b63824](https://github.com/LeafdTK/tessel/commit/8b63824663507fc2d02290cbc43ba711154b47ab))
+* **tesselctl:** daemon restart honours --host ([72fddba](https://github.com/LeafdTK/tessel/commit/72fddbaa73dc3f4a6de65d6e08710c8289acf0d1))
+* the browser comes up when an agent opens a page ([7cf3d21](https://github.com/LeafdTK/tessel/commit/7cf3d21bfcfb556f70b783f7ab8b2c9596df3110))
+* working rings turn on display frames ([4e92222](https://github.com/LeafdTK/tessel/commit/4e92222a79a55ce5c45bd4cf8fa020e0c8758fe7))
+
 ## [0.3.0](https://github.com/LeafdTK/tessel/compare/v0.2.0...v0.3.0) (2026-11-13)
 
 
