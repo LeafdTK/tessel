@@ -247,10 +247,89 @@ impl Account {
         Ok(())
     }
 
-    /// files into `dir` there, from a gzipped tarball.
-    pub async fn upload(&self, session: &str, dir: &str, tgz: Vec<u8>) -> anyhow::Result<()> {
-        let (code, text) = self.call("POST", &format!("/v2/sandboxes/sessions/{session}/fs/write"), Some(tgz), "application/gzip", &[("x-cwd", dir)]).await?;
-        anyhow::ensure!(code < 400, "copying files: vercel said {code}: {}", String::from_utf8_lossy(&text).chars().take(300).collect::<String>());
+    /// files into `dir` there, from a gzipped tarball, saying how far it's got.
+    /// vercel sometimes stops reading an upload part way and never says so:
+    /// one that makes no progress for a while is given up on and tried again.
+    pub async fn upload(&self, session: &str, dir: &str, tgz: Vec<u8>, say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
+        const TRIES: u32 = 3;
+        let mut last = None;
+        for attempt in 1..=TRIES {
+            match self.upload_once(session, dir, &tgz, say).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if attempt < TRIES {
+                        say(Said::Note(format!("it stalled; trying again ({} of {TRIES})", attempt + 1)));
+                    }
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| anyhow::anyhow!("copying files failed")))
+    }
+
+    async fn upload_once(&self, session: &str, dir: &str, tgz: &[u8], say: &mut (dyn FnMut(Said) + Send)) -> anyhow::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        let tmp = std::env::temp_dir().join(format!("tessel-vercel-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp)?;
+        let cfg = tmp.join(format!("{:x}.cfg", rand_u64()));
+        {
+            let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&cfg)?;
+            writeln!(f, "header = \"Authorization: Bearer {}\"", self.token)?;
+            writeln!(f, "header = \"x-cwd: {dir}\"")?;
+        }
+        let url = format!("https://api.vercel.com/v2/sandboxes/sessions/{session}/fs/write?teamId={}", self.team);
+        let mut cmd = tokio::process::Command::new("curl");
+        // slower than a byte a second for 20 seconds is stuck, not slow.
+        cmd.args(["-sS", "-m", "600", "--speed-limit", "1", "--speed-time", "20", "-K"])
+            .arg(&cfg)
+            .args(["-X", "POST", "-w", "\n%{http_code}", "-H", "Content-Type: application/gzip", "--data-binary", "@-"])
+            .arg(&url)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().context("running curl")?;
+        let mut stdin = child.stdin.take().context("curl's stdin")?;
+        let total = tgz.len() as u64;
+        say(Said::Progress(0, total));
+        // fed in pieces, so what's gone is known as it goes.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<u64>();
+        let body = tgz.to_vec();
+        let feed = tokio::spawn(async move {
+            let mut sent = 0u64;
+            for piece in body.chunks(64 * 1024) {
+                if stdin.write_all(piece).await.is_err() {
+                    break;
+                }
+                sent += piece.len() as u64;
+                let _ = tx.send(sent);
+            }
+            let _ = stdin.shutdown().await;
+        });
+        let mut wait = Box::pin(child.wait_with_output());
+        let mut shown = 0u64;
+        let out = loop {
+            tokio::select! {
+                out = &mut wait => break out,
+                Some(sent) = rx.recv() => {
+                    // a step a percent or so, not one a piece.
+                    if sent == total || sent - shown >= total / 100 {
+                        shown = sent;
+                        say(Said::Progress(sent, total));
+                    }
+                }
+            }
+        };
+        let _ = std::fs::remove_file(&cfg);
+        feed.abort();
+        let out = out?;
+        anyhow::ensure!(out.status.success(), "copying files: {}", String::from_utf8_lossy(&out.stderr).trim());
+        let mut text = out.stdout;
+        let at = text.iter().rposition(|b| *b == b'\n').unwrap_or(0);
+        let code = String::from_utf8_lossy(&text[at..]).trim().parse::<u16>().unwrap_or(0);
+        text.truncate(at);
+        anyhow::ensure!((1..400).contains(&code), "copying files: vercel said {code}: {}", String::from_utf8_lossy(&text).chars().take(300).collect::<String>());
+        say(Said::Progress(total, total));
         Ok(())
     }
 
@@ -417,7 +496,7 @@ pub async fn bring(home: &Path, host: &Host, tgz: Vec<u8>, say: &mut (dyn FnMut(
     let there = host.home.clone().unwrap_or_else(|| THERE.to_owned());
     let (code, out) = acct.run(&session.id, "sh", &["-c", "rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\""], &[]).await?;
     anyhow::ensure!(code == 0, "bringing your claude: {out}");
-    acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz).await?;
+    acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz, say).await?;
     let mut env = service_env(&there, sb.path.as_deref());
     env.push(crate::net::Net::load(home).to_env());
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -504,8 +583,7 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     let dir = bins[0].parent().context("no folder")?.to_owned();
     let tar = tokio::process::Command::new("tar").env("COPYFILE_DISABLE", "1").arg("-czf").arg("-").arg("-C").arg(&dir).args(["tesseld", "tesselctl"]).output().await?;
     anyhow::ensure!(tar.status.success(), "packing tessel: {}", String::from_utf8_lossy(&tar.stderr));
-    say(Said::Note(format!("{:.1} MB", tar.stdout.len() as f64 / 1_048_576.0)));
-    acct.upload(&session.id, &format!("{there}/.tessel/bin"), tar.stdout).await?;
+    acct.upload(&session.id, &format!("{there}/.tessel/bin"), tar.stdout, say).await?;
 
     say(Said::Step("Letting this Mac in".into()));
     let token = crate::ws::new_token()?;
@@ -537,7 +615,7 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     if let Some(tgz) = crate::setup::packed(opts, say)? {
         let (code, out) = acct.run(&session.id, "sh", &["-c", "rm -rf \"$HOME/.tessel/bring\" && mkdir -p \"$HOME/.tessel/bring\""], &[]).await?;
         anyhow::ensure!(code == 0, "bringing your claude: {out}");
-        acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz).await?;
+        acct.upload(&session.id, &format!("{there}/.tessel/bring"), tgz, say).await?;
         let env = service_env(&there, sb.path.as_deref());
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (code, out) = acct.run(&session.id, "sh", &["-c", crate::setup::BRING], &env).await?;

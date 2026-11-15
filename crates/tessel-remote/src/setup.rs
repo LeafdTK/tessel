@@ -16,6 +16,8 @@ pub enum Said {
     Step(String),
     /// something worth knowing, about the step under way.
     Note(String),
+    /// how far the step under way has got: bytes done, of how many.
+    Progress(u64, u64),
 }
 
 pub struct Options {

@@ -208,7 +208,7 @@ impl Shell {
         let Some(host) = Hosts::load(&self.hosts.home).get(&id).cloned() else { return };
         let home = self.hosts.home.clone();
         if let Some(f) = self.hosts.flow.as_mut() {
-            f.bring_run = Some(super::hosts::SetupRun { host: id.clone(), steps: Vec::new(), done: None, switch_after: false, started: Instant::now() });
+            f.bring_run = Some(super::hosts::SetupRun { host: id.clone(), steps: Vec::new(), progress: None, done: None, switch_after: false, started: Instant::now() });
         }
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<Said, Result<(), String>>>();
         std::thread::spawn(move || {
@@ -226,7 +226,11 @@ impl Shell {
                 let alive = in_window(&this, cx, |this, _, cx| {
                     if let Some(run) = this.hosts.flow.as_mut().and_then(|f| f.bring_run.as_mut()) {
                         match m {
-                            Ok(Said::Step(s)) => run.steps.push((s, Vec::new())),
+                            Ok(Said::Step(s)) => {
+                                run.progress = None;
+                                run.steps.push((s, Vec::new()));
+                            }
+                            Ok(Said::Progress(done, of)) => run.progress = Some((done, of)),
                             Ok(Said::Note(n)) => match run.steps.last_mut() {
                                 Some((_, notes)) => notes.push(n),
                                 None => run.steps.push((n, Vec::new())),
@@ -664,6 +668,9 @@ impl Shell {
             log = log.child(line(glyph, ink, s.clone()));
             for note in notes {
                 log = log.child(div().pl(px(22.)).text_color(ASH).child(note.clone()));
+            }
+            if let (true, None, Some((done, of))) = (last, &run.done, run.progress) {
+                log = log.child(div().pl(px(22.)).pt(px(2.)).child(super::hosts::progress_bar(done, of, MINT, BONE.opacity(0.1), ASH)));
             }
         }
         match &run.done {

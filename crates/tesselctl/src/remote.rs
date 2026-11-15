@@ -154,6 +154,7 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             let mut say = |s: Said| match s {
                 Said::Step(s) => println!("· {s}"),
                 Said::Note(n) => println!("    {n}"),
+        Said::Progress(done, of) => print_progress(done, of),
             };
             tessel_remote::setup::bring(home, &host, carry, &mut say).await?;
             println!("brought to {}", host.name);
@@ -264,6 +265,7 @@ async fn set_up(home: &Path, id: &str, args: &mut Args) -> anyhow::Result<()> {
     let mut say = |s: Said| match s {
         Said::Step(s) => println!("· {s}"),
         Said::Note(n) => println!("    {n}"),
+        Said::Progress(done, of) => print_progress(done, of),
     };
     let result = tessel_remote::setup::setup(home, &mut host, &opts, &mut say).await;
     // what was learned is kept, even when a later step failed.
@@ -308,4 +310,15 @@ fn carry_from(inv: &tessel_remote::carry::Inventory, args: &mut Args) -> anyhow:
         }
     }
     Ok(c)
+}
+
+/// how far an upload's got, on one line that keeps being rewritten.
+fn print_progress(done: u64, of: u64) {
+    use std::io::Write as _;
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    print!("\r    {:.1} of {:.1} MB", mb(done), mb(of));
+    if done >= of {
+        println!();
+    }
+    let _ = std::io::stdout().flush();
 }

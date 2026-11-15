@@ -54,6 +54,8 @@ pub(crate) struct SetupRun {
     pub(crate) host: String,
     /// each step, and what was said about it.
     pub(crate) steps: Vec<(String, Vec<String>)>,
+    /// how far the step under way has got (bytes done, of how many), when it says.
+    pub(crate) progress: Option<(u64, u64)>,
     pub(crate) done: Option<Result<(), String>>,
     /// show it once it's ready (it was just added).
     pub(crate) switch_after: bool,
@@ -260,7 +262,7 @@ impl Shell {
         }
         let Some(mut host) = Hosts::load(&self.hosts.home).get(&id).cloned() else { return };
         let home = self.hosts.home.clone();
-        self.hosts.run = Some(SetupRun { host: id, steps: Vec::new(), done: None, switch_after, started: Instant::now() });
+        self.hosts.run = Some(SetupRun { host: id, steps: Vec::new(), progress: None, done: None, switch_after, started: Instant::now() });
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Progress>();
         let spawned = std::thread::Builder::new().name("tessel-host-setup".into()).spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -306,11 +308,15 @@ impl Shell {
     fn host_progress(&mut self, p: Progress, cx: &mut Context<Self>) {
         let Some(run) = self.hosts.run.as_mut() else { return };
         match p {
-            Progress::Said(Said::Step(s)) => run.steps.push((s, Vec::new())),
+            Progress::Said(Said::Step(s)) => {
+                run.progress = None;
+                run.steps.push((s, Vec::new()));
+            }
             Progress::Said(Said::Note(n)) => match run.steps.last_mut() {
                 Some((_, notes)) => notes.push(n),
                 None => run.steps.push((n, Vec::new())),
             },
+            Progress::Said(Said::Progress(done, of)) => run.progress = Some((done, of)),
             Progress::Done(host, result) => {
                 // what was learned is kept, even when a later step failed.
                 let mut list = Hosts::load(&self.hosts.home);
@@ -939,6 +945,9 @@ impl Shell {
             for note in notes {
                 list = list.child(div().pl(px(21.)).set(Type::Subheadline).text_color(p.tertiary).child(note.clone()));
             }
+            if let (true, None, Some((done, of))) = (last, &run.done, run.progress) {
+                list = list.child(div().pl(px(21.)).pt(px(2.)).child(progress_bar(done, of, p.accent, p.fill, p.tertiary)));
+            }
         }
         match &run.done {
             Some(Ok(())) => list.child(div().pt_1().set(Type::Callout).text_color(p.finished).child(format!("Ready, in {}s.", run.started.elapsed().as_secs()))),
@@ -949,4 +958,16 @@ impl Shell {
     }
 
 
+}
+
+/// how far something is: a thin bar, and "4.1 of 12.3 MB".
+pub(crate) fn progress_bar(done: u64, of: u64, ink: Hsla, track: Hsla, words: Hsla) -> Div {
+    let share = if of == 0 { 0.0 } else { (done as f32 / of as f32).clamp(0.0, 1.0) };
+    let mb = |b: u64| b as f64 / 1_048_576.0;
+    v_flex()
+        .gap(px(5.))
+        .w_full()
+        .max_w(px(360.))
+        .child(div().h(px(4.)).w_full().rounded_full().bg(track).child(div().h_full().w(relative(share)).rounded_full().bg(ink)))
+        .child(div().text_size(px(12.)).text_color(words).child(format!("{:.1} of {:.1} MB", mb(done), mb(of))))
 }
