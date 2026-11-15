@@ -13,6 +13,7 @@ use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::component::menu::ContextMenuExt as _;
 use tessel_proto::{ChangeStatus, CheckState, DirEntry, FileContent, FileDiff, GitSummary, PrStatus};
 use std::collections::HashSet;
+use crate::ui::Module;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Tab {
@@ -114,6 +115,48 @@ pub(crate) struct TreeRow {
 /// more rows than this and the tree stops: nobody scrolls that far, and a
 /// `node_modules` opened by accident must not stall the window.
 const TREE_MAX: usize = 3000;
+
+/// a lucide icon for a file, by its name: what kind of thing it is at a glance.
+pub(crate) fn file_icon(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    let ext = lower.rsplit_once('.').map_or("", |(_, e)| e);
+    match lower.as_str() {
+        "package.json" | "cargo.toml" | "go.mod" | "pyproject.toml" | "gemfile" => return "package",
+        "dockerfile" | "containerfile" => return "container",
+        _ => {}
+    }
+    if lower.starts_with("license") || lower.starts_with("licence") || lower.starts_with("copying") {
+        return "scale";
+    }
+    if lower.starts_with("readme") {
+        return "book-open";
+    }
+    if lower.starts_with("docker-compose") || lower.starts_with("compose.") {
+        return "container";
+    }
+    if lower.starts_with(".env") {
+        return "file-key";
+    }
+    if lower.ends_with(".lock") || lower.contains("-lock.") || lower.contains(".lock.") {
+        return "file-lock";
+    }
+    match ext {
+        "json" | "jsonc" | "json5" => "braces",
+        "yaml" | "yml" | "toml" | "ini" | "conf" | "cfg" | "properties" | "editorconfig" => "file-cog",
+        "md" | "mdx" | "txt" | "rst" | "adoc" | "pdf" => "file-text",
+        "sh" | "bash" | "zsh" | "fish" | "ps1" => "file-terminal",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp" | "avif" | "heic" => "file-image",
+        "csv" | "tsv" | "xlsx" | "xls" | "numbers" => "file-spreadsheet",
+        "sql" | "db" | "sqlite" | "sqlite3" => "database",
+        "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "7z" | "rar" => "file-archive",
+        "ttf" | "otf" | "woff" | "woff2" => "file-type",
+        "pem" | "key" | "crt" | "p12" => "file-key",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "py" | "go" | "rb" | "java" | "kt" | "swift" | "c" | "h" | "cc" | "cpp" | "hpp" | "cs" | "php" | "lua" | "zig" | "ex" | "exs" | "erl" | "hs" | "ml" | "scala" | "dart" | "vue" | "svelte" | "astro" | "html" | "css" | "scss" | "sass" | "less" | "graphql" | "proto" | "nix" | "tf" => "file-code",
+        // the rest of the dotfiles: settings for some tool.
+        _ if lower.starts_with('.') => "file-cog",
+        _ => "file",
+    }
+}
 
 impl Workspace {
     /// the tree as shown: each open folder's contents under it.
@@ -900,6 +943,41 @@ impl Shell {
         col.child(header).child(list).child(div().h(px(1.)).flex_shrink_0().bg(p.separator)).child(div().id("diff-view").test_support().aria_label("Diff").flex_1().min_h_0().overflow_hidden().child(diff))
     }
 
+    /// is the open file shown in a pane of its own (the editor module).
+    pub(crate) fn editor_pane_shown(&self) -> bool {
+        self.ui.panes().into_iter().any(|p| p.module == Some(Module::Editor) && self.pane_open(p))
+    }
+
+    /// the open file, moved out of the files pane into one of its own, beside it.
+    pub(crate) fn pop_out_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let trail = {
+            let panes = self.ui.panes();
+            panes
+                .iter()
+                .find(|p| p.module == Some(Module::Files))
+                .or_else(|| panes.iter().find(|p| p.module == Some(Module::Workspace)))
+                .map(|p| p.trail.clone())
+        };
+        let Some(trail) = trail.or_else(|| self.focused_pane().map(|p| p.trail)) else {
+            self.error = Some("This layout has no panes to open it in.".into());
+            cx.notify();
+            return;
+        };
+        let Some(id) = self.split_pane(trail, crate::ui::Axis::Row, window, cx) else { return };
+        if let Some(t) = self.ui.panes().into_iter().find(|p| p.id == id).map(|p| p.trail.clone()) {
+            self.set_pane_module(t, Module::Editor, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// the editor module: the file picked in the tree, all the pane's height.
+    pub(crate) fn editor_pane(&self, cx: &mut Context<Self>) -> AnyElement {
+        match &self.ws.file {
+            Some(file) => v_flex().size_full().child(self.file_el(file, true, cx)).into_any_element(),
+            None => v_flex().size_full().child(self.quiet("Pick a file in Files to open it here.")).into_any_element(),
+        }
+    }
+
     pub(crate) fn files_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let p = self.palette.get();
         let col = v_flex().size_full();
@@ -907,14 +985,26 @@ impl Shell {
             return col.child(self.quiet("Reading the folder…"));
         }
         let rows = self.ws.tree();
-        let showing_file = self.ws.file.is_some();
+        let popped = self.editor_pane_shown();
+        let file = self.ws.file.as_ref().filter(|_| !popped);
         let mut tree = v_flex().id("files-tree").overflow_y_scroll().py_1();
-        tree = if showing_file { tree.flex_shrink_0().h(px(220.)) } else { tree.flex_1().min_h_0() };
+        tree = if file.is_some() { tree.flex_shrink_0().h(px(self.tree_h)).max_h(relative(0.85)) } else { tree.flex_1().min_h_0() };
         if let Some(n) = self.ws.files_note.clone() {
             tree = tree.child(self.quiet(n));
         }
         if rows.is_empty() {
             tree = tree.child(self.quiet("This folder is empty."));
+        }
+        // what git says changed: a file's letter and tint, and a dot on each folder holding one.
+        let mut changed: std::collections::HashMap<&str, ChangeStatus> = std::collections::HashMap::new();
+        let mut changed_dirs: HashSet<&str> = HashSet::new();
+        for f in self.ws.git.iter().flat_map(|g| g.files.iter()) {
+            changed.insert(f.path.as_str(), f.status);
+            let mut at = f.path.as_str();
+            while let Some((dir, _)) = at.rsplit_once('/') {
+                changed_dirs.insert(dir);
+                at = dir;
+            }
         }
         let full = rows.len() >= TREE_MAX;
         for row in rows {
@@ -924,15 +1014,24 @@ impl Shell {
             let menu = self.file_menu(row.path.clone(), row.is_dir, cx);
             let (drag_path, drag_move) = (row.path.clone(), row.path.clone());
             let menu_id = ElementId::from(SharedString::from(format!("file-menu-{}", row.path)));
+            let status = changed.get(row.path.as_str()).map(|s| match s {
+                ChangeStatus::Added | ChangeStatus::Untracked => ("A", p.finished),
+                ChangeStatus::Modified => ("M", p.blocked),
+                ChangeStatus::Deleted => ("D", p.failed),
+                ChangeStatus::Unknown => ("?", p.tertiary),
+            });
+            let holds_changes = is_dir && changed_dirs.contains(row.path.as_str());
+            let icon = if is_dir { if row.open { "folder-open" } else { "folder" } } else { file_icon(&row.name) };
+            // a hairline down from each folder its row sits in.
+            let guides = (0..row.depth).map(|_| div().w(px(14.)).h_full().flex_shrink_0().flex().justify_center().child(div().w(px(1.)).h_full().bg(p.separator.opacity(0.8))));
             let row_el = h_flex()
                     .id(ElementId::from(SharedString::from(format!("file-{}", row.path))))
                     .test_support()
                     .aria_label(SharedString::from(row.path.clone()))
-                    .h(px(24.))
+                    .h(px(26.))
                     .mx_1()
+                    .pl(px(6.))
                     .pr_2()
-                    .pl(px(8. + 14. * row.depth as f32))
-                    .gap_1()
                     .rounded(px(theme::R_TILE))
                     .when(selected, |d| d.bg(p.selection))
                     .when(!selected, |d| d.hover(|d| d.bg(p.hover)))
@@ -942,19 +1041,60 @@ impl Shell {
                         d.on_mouse_down(MouseButton::Left, cx.listener(move |this, ev: &MouseDownEvent, _, _| this.file_drag_from = Some((drag_path.clone(), ev.position))))
                             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, window, cx| this.file_drag_move(&drag_move, ev, window, cx)))
                     })
-                    .child(div().w(px(12.)).flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(match (row.is_dir, row.open) {
-                        (true, true) => "▾",
-                        (true, false) => "▸",
-                        _ => "",
+                    .children(guides)
+                    .child(div().w(px(16.)).flex_shrink_0().flex().items_center().justify_center().when(is_dir, |d| {
+                        d.child(gpui_kit::component::Icon::empty().path(if row.open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(theme::z(12.)).text_color(p.tertiary))
                     }))
-                    .child(div().flex_1().overflow_hidden().set(Type::Callout).text_color(if row.is_dir { p.secondary } else { p.label }).truncate().child(row.name));
+                    .child(
+                        div()
+                            .w(px(16.))
+                            .mr(px(6.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(14.)).text_color(if is_dir { p.secondary } else { p.tertiary })),
+                    )
+                    .child(div().flex_1().min_w_0().overflow_hidden().set(Type::Callout).text_color(status.map_or(p.label, |(_, ink)| ink)).truncate().child(row.name))
+                    .children(status.map(|(letter, ink)| div().flex_shrink_0().ml_2().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(ink).child(letter)))
+                    .when(holds_changes, |d| d.child(div().flex_shrink_0().ml_2().size(px(5.)).rounded_full().bg(p.blocked.opacity(0.8))));
             // a right click: download it, show it, copy its path.
             tree = tree.child(div().id(menu_id).child(row_el).context_menu(menu));
         }
         if full {
             tree = tree.child(self.quiet("There is more here than fits. Close a folder to see the rest."));
         }
-        let Some(file) = &self.ws.file else { return col.child(tree) };
+        let Some(file) = file else { return col.child(tree) };
+        // the line between the tree and the file: drag it to give either more room.
+        let handle = div()
+            .relative()
+            .h(px(1.))
+            .flex_shrink_0()
+            .bg(if self.tree_drag.is_some() { p.accent.opacity(0.6) } else { p.separator })
+            .child(
+                div()
+                    .id("files-split")
+                    .test_support()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(-4.))
+                    .h(px(9.))
+                    .cursor_row_resize()
+                    .hover(|d| d.bg(p.accent.opacity(0.25)))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, _, cx| {
+                        this.tree_drag = Some((f32::from(ev.position.y), this.tree_h));
+                        cx.stop_propagation();
+                        cx.notify();
+                    })),
+            );
+        col.child(tree).child(handle).child(self.file_el(file, false, cx))
+    }
+
+    /// the file open from the tree: its name, what can be done to it, and it.
+    /// `popped`: drawn in a pane of its own.
+    fn file_el(&self, file: &OpenFile, popped: bool, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
         let (name, dir) = split_path(&file.path);
         let editable = file.editor.is_some() && file.note.is_none();
         let header = h_flex()
@@ -962,7 +1102,6 @@ impl Shell {
             .flex_shrink_0()
             .px_3()
             .gap_2()
-            .border_t_1()
             .border_b_1()
             .border_color(p.separator)
             .child(div().flex_shrink_0().set(Type::Callout).text_color(p.label).child(name.to_owned()))
@@ -990,6 +1129,16 @@ impl Shell {
             .when(editable && !file.rendered, |d| {
                 d.child(Button::new("file-save").xsmall().when(file.dirty, |b| b.primary()).when(!file.dirty, |b| b.outline()).disabled(!file.dirty).label("Save").on_click(cx.listener(|this, _, _, cx| this.save_file(cx))))
             })
+            .when(!popped, |d| {
+                d.child(
+                    Button::new("file-pop-out")
+                        .xsmall()
+                        .ghost()
+                        .icon(gpui_kit::component::Icon::empty().path("icons/panel-right-open.svg"))
+                        .tooltip("Open in a pane of its own")
+                        .on_click(cx.listener(|this, _, window, cx| this.pop_out_file(window, cx))),
+                )
+            })
             .child(Button::new("file-close").xsmall().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
         let body: AnyElement = match (&file.preview, &file.editor) {
             _ if file.pages.is_some() => self.pages_el(file.pages.as_deref().unwrap_or_default()),
@@ -998,10 +1147,13 @@ impl Shell {
             (None, Some(editor)) => div().size_full().child(Editor::new(editor).h(relative(1.)).bordered(false).readonly(!editable)).into_any_element(),
             (None, None) => div().into_any_element(),
         };
-        col.child(tree)
+        v_flex()
+            .flex_1()
+            .min_h_0()
             .child(header)
             .children(file.note.clone().map(|n| self.quiet(n)))
             .child(div().id("file-editor").test_support().aria_label("File contents").flex_1().min_h_0().overflow_hidden().child(body))
+            .into_any_element()
     }
 
     pub(crate) fn checks_tab(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1323,4 +1475,15 @@ impl Shell {
         }
         out
     }
+}
+
+#[cfg(test)]
+mod icon_tests {
+#[test]
+fn files_get_an_icon_for_what_they_are() {
+    use super::file_icon;
+    for (name, icon) in [("main.rs", "file-code"), ("package.json", "package"), ("pnpm-lock.yaml", "file-lock"), ("Cargo.lock", "file-lock"), ("LICENSE", "scale"), ("README.md", "book-open"), ("notes.md", "file-text"), (".env.example", "file-key"), (".gitignore", "file-cog"), ("docker-compose.dev.yml", "container"), ("data.json", "braces"), ("DCO", "file")] {
+        assert_eq!(file_icon(name), icon, "{name}");
+    }
+}
 }

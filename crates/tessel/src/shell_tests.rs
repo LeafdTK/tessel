@@ -2910,3 +2910,29 @@ fn a_long_lived_claude_token_can_be_pasted_for_a_box(cx: &mut TestAppContext) {
     rig.click(cx, "flow-token-go");
     assert_eq!(state(&rig, cx), Some(("Pasted".to_owned(), Some(t))));
 }
+
+#[gpui_kit::test]
+fn an_open_file_pops_out_into_a_pane_of_its_own_and_the_tree_keeps_its_height(cx: &mut TestAppContext) {
+    let ui = layout_dir("pop-out").join("ui.json");
+    let idle = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions_launched(cx, idle.clone(), vec![], Launch { ui: Some(ui), ..Launch::default() });
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let files = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": "conversation", "dir": "right"})).unwrap();
+    exec(&mut rig, cx, "pane.show", serde_json::json!({"pane": files["pane"], "module": "files"})).unwrap();
+    rig.settle(cx);
+    let dir = |name: &str, is_dir: bool| DirEntry { name: name.into(), is_dir, size: 10 };
+    let file = FileContent { path: "a.rs".into(), text: Some("fn a() {}\n".into()), binary: false, truncated: false, size: 10 };
+    rig.feed(cx, vec![UiEvent::Dir { session: idle.id, path: String::new(), entries: vec![dir("a.rs", false)] }]);
+    rig.click(cx, eid("file-a.rs"));
+    rig.feed(cx, vec![UiEvent::File { session: idle.id, file }]);
+    assert!(rig.exists(cx, "files-split"), "the tree and the file, with a line to drag between them");
+    assert!(rig.exists(cx, "file-pop-out"));
+
+    rig.click(cx, "file-pop-out");
+    rig.settle(cx);
+    let modules: Vec<_> = rig.shell.read_with(cx, |s, _| s.ui.panes().iter().filter_map(|p| p.module).collect());
+    assert!(modules.contains(&crate::ui::Module::Editor) && modules.contains(&crate::ui::Module::Files), "{modules:?}");
+    assert!(rig.exists(cx, "file-editor"), "the file shows in its pane");
+    assert!(!rig.exists(cx, "files-split") && !rig.exists(cx, "file-pop-out"), "and no longer under the tree");
+}
+

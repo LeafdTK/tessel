@@ -172,6 +172,9 @@ pub struct Shell {
     pub(crate) pane_area: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
     pane_gaps: Vec<(Vec<usize>, usize, crate::ui::Axis, Rect, (f32, f32), f32)>,
     pane_drag: Option<panes::PaneDrag>,
+    /// how tall the file tree is above an open file, and the drag changing it (pointer y, height then).
+    pub(crate) tree_h: f32,
+    pub(crate) tree_drag: Option<(f32, f32)>,
     /// the pane last clicked in: the one keys act on.
     pub(crate) pane_focus: Option<String>,
     /// the conversation pane typing goes to. its chat is `model.open`.
@@ -697,6 +700,8 @@ impl Shell {
             pane_area: Rc::new(std::cell::Cell::new(None)),
             pane_gaps: Vec::new(),
             pane_drag: None,
+            tree_h: 220.,
+            tree_drag: None,
             pane_focus: None,
             chat_pane: None,
             views: HashMap::new(),
@@ -1929,7 +1934,7 @@ impl Shell {
 
     /// something in the window is being dragged.
     pub(crate) fn carrying(&self) -> bool {
-        self.pane_move.is_some() || self.pane_drag.is_some() || self.drag.is_some()
+        self.pane_move.is_some() || self.pane_drag.is_some() || self.drag.is_some() || self.tree_drag.is_some()
     }
 
     /// whether a folder is in a git repository: asked of the daemon the first
@@ -2764,6 +2769,10 @@ impl Render for Shell {
                 if this.pane_move.is_some() {
                     this.pane_move_to(f32::from(ev.position.x), f32::from(ev.position.y), cx);
                 }
+                if let Some((y0, h0)) = this.tree_drag {
+                    this.tree_h = (h0 + f32::from(ev.position.y) - y0).clamp(60., 4000.);
+                    cx.notify();
+                }
             }))
             .track_focus(&self.root_focus)
             .on_action(cx.listener(|this, _: &crate::SplitRight, window, cx| this.split_focused_right(window, cx)))
@@ -2797,6 +2806,7 @@ impl Render for Shell {
             .on_action(cx.listener(|this, _: &crate::Desktop9, window, cx| this.go_desktop(9, window, cx)))
             .on_mouse_up(MouseButton::Left, cx.listener(|this, _, window, cx| {
                 this.drag_end(cx);
+                this.tree_drag = None;
                 this.pane_drag_end(window, cx);
                 this.pane_move_end(window, cx);
             }))

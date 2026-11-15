@@ -133,7 +133,7 @@ impl Shell {
             match p.module {
                 Some(Module::Workspace) => tabs.push(self.ws.tab),
                 Some(Module::Changes) => tabs.push(Tab::Changes),
-                Some(Module::Files) => tabs.push(Tab::Files),
+                Some(Module::Files | Module::Editor) => tabs.push(Tab::Files),
                 Some(Module::Checks) => tabs.push(Tab::Checks),
                 Some(Module::Artifacts) => tabs.push(Tab::Artifacts),
                 Some(Module::Info) => tabs.push(Tab::Info),
@@ -711,6 +711,7 @@ impl Shell {
             _ if session.is_none() => quiet("Open a session to see this."),
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),
             Module::Files => div().size_full().child(self.files_tab(cx)).into_any_element(),
+            Module::Editor => self.editor_pane(cx),
             Module::Checks => div().size_full().child(self.checks_tab(cx)).into_any_element(),
             Module::Artifacts => div().size_full().child(self.artifacts_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Info => div().size_full().child(self.info_tab(session.expect("checked above"), cx)).into_any_element(),
