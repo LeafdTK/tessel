@@ -2889,3 +2889,24 @@ fn a_chat_you_just_left_is_back_at_once_and_one_pointed_at_loads_ahead(cx: &mut 
     rig.shell.update(cx, |s, cx| s.open(c.id, cx));
     assert_eq!(open(&rig, cx), (Some(c.id), None));
 }
+
+#[gpui_kit::test]
+fn a_long_lived_claude_token_can_be_pasted_for_a_box(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.setup_flow_bring("box".into(), window, cx))).unwrap();
+    rig.settle(cx);
+    let state = |rig: &Rig, cx: &mut TestAppContext| rig.shell.read_with(cx, |s, _| s.hosts.flow.as_ref().map(|f| (format!("{:?}", f.sign_in), f.carry.claude_token.clone())));
+
+    rig.click(cx, "flow-paste-token");
+    assert!(rig.exists(cx, "flow-token"), "a field for it");
+    rig.typed(cx, "hello");
+    rig.click(cx, "flow-token-go");
+    let (said, token) = state(&rig, cx).unwrap();
+    assert!(said.starts_with("Failed") && token.is_none(), "not a token: {said}");
+
+    rig.click(cx, "flow-paste-token");
+    let t = format!("sk-ant-oat01-{}", "x".repeat(40));
+    rig.typed(cx, &t);
+    rig.click(cx, "flow-token-go");
+    assert_eq!(state(&rig, cx), Some(("Pasted".to_owned(), Some(t))));
+}

@@ -44,6 +44,9 @@ pub(crate) enum SignIn {
     /// `claude setup-token` is running: waiting on the browser.
     Waiting { url: Option<String>, wants_code: bool },
     Done,
+    /// a token typed in: one made with `claude setup-token` anywhere.
+    Pasting,
+    Pasted,
     Failed(String),
 }
 
@@ -56,6 +59,8 @@ pub(crate) struct Flow {
     pub(crate) sign_in: SignIn,
     login: Option<Login>,
     code: Entity<InputState>,
+    /// a long-lived token, pasted.
+    token: Entity<InputState>,
     /// the box being added, once "where" is filled in (and its udp port).
     pending: Option<(Host, u16)>,
     /// the box it ended up as.
@@ -89,6 +94,7 @@ impl Shell {
         let inv = tessel_remote::carry::inventory();
         let carry = Carry::suggested(&inv);
         let code = cx.new(|cx| InputState::new(window, cx).placeholder("Paste the code the page shows"));
+        let token = cx.new(|cx| InputState::new(window, cx).placeholder("sk-ant-oat01-…").masked(true));
         self.close_settings(cx);
         self.hosts.adding = existing.is_none();
         self.hosts.form = None;
@@ -101,6 +107,7 @@ impl Shell {
             sign_in: SignIn::Later,
             login: None,
             code,
+            token,
             pending: None,
             error: None,
             opened: Instant::now(),
@@ -311,6 +318,36 @@ impl Shell {
         {
             f.sign_in = SignIn::Failed(e.to_string());
         }
+        cx.notify();
+    }
+
+    /// a token pasted in, for the box to use: made by `claude setup-token` on any
+    /// machine signed in to Claude (it lasts a year).
+    fn flow_use_token(&mut self, cx: &mut Context<Self>) {
+        let Some(f) = self.hosts.flow.as_mut() else { return };
+        let t: String = f.token.read(cx).value().chars().filter(|c| !c.is_whitespace()).collect();
+        if t.is_empty() {
+            return;
+        }
+        if !t.starts_with("sk-ant-") || t.len() < 40 {
+            f.sign_in = SignIn::Failed("that isn't a Claude token. They start with sk-ant-oat01-".into());
+            cx.notify();
+            return;
+        }
+        f.login = None;
+        f.carry.claude_token = Some(t);
+        f.sign_in = SignIn::Pasted;
+        cx.notify();
+    }
+
+    fn flow_paste_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(f) = self.hosts.flow.as_mut() else { return };
+        f.login = None;
+        f.sign_in = SignIn::Pasting;
+        f.token.update(cx, |s, cx| {
+            s.set_value("", window, cx);
+            s.focus(window, cx);
+        });
         cx.notify();
     }
 
@@ -616,7 +653,8 @@ impl Shell {
         let sign_in: AnyElement = match &f.sign_in {
             SignIn::Later => h_flex()
                 .gap(px(12.))
-                .child(v_flex().flex_1().min_w_0().gap(px(2.)).child(div().text_size(px(14.)).text_color(BONE).child("Claude's sign-in")).child(div().text_size(px(12.5)).text_color(STONE).child(if inv.claude { "A token just for this box. Your Mac's own sign-in stays here: two machines on one sign-in log each other out." } else { "Claude Code isn't on this Mac: sign in on the box once it's set up." })))
+                .child(v_flex().flex_1().min_w_0().gap(px(2.)).child(div().text_size(px(14.)).text_color(BONE).child("Claude's sign-in")).child(div().text_size(px(12.5)).text_color(STONE).child(if inv.claude { "A token just for this box. Your Mac's own sign-in stays here: two machines on one sign-in log each other out." } else { "Claude Code isn't on this Mac: paste a token, or sign in on the box once it's set up." })))
+                .child(chip("flow-paste-token", "Use a token", false).on_click(cx.listener(|this, _, window, cx| this.flow_paste_open(window, cx))))
                 .when(inv.claude, |d| d.child(chip("flow-sign-in", "Sign in", false).on_click(cx.listener(|this, _, window, cx| this.flow_sign_in(window, cx)))))
                 .into_any_element(),
             SignIn::Waiting { wants_code, .. } => v_flex()
@@ -632,9 +670,39 @@ impl Shell {
                 })
                 .into_any_element(),
             SignIn::Done => h_flex().gap(px(8.)).child(Icon::empty().path("icons/circle-check.svg").size(px(15.)).text_color(MINT)).child(div().text_size(px(13.5)).text_color(MINT).child("Signed in: a token for this box, good for a year.")).into_any_element(),
+            SignIn::Pasting => v_flex()
+                .gap(px(10.))
+                .child(div().text_size(px(13.)).text_color(STONE).child("A long-lived token, from `claude setup-token` on any machine signed in to Claude. It lasts a year."))
+                .child(
+                    h_flex()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .id("flow-token")
+                                .test_support()
+                                .flex_1()
+                                .rounded(px(12.))
+                                .border_1()
+                                .border_color(BONE.opacity(0.09))
+                                .bg(gpui_kit::black().opacity(0.28))
+                                .px(px(12.))
+                                .py(px(8.))
+                                .child(Input::new(&f.token).appearance(false).text_color(BONE)),
+                        )
+                        .child(chip("flow-token-go", "Use it", true).on_click(cx.listener(|this, _, _, cx| this.flow_use_token(cx))))
+                        .child(chip("flow-token-back", "Cancel", false).on_click(cx.listener(|this, _, _, cx| {
+                            if let Some(f) = this.hosts.flow.as_mut() {
+                                f.sign_in = SignIn::Later;
+                            }
+                            cx.notify();
+                        }))),
+                )
+                .into_any_element(),
+            SignIn::Pasted => h_flex().gap(px(8.)).child(Icon::empty().path("icons/circle-check.svg").size(px(15.)).text_color(MINT)).child(div().text_size(px(13.5)).text_color(MINT).child("Using the token you pasted.")).into_any_element(),
             SignIn::Failed(why) => h_flex()
                 .gap(px(12.))
                 .child(div().flex_1().min_w_0().text_size(px(13.)).text_color(AMBER).child(format!("Didn't sign in: {why}")))
+                .child(chip("flow-paste-token", "Use a token", false).on_click(cx.listener(|this, _, window, cx| this.flow_paste_open(window, cx))))
                 .child(chip("flow-sign-in", "Try again", false).on_click(cx.listener(|this, _, window, cx| this.flow_sign_in(window, cx))))
                 .into_any_element(),
         };

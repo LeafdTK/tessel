@@ -147,10 +147,22 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
             let inv = tessel_remote::carry::inventory();
             let mut carry = carry_from(&inv, args)?;
-            if args.flag("--sign-in") {
+            if let Some(t) = args.opt("--claude-token")? {
+                // `-`: read from stdin, so it stays out of the shell's history.
+                let t = if t == "-" {
+                    let mut s = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+                    s
+                } else {
+                    t
+                };
+                let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                anyhow::ensure!(t.starts_with("sk-ant-") && t.len() >= 40, "that isn't a claude token: they start with sk-ant-oat01- (make one with `claude setup-token`)");
+                carry.claude_token = Some(t);
+            } else if args.flag("--sign-in") {
                 carry.claude_token = Some(tessel_remote::claude_login::interactive().await?);
             }
-            anyhow::ensure!(!carry.is_empty(), "nothing to bring: --what claude-md,settings,skills,commands,agents,mcp,git,gh, or --sign-in");
+            anyhow::ensure!(!carry.is_empty(), "nothing to bring: --what claude-md,settings,skills,commands,agents,mcp,git,gh, --sign-in or --claude-token");
             let mut say = |s: Said| match s {
                 Said::Step(s) => println!("· {s}"),
                 Said::Note(n) => println!("    {n}"),
