@@ -66,6 +66,46 @@ fn eid(s: impl Into<String>) -> ElementId {
 }
 
 impl Shell {
+    pub(crate) fn connection_el(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette.get();
+        let why = match &self.model.connection {
+            Connection::Connected => return None,
+            Connection::Connecting => None,
+            Connection::Down(why) => Some(why.clone()),
+        };
+        let place = if self.on_host() { self.host_label() } else { "tessel on this Mac".to_owned() };
+        let gone = self.down_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let what = match (&why, gone) {
+            (None, _) => format!("Connecting to {place}…"),
+            (Some(_), 0..3) => format!("Reconnecting to {place}…"),
+            (Some(_), n) => format!("Reconnecting to {place}… {n}s"),
+        };
+        Some(
+            h_flex()
+                .id("connection")
+                .test_support()
+                .px_4()
+                .py_2()
+                .gap_2()
+                .child(gpui_kit::component::spinner::Spinner::new().xsmall().color(p.secondary))
+                .child(div().set(Type::Subheadline).text_color(p.secondary).child(what))
+                .children(why.filter(|_| gone >= 20).map(|w| div().flex_1().min_w_0().truncate().set(Type::Subheadline).text_color(p.tertiary).child(format!("still trying: {w}"))))
+                .when(self.down_since.is_some(), |d| {
+                    d.child(div().flex_1()).child(
+                        Button::new("connection-redial")
+                            .xsmall()
+                            .ghost()
+                            .label("Reconnect now")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.down_since = Some(Instant::now());
+                                this.host_redial(cx);
+                            })),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
     // ---- the layout ----------------------------------------------------------------
 
     /// take on a layout: drawers it has keep their state, new ones start as
@@ -356,15 +396,7 @@ impl Shell {
                 let status = self.status_line(now)?;
                 self.styled(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(status), s).into_any_element()
             }
-            Kind::Connection => {
-                let (text, color) = match &self.model.connection {
-                    // quiet when all is well.
-                    Connection::Connected => return None,
-                    Connection::Connecting => ("Connecting to the daemon…".to_owned(), p.secondary),
-                    Connection::Down(why) => (format!("Can't reach the daemon. {why}"), p.failed),
-                };
-                self.styled(div().px_4().py_2().set(Type::Subheadline).text_color(color).child(text), s).into_any_element()
-            }
+            Kind::Connection => self.styled(div().child(self.connection_el(cx)?), s).into_any_element(),
             Kind::Error => {
                 let err = self.error.clone()?;
                 self.styled(div().px_4().py_1().set(Type::Callout).text_color(p.failed).child(err), s).into_any_element()

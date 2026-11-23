@@ -406,6 +406,7 @@ pub struct Shell {
     pub(crate) wf_last: HashMap<String, std::collections::BTreeMap<String, tessel_proto::Pick>>,
     pub(crate) doc_view: Option<(String, Option<String>)>,
     pub(crate) authoring: bool,
+    pub(crate) down_since: Option<Instant>,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -852,6 +853,7 @@ impl Shell {
             wf_last: HashMap::new(),
             doc_view: None,
             authoring: false,
+            down_since: None,
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -976,6 +978,7 @@ impl Shell {
             UiEvent::On { host, via } => self.host_connected(host, via),
             UiEvent::Connected => {
                 self.model.connection = Connection::Connected;
+                self.down_since = None;
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
                 self.ask_deleted();
                 self.ask_workflows();
@@ -993,7 +996,10 @@ impl Shell {
             UiEvent::File { session, file } => self.apply_file(session, file),
             UiEvent::Saved { session, path } => self.apply_saved(session, path),
             UiEvent::Pr { session, status } => self.apply_pr(session, status),
-            UiEvent::Down(why) => self.model.connection = Connection::Down(why),
+            UiEvent::Down(why) => {
+                self.down_since.get_or_insert_with(Instant::now);
+                self.model.connection = Connection::Down(why);
+            }
             UiEvent::Sessions(sessions) => {
                 self.have_sessions = true;
                 self.model.set_sessions(sessions);

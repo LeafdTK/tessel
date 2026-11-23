@@ -415,11 +415,16 @@ fn list_terms(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>) {
 
 /// ask about a session's folder without holding up everything else: git and
 /// the disk can take a while, and tokens must keep streaming meanwhile.
+fn stale(e: &tessel_proto::RpcError) -> bool {
+    e.code == tessel_proto::ErrorCode::NotFound && e.message.starts_with("no session ")
+}
+
 fn ask(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, req: Request, answer: impl FnOnce(Response) -> Option<UiEvent> + Send + 'static) {
     let (client, ui) = (client.clone(), ui.clone());
     tokio::spawn(async move {
         let ev = match client.request(req).await {
             Ok(r) => answer(r),
+            Err(ClientError::Rpc(e)) if stale(&e) => None,
             Err(ClientError::Rpc(e)) => Some(UiEvent::Error(e.message)),
             // the connection went; the main loop notices and reconnects.
             Err(_) => None,
@@ -740,6 +745,7 @@ async fn session(
                 };
                 match result {
                     Ok(()) => {}
+                    Err(ClientError::Rpc(e)) if stale(&e) => eprintln!("tessel: {}", e.message),
                     Err(ClientError::Rpc(e)) => {
                         if ui.send(UiEvent::Error(e.message)).is_err() {
                             return Ended::UiGone;
