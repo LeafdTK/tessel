@@ -78,6 +78,24 @@ impl Open {
         open
     }
 
+    pub fn prepend(&mut self, older: Vec<Item>, has_more: bool) -> usize {
+        let before = self.rows.len();
+        for item in older {
+            if !self.index.contains_key(&item.id) {
+                self.items.push(item);
+            }
+        }
+        self.items.sort_by_key(|i| i.order);
+        self.index = self.items.iter().enumerate().map(|(i, item)| (item.id.clone(), i)).collect();
+        self.has_more = has_more;
+        self.arrange();
+        self.rows.len() - before
+    }
+
+    pub fn first_seq(&self) -> Option<tessel_proto::Seq> {
+        self.items.iter().map(|i| i.seq).min()
+    }
+
     /// number of rows on screen.
     pub fn len(&self) -> usize {
         self.rows.len()

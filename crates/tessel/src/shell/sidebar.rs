@@ -248,7 +248,7 @@ impl Shell {
                         .child(theme::float_sep(&p))
                         .child(theme::float_item(&p, "session-menu-finder", Some("folder-open"), "Open in Finder", None, false).on_click(act(Box::new(move |_, _, _| reveal(&f)), true)))
                         .child(theme::float_item(&p, "session-menu-copy", Some("copy"), "Copy session id", None, false).on_click(act(Box::new(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sid.to_string()))), true)))
-                        .child(theme::float_item(&p, "session-menu-workflow", Some("workflow"), "Make this a workflow", Some("Run it again from a form"), false).on_click(act(Box::new(move |this, _, cx| {
+                        .child(theme::float_item(&p, "session-menu-workflow", Some("workflow"), "Make this a workflow", None, false).on_click(act(Box::new(move |this, _, cx| {
                             this.make_workflow_from(sid);
                             cx.notify();
                         }), true)))

@@ -207,7 +207,7 @@ impl Shell {
                         }
                         let label = if s.from.is_empty() { "Set up scripts with an agent" } else { "Change scripts with an agent" };
                         list = list.child(theme::float_item(&p, "run-ai", Some("sparkles"), label, Some("A new chat that writes .tessel/settings.toml"), false).test_support().on_click(act(Box::new(|this, _, cx| this.setup_scripts_with_ai(cx)))));
-                        list = list.child(theme::float_item(&p, "run-edit", Some("settings-2"), "Edit scripts", Some("Settings, by hand"), false).test_support().on_click(act(Box::new(|this, _, cx| {
+                        list = list.child(theme::float_item(&p, "run-edit", Some("settings-2"), "Edit scripts", None, false).test_support().on_click(act(Box::new(|this, _, cx| {
                             this.settings_section = "scripts";
                             this.open_settings(cx);
                         }))));

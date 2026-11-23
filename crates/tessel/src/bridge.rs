@@ -367,7 +367,7 @@ async fn follow(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, f: &m
     if !f.many {
         return subscribe_one(client, ui, &mut f.open).await;
     }
-    if let Response::Followed { snapshots, missing } = client.request(Request::Follow { sessions: f.all(), tail: 400 }).await? {
+    if let Response::Followed { snapshots, missing } = client.request(Request::Follow { sessions: f.all(), tail: TAIL }).await? {
         // the session we had open was deleted while we were away.
         if f.open.is_some_and(|o| missing.contains(&o)) {
             f.open = None;
@@ -382,7 +382,7 @@ async fn follow(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, f: &m
 
 /// an older daemon: one chat in detail, with the session list.
 async fn subscribe_one(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>, open: &mut Option<SessionId>) -> Result<(), ClientError> {
-    let reply = client.request(Request::Subscribe { summary: true, detail: *open, tail: 400 }).await;
+    let reply = client.request(Request::Subscribe { summary: true, detail: *open, tail: TAIL }).await;
     let reply = match reply {
         // the session we had open was deleted while we were away.
         Err(ClientError::Rpc(_)) if open.is_some() => {
@@ -415,6 +415,8 @@ fn list_terms(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>) {
 
 /// ask about a session's folder without holding up everything else: git and
 /// the disk can take a while, and tokens must keep streaming meanwhile.
+const TAIL: u32 = 120;
+
 fn stale(e: &tessel_proto::RpcError) -> bool {
     e.code == tessel_proto::ErrorCode::NotFound && e.message.starts_with("no session ")
 }

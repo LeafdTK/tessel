@@ -198,23 +198,10 @@ impl Shell {
             "solid"
         };
         let backdrop = theme.backdrop.unwrap_or_default().name();
-        let chosen_font = crate::theme::ui_font(theme.font.as_deref()).unwrap_or("system").to_owned();
-        let font_seg = |id: &'static str, label: &'static str, value: &'static str| {
-            let on = if value == "system" { chosen_font == "system" } else { chosen_font == value };
-            theme::segment(&p, id, label, on).test_support().on_click(cx.listener(move |this, _, w, cx| {
-                let _ = this.exec("theme.font", &json!({"font": value}), w, cx);
-            }))
-        };
-        let font_row = self.setting_row(
-            "Font",
-            "Allo is a warm, rounded take on Inter. System is the Mac's own.",
-            theme::tray(&p).child(font_seg("theme-font-allo", "Allo", crate::theme::DEFAULT_FONT)).child(font_seg("theme-font-system", "System", "system")),
-        );
         let themes_rows = v_flex()
-            .child(font_row)
             .child(self.picture_row(
                 "Material",
-                "What the frame around the panes is made of. Text always sits on solid panes.",
+                "",
                 self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt)], material, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
                 }),
@@ -231,7 +218,7 @@ impl Shell {
             })
             .child(self.picture_row(
                 "Backdrop",
-                "Behind the panes, and filling an empty conversation.",
+                "",
                 self.pictures("backdrop", &[("none", "None", pic_no_backdrop), ("dither", "Dither", pic_dither), ("space", "Space", pic_space)], backdrop, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.backdrop", &json!({"backdrop": v}), w, cx);
                 }),
@@ -260,7 +247,7 @@ impl Shell {
             })
             .child(self.picture_row(
                 "Density",
-                "How the panes sit in the window: floating apart, or flush against each other.",
+                "",
                 self.pictures("density", &[("islands", "Islands", pic_islands), ("compact", "Compact", pic_compact)], density, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.density", &json!({"density": v}), w, cx);
                 }),
@@ -303,19 +290,19 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Interface size",
-                "Text, menus and controls.",
+                "",
                 self.segmented("size", &[("compact", "Compact"), ("default", "Default"), ("large", "Large")], size, cx, |this, v, w, cx| {
                     this.edit_ui(|f| Self::set_in(f, "theme", "size", (v != "default").then(|| json!(v))), w, cx)
                 }),
             ))
-            .child(self.setting_row("Accent", "Selection, focus and the send button.", self.swatches(accent, cx)))
+            .child(self.setting_row("Accent", "", self.swatches(accent, cx)))
             .child(self.setting_row(
                 "Fonts",
-                "Interface, then code. Return applies them; empty is the default.",
+                "",
                 h_flex()
                     .gap_2()
-                    .child(div().w(px(150.)).child(Input::new(&self.font_input).id("font-input").small()))
-                    .child(div().w(px(150.)).child(Input::new(&self.mono_input).id("mono-input").small())),
+                    .child(self.font_picker("font-pick", crate::theme::ui_font(theme.font.as_deref()).unwrap_or("System").to_owned(), true, cx))
+                    .child(self.font_picker("mono-pick", theme.mono.clone().unwrap_or_else(|| crate::theme::MONO.to_owned()), false, cx)),
             ));
 
         let message = self.ui.theme.message_size.unwrap_or(crate::ui::MESSAGE_SIZE);
@@ -329,7 +316,7 @@ impl Shell {
         let conversation_rows = v_flex()
             .child(self.setting_row(
                 "Message text",
-                "How big what you type is, in points.",
+                "",
                 self.segmented("message-size", &[("14", "14"), ("15", "15"), ("16", "16"), ("18", "18"), ("20", "20")], message_name, cx, |this, v, w, cx| {
                     let n: f64 = v.parse().unwrap_or(16.0);
                     this.edit_ui(|f| Self::set_in(f, "theme", "message_size", Some(json!(n))), w, cx)
@@ -366,7 +353,7 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Activity graphs",
-                "How busy each session has been, beside it in the sidebar.",
+                "",
                 {
                     let me = cx.entity().downgrade();
                     Switch::new("activity-graphs").checked(self.sessions_trace).on_click(move |on, window, cx| {
@@ -443,7 +430,7 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Start over",
-                if self.confirm_reset { "Deletes ui.json. Click again to go back to the default window." } else { "Back to the default window." },
+                if self.confirm_reset { "Deletes ui.json. Click again to go back to the default window." } else { "" },
                 Button::new("settings-reset").small().outline().label(if self.confirm_reset { "Delete ui.json" } else { "Reset" }).on_click(cx.listener(|this, _, window, cx| this.reset_ui(window, cx))),
             ));
 
@@ -615,7 +602,7 @@ impl Shell {
             ))
             .child(self.setting_row(
                 "Size",
-                "In points.",
+                "",
                 self.segmented("terminal-size", &[("11", "11"), ("12", "12"), ("13", "13"), ("14", "14"), ("16", "16")], size_name, cx, |this, v, w, cx| {
                     let _ = this.exec("terminal.look", &json!({"size": v.parse::<f64>().unwrap_or(13.0)}), w, cx);
                 }),
@@ -840,4 +827,52 @@ fn pic_space(_: &theme::Palette) -> Div {
         .child(div().absolute().left(px(96.)).top(px(12.)).size(px(2.)).rounded_full().bg(gpui_kit::white()))
         .child(div().absolute().left(px(70.)).top(px(24.)).size(px(1.5)).rounded_full().bg(gpui_kit::white().opacity(0.7)))
         .child(div().absolute().left(px(114.)).top(px(40.)).size(px(1.5)).rounded_full().bg(gpui_kit::white().opacity(0.6)))
+
+}
+
+impl Shell {
+    fn font_picker(&self, id: &'static str, current: String, interface: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let me = cx.entity().downgrade();
+        gpui_kit::component::popover::Popover::new(id)
+            .p_0()
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new(SharedString::from(format!("{id}-open")))
+                    .outline()
+                    .small()
+                    .w(px(170.))
+                    .child(h_flex().w_full().gap_2().child(div().flex_1().min_w_0().truncate().child(current.clone())).child(Icon::empty().path("icons/chevrons-up-down.svg").size(px(12.)))),
+            )
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let p = shell.read(cx).palette.get();
+                let mut names: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|n| !n.starts_with('.')).collect();
+                names.sort_by_key(|n| n.to_lowercase());
+                names.dedup();
+                let mut first: Vec<(String, String)> = if interface {
+                    vec![(crate::theme::DEFAULT_FONT.to_owned(), "Allo".to_owned()), ("system".to_owned(), "System".to_owned())]
+                } else {
+                    vec![(crate::theme::MONO.to_owned(), crate::theme::MONO.to_owned())]
+                };
+                first.extend(names.into_iter().filter(|n| n != crate::theme::DEFAULT_FONT && n != crate::theme::MONO).map(|n| (n.clone(), n)));
+                let mut list = theme::float_list(&p).id(SharedString::from(format!("{id}-list"))).w(px(240.)).max_h(px(360.)).overflow_y_scroll();
+                for (n, (value, label)) in first.into_iter().enumerate() {
+                    let on = label == current || (value == "system" && current == "System");
+                    let (me, popover) = (me.clone(), popover.clone());
+                    list = list.child(theme::float_item(&p, SharedString::from(format!("{id}-{n}")), None, label, None, on).on_click(move |_, window, cx| {
+                        popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        let _ = me.update(cx, |this, cx| {
+                            if interface {
+                                let _ = this.exec("theme.font", &json!({"font": value}), window, cx);
+                            } else {
+                                let v = (value != crate::theme::MONO).then(|| json!(value));
+                                this.edit_ui(|f| Self::set_in(f, "theme", "mono", v), window, cx);
+                            }
+                        });
+                    }));
+                }
+                list.into_any_element()
+            })
+    }
 }

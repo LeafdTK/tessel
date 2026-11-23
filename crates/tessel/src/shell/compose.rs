@@ -73,7 +73,7 @@ impl Shell {
             Connection::Connecting => None,
             Connection::Down(why) => Some(why.clone()),
         };
-        let place = if self.on_host() { self.host_label() } else { "tessel on this Mac".to_owned() };
+        let place = self.host_label();
         let gone = self.down_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
         let what = match (&why, gone) {
             (None, _) => format!("Connecting to {place}…"),
@@ -385,7 +385,8 @@ impl Shell {
             Kind::Text => self.styled(div().child(n.props.text.clone().unwrap_or_default()), s).into_any_element(),
             Kind::Button => self.button_el(n, cx),
             Kind::Title => {
-                let title = match self.model.open_summary().filter(|_| !self.show_new) {
+                let waiting = self.awaiting.and_then(|id| self.model.summary(id)).filter(|_| self.model.open.is_none() && !self.show_new);
+                let title = match self.model.open_summary().filter(|_| !self.show_new).or(waiting) {
                     Some(s) => s.goal.clone(),
                     None => "New Session".to_owned(),
                 };
@@ -608,6 +609,15 @@ impl Shell {
     /// over the list's start.
     pub(crate) fn transcript_el_for_inset(&self, scroller: Entity<MessageScrollerState>, session: SessionId, top: f32, inset: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = self.palette.get();
+        if self.awaiting == Some(session) && self.model.open_of(session).is_none() {
+            let goal = self.model.summary(session).map(|s| s.goal.clone()).unwrap_or_default();
+            return div().id("transcript-opening").size_full().flex().items_center().justify_center().child(
+                h_flex()
+                    .gap_2()
+                    .child(gpui_kit::component::spinner::Spinner::new().xsmall().color(p.tertiary))
+                    .child(div().set(Type::Callout).text_color(p.tertiary).child(if goal.is_empty() { "Opening…".to_owned() } else { format!("Opening {goal}…") })),
+            );
+        }
         let this = cx.entity();
         // the list's default puts 2rem under every row, which suits chat
         // bubbles and not a dense log of tool calls. rows space themselves.
@@ -630,7 +640,16 @@ impl Shell {
             .flex_col()
             .min_h_0()
             .when(truncated, |d| {
-                d.child(h_flex().justify_center().py_1().set(Type::Subheadline).text_color(p.secondary).child("Showing the most recent part of this session."))
+                let loading = self.earlier_for == Some(session);
+                d.child(
+                    h_flex().justify_center().py_1().child(
+                        Button::new("show-earlier")
+                            .xsmall()
+                            .ghost()
+                            .label(if loading { "Loading earlier messages…" } else { "Show earlier messages" })
+                            .on_click(cx.listener(move |this, _, _, cx| this.load_earlier(session, cx))),
+                    ),
+                )
             })
             .child(div().flex_1().min_h_0().child(list.size_full()))
     }

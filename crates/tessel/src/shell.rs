@@ -407,6 +407,7 @@ pub struct Shell {
     pub(crate) doc_view: Option<(String, Option<String>)>,
     pub(crate) authoring: bool,
     pub(crate) down_since: Option<Instant>,
+    pub(crate) earlier_for: Option<SessionId>,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -854,6 +855,7 @@ impl Shell {
             doc_view: None,
             authoring: false,
             down_since: None,
+            earlier_for: None,
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -1125,9 +1127,16 @@ impl Shell {
                 let Some(open) = self.model.open_of_mut(session) else { return };
                 // a tool that has just finished may have changed the folder.
                 let touched = matches!(&item.body, ItemBody::Tool { status, .. } if !status.is_open());
+                let todo = is_todo(&item).then(|| item.id.clone());
                 let change = open.upsert(item);
                 let n = open.len();
                 self.relayout_in(session, change, n, cx);
+                if let Some(newest) = todo {
+                    let older: Vec<usize> = self.model.open_of(session).map(|o| (0..o.len()).filter(|&r| o.row(r).is_some_and(|(i, _)| is_todo(i) && i.id != newest)).collect()).unwrap_or_default();
+                    for r in older {
+                        self.relayout_in(session, crate::model::Change::Row(r), n, cx);
+                    }
+                }
                 if touched {
                     self.workspace_touched();
                 }
@@ -1162,6 +1171,7 @@ impl Shell {
             UiEvent::Answer { tag: "host.restart", result } => self.host_restart_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("deleted.") => self.deleted_answer(tag, result, cx),
             UiEvent::Answer { tag: tag @ ("workflows" | "workflow.run"), result } => self.workflows_answer(tag, result, cx),
+            UiEvent::Answer { tag: "earlier", result } => self.earlier_answer(result, cx),
             UiEvent::Answer { tag: "doc.read", result } => {
                 if let (Ok(tessel_proto::Response::File { file }), Some(view)) = (result, self.doc_view.as_mut()) {
                     view.1 = Some(file.text.unwrap_or_default());
@@ -2210,6 +2220,9 @@ impl Shell {
                         .when(open, |d| d.child(div().pl(px(14.)).set(Type::Callout).italic().text_color(p.secondary).child(text.trim_end().to_owned())))
                         .into_any_element(),
                 )
+            }
+            ItemBody::Tool { tool, input, .. } if tool == "TodoWrite" && item.parent.is_none() => {
+                if self.latest_todo(session).as_ref() == Some(&item.id) { Some(self.todo_el(input)) } else { None }
             }
             // a plan stays in the transcript as a document, not a one-line tool call:
             // it is what the rest of the session is measured against.
@@ -3650,3 +3663,82 @@ fn glass_el(radius: f32, float: bool, tint: Option<Hsla>) -> impl IntoElement {
     .inset_0()
 }
 
+fn is_todo(item: &tessel_proto::Item) -> bool {
+    matches!(&item.body, ItemBody::Tool { tool, .. } if tool == "TodoWrite") && item.parent.is_none()
+}
+
+impl Shell {
+    fn latest_todo(&self, session: SessionId) -> Option<ItemId> {
+        let open = self.model.open_of(session)?;
+        (0..open.len()).rev().filter_map(|r| open.row(r)).find(|(i, _)| is_todo(i)).map(|(i, _)| i.id.clone())
+    }
+
+    fn todo_el(&self, input: &serde_json::Value) -> AnyElement {
+        let p = self.palette.get();
+        let todos: Vec<&serde_json::Value> = input.get("todos").and_then(|t| t.as_array()).map(|a| a.iter().collect()).unwrap_or_default();
+        let done = todos.iter().filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("completed")).count();
+        let mut list = v_flex().gap(px(6.));
+        for t in &todos {
+            let text = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_owned();
+            let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("pending");
+            let (mark, words, ink): (AnyElement, String, Hsla) = match status {
+                "completed" => (gpui_kit::component::Icon::empty().path("icons/circle-check.svg").size(px(14.)).text_color(p.finished).into_any_element(), text("content"), p.tertiary),
+                "in_progress" => (status_dot(p.blocked, true, &p).into_any_element(), Some(text("activeForm")).filter(|a| !a.is_empty()).unwrap_or_else(|| text("content")), p.label),
+                _ => (div().size(px(10.)).rounded_full().border_1().border_color(p.tertiary).into_any_element(), text("content"), p.secondary),
+            };
+            list = list.child(
+                h_flex()
+                    .gap(px(10.))
+                    .items_start()
+                    .child(div().size(px(16.)).mt(px(1.)).flex_shrink_0().flex().items_center().justify_center().child(mark))
+                    .child(div().flex_1().min_w_0().set(Type::Callout).text_color(ink).when(status == "completed", |d| d.line_through()).child(words)),
+            );
+        }
+        v_flex()
+            .p_3()
+            .gap(px(10.))
+            .rounded(px(theme::R_CARD))
+            .border_1()
+            .border_color(p.separator)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().flex_1().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child("To-dos"))
+                    .child(div().set(Type::Subheadline).text_color(p.tertiary).child(format!("{done} of {}", todos.len()))),
+            )
+            .child(list)
+            .into_any_element()
+    }
+}
+
+impl Shell {
+    pub(crate) fn load_earlier(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        if self.earlier_for.is_some() {
+            return;
+        }
+        let Some(before) = self.model.open_of(session).and_then(|o| o.first_seq()) else { return };
+        self.earlier_for = Some(session);
+        self.cmd(Cmd::Ask { tag: "earlier", req: tessel_proto::Request::ItemsBefore { session, before, limit: 300 } });
+        cx.notify();
+    }
+
+    fn earlier_answer(&mut self, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        let Some(session) = self.earlier_for.take() else { return };
+        match result {
+            Ok(tessel_proto::Response::Items { items, has_more }) => {
+                let Some(open) = self.model.open_of_mut(session) else { return };
+                let added = open.prepend(items, has_more);
+                let focused = self.model.open.as_ref().is_some_and(|o| o.id == session);
+                let scrollers: Vec<_> = self.views.values().filter(|v| v.session == session).map(|v| v.scroller.clone()).chain(focused.then(|| self.scroller.clone())).collect();
+                for s in scrollers {
+                    s.update(cx, |s, cx| {
+                        s.prepend(added, cx);
+                    });
+                }
+            }
+            Ok(_) => {}
+            Err(e) => self.error = Some(e),
+        }
+        cx.notify();
+    }
+}

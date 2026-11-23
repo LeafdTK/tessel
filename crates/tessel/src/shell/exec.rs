@@ -410,7 +410,7 @@ impl Shell {
             "host.list" => {
                 self.hosts_reload();
                 let current = self.hosts.list.current.clone();
-                let mut list = vec![json!({"id": "mac", "name": "This Mac", "showing": current.is_none()})];
+                let mut list = vec![json!({"id": "mac", "name": super::hosts::this_machine(), "showing": current.is_none()})];
                 for h in &self.hosts.list.hosts {
                     list.push(json!({"id": h.id, "name": h.name, "ssh": h.ssh, "address": h.address, "transport": h.transport, "ready": h.ready(), "showing": current.as_deref() == Some(h.id.as_str())}));
                 }

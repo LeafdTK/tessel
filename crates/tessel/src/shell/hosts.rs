@@ -145,6 +145,11 @@ impl HostsView {
     }
 }
 
+pub(crate) fn this_machine() -> &'static str {
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| Some(tessel_remote::setup::machine_name()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "This Mac".into()))
+}
+
 impl Shell {
     pub(crate) fn hosts_reload(&mut self) {
         self.hosts.list = Hosts::load(&self.hosts.home);
@@ -208,7 +213,7 @@ impl Shell {
     /// what the window shows, by name.
     pub(crate) fn host_label(&self) -> String {
         match self.hosts.list.current.as_deref() {
-            None => "This Mac".to_owned(),
+            None => this_machine().to_owned(),
             Some(id) => self.hosts.list.get(id).map_or_else(|| id.to_owned(), |h| h.name.clone()),
         }
     }
@@ -711,11 +716,11 @@ impl Shell {
                                 .flex_1()
                                 .min_w_0()
                                 .child(div().truncate().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(p.label).child(name))
-                                .child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(note)),
+                                .when(!note.is_empty(), |d| d.child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(note))),
                         )
                 };
                 let mut list = v_flex().w(px(280.)).p(px(6.)).gap(px(2.)).child(
-                    machine("host-mac".into(), "laptop", "This Mac".into(), "chats and agents on this machine".into(), current.is_none()).on_click(go(None)),
+                    machine("host-mac".into(), "laptop", this_machine().to_owned(), String::new(), current.is_none()).on_click(go(None)),
                 );
                 for h in &this.hosts.list.hosts {
                     let note = if !h.ready() {
@@ -750,7 +755,7 @@ impl Shell {
                                 .test_support()
                                 .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(true, cx))))
                         } else {
-                            theme::float_item(&p, "host-restart", Some("rotate-cw"), "Restart tessel there", Some("Terminals and agents carry on"), false)
+                            theme::float_item(&p, "host-restart", Some("rotate-cw"), "Restart tessel there", None, false)
                                 .test_support()
                                 .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(false, cx))))
                         });
@@ -771,13 +776,13 @@ impl Shell {
                                     .on_click(act(Box::new(move |this, w, cx| this.host_reboot(&again, w, cx)))),
                             )
                             .child(
-                                theme::float_item(&p, "host-stop", Some("square"), "Stop the sandbox", Some("Showing it again starts it"), false)
+                                theme::float_item(&p, "host-stop", Some("square"), "Stop the sandbox", None, false)
                                     .test_support()
                                     .on_click(act(Box::new(move |this, w, cx| this.host_stop(&stop, w, cx)))),
                             );
                     }
                     list = list.child(
-                        theme::float_item(&p, "host-disconnect", Some("unplug"), "Disconnect", Some("Back to This Mac"), false)
+                        theme::float_item(&p, "host-disconnect", Some("unplug"), "Disconnect", None, false)
                             .test_support()
                             .on_click(act(Box::new(|this, _, cx| this.switch_host(None, cx)))),
                     );
@@ -826,7 +831,7 @@ impl Shell {
         let connected = |id: &str| self.hosts.on.as_deref() == Some(id) && matches!(self.model.connection, crate::model::Connection::Connected);
 
         // this mac, then each host: what it is, how it's doing, and one menu.
-        let mut machines = card().child(self.machine_row("mac", "laptop", "This Mac".into(), "Chats and agents on this Mac".into(), current.is_none(), None, cx));
+        let mut machines = card().child(self.machine_row("mac", "laptop", this_machine().to_owned(), String::new(), current.is_none(), None, cx));
         for h in &self.hosts.list.hosts {
             let showing = current.as_deref() == Some(h.id.as_str());
             let mut about = if !h.ready() {
@@ -889,7 +894,7 @@ impl Shell {
                 d.hover(|d| d.bg(p.hover)).on_click(cx.listener(move |this, _, _, cx| this.switch_host(to.clone(), cx)))
             })
             .child(super::avatar::machine(icon, 30., 8., &p))
-            .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(name)).child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(about)))
+            .child(v_flex().flex_1().min_w_0().child(div().set(Type::Body).truncate().child(name)).when(!about.is_empty(), |d| d.child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(about))))
             .when(showing, |d| d.child(h_flex().gap_1().child(Icon::empty().path("icons/check.svg").size(z(13.)).text_color(p.accent)).child(div().set(Type::Subheadline).text_color(p.secondary).child("Showing"))))
             .children(host.map(|h| self.host_menu(h, showing, cx)))
             .into_any_element()
