@@ -592,8 +592,6 @@ pub fn key_policy(keys: &[(tessel_proto::keys::KeyInfo, String)]) -> Value {
     json!({"allow": allow})
 }
 
-/// give the sandbox the network policy that adds these keys' secrets on the
-/// way out, so they never enter it. an empty list takes them back.
 pub async fn share_keys(home: &Path, host: &Host, keys: &[(tessel_proto::keys::KeyInfo, String)]) -> anyhow::Result<()> {
     let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
     let acct = Account::load(home, &sb)?;
