@@ -173,7 +173,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list" | "workflows", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list" | "workflows" | "tasks", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -1239,7 +1239,7 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None,
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None,
                 agent_tools: true,
                 models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
             }),
@@ -1304,7 +1304,7 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
         ],
     );
     rig.shell.update(cx, |s, cx| {
@@ -1946,7 +1946,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, agent_tools: true, ..Default::default() })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
@@ -3270,4 +3270,55 @@ fn house_rules_are_listed_set_up_and_taught_in_small_chats_of_their_own(cx: &mut
     assert_eq!((cwd.as_str(), worktree, model.as_deref()), ("/work/api", false, Some("sonnet")));
     assert!(prompt.contains("every query is scoped to a tenant") && prompt.contains("House rules live in"));
     assert!(!rig.exists(cx, "teaching-chip"));
+}
+
+#[gpui_kit::test]
+fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut TestAppContext) {
+    use tessel_proto::task::{Task, TaskAct, TaskState};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let dir = layout_dir("board");
+    let file = dir.join("ui.json");
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(file.clone()), ..Launch::default() });
+    assert!(rig.shell.read_with(cx, |s, _| s.shown_elsewhere(crate::ui::Module::Board, None)), "off, the board isn't offered");
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("app.factory", &serde_json::json!({"on": true}), window, cx))).unwrap().unwrap();
+    rig.settle(cx);
+    assert!(!rig.shell.read_with(cx, |s, _| s.shown_elsewhere(crate::ui::Module::Board, None)));
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let ls = exec(&mut rig, cx, "ui.ls", serde_json::Value::Null).unwrap();
+    let conv = ls["panes"].as_array().unwrap().iter().find(|p| p["module"] == "conversation").map(|p| p["id"].as_str().unwrap().to_owned()).expect("a conversation pane");
+    let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": conv, "dir": "right"})).unwrap();
+    let new = new["pane"].as_str().unwrap_or_else(|| panic!("{new:?}")).to_owned();
+    exec(&mut rig, cx, "pane.show", serde_json::json!({"pane": new, "module": "board"})).unwrap();
+    rig.settle(cx);
+    let t = |id: &str, state: TaskState, deps: &[&str], session: Option<SessionId>| Task {
+        id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: deps.iter().map(|d| (*d).to_owned()).collect(),
+        parent: None, session, notes: vec![], attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1,
+    };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
+        t("t1", TaskState::Review, &[], Some(a.id)),
+        t("t2", TaskState::Draft, &[], None),
+        t("t3", TaskState::Ready, &["t1"], None),
+        t("t4", TaskState::Dropped, &[], None),
+    ] }) }]);
+    assert!(rig.exists(cx, "task-t1") && rig.exists(cx, "task-t2") && rig.exists(cx, "task-t3") && !rig.exists(cx, "task-t4"), "dropped ones are gone");
+    let acted = |rig: &mut Rig| rig.asked().into_iter().find_map(|c| match c {
+        Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskAct { id, act } } => Some((id, act)),
+        _ => None,
+    });
+    rig.asked();
+    rig.click(cx, "task-ready-t2");
+    assert_eq!(acted(&mut rig), Some(("t2".into(), TaskAct::Ready)));
+    rig.click(cx, "task-land-t1");
+    assert_eq!(acted(&mut rig), Some(("t1".into(), TaskAct::Land)));
+    rig.click(cx, "task-change-t1");
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_change.update(cx, |i, cx| i.set_value("keep the old shortcut", window, cx)))).unwrap();
+    rig.click(cx, "task-change-send");
+    assert_eq!(acted(&mut rig), Some(("t1".into(), TaskAct::Change { text: "keep the old shortcut".into() })));
+
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_title.update(cx, |i, cx| i.set_value("Add dark mode", window, cx)))).unwrap();
+    rig.click(cx, "task-add");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskCreate { repo, title, ready: false, .. } } if repo == "/work/api" && title == "Add dark mode")));
+
+    rig.feed(cx, vec![UiEvent::Task(t("t1", TaskState::Landed, &[], Some(a.id)))]);
+    assert!(rig.shell.read_with(cx, |s, _| s.tasks.iter().any(|x| x.id == "t1" && x.state == TaskState::Landed)), "live updates land in place");
 }

@@ -1929,3 +1929,59 @@ async fn a_repository_that_opts_in_is_proved_after_each_turn_but_never_twice_for
     assert_eq!(reviews(), 1, "nothing changed, so nothing is paid for again");
     assert_eq!(list(&c).await.iter().find(|x| x.id == s.id).unwrap().proof.as_ref().unwrap().started_ms, first.started_ms);
 }
+
+async fn task_until(c: &Client, id: &str, what: &str, pred: impl Fn(&tessel_proto::task::Task) -> bool) -> tessel_proto::task::Task {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let Response::Tasks { tasks } = c.request(Request::TaskList).await.unwrap() else { panic!() };
+        let t = tasks.into_iter().find(|t| t.id == id);
+        if let Some(t) = &t
+            && pred(t)
+        {
+            return t.clone();
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for: {what}. last: {t:?}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_order() {
+    use tessel_proto::task::{TaskAct, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nverify = \"test ! -f broken\"\nlenses = [\"correctness\"]\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None };
+    let Response::Task { task: first } = c.request(make("Count higher", vec![])).await.unwrap() else { panic!() };
+    let Response::Task { task: second } = c.request(make("Then count lower", vec![first.id.clone()])).await.unwrap() else { panic!() };
+
+    let first = task_until(&c, &first.id, "worked and proved", |t| t.state == TaskState::Review).await;
+    let s = first.session.expect("it got a session");
+    let summary = list(&c).await.into_iter().find(|x| x.id == s).unwrap();
+    assert!(summary.worktree.is_some(), "in a workspace of its own");
+    assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("Count higher") && l.contains("keep it small")), "the agent got the task");
+    assert!(task_until(&c, &second.id, "waits", |t| t.state == TaskState::Ready).await.session.is_none(), "it waits for the one it depends on");
+
+    let ws = PathBuf::from(&summary.cwd);
+    std::fs::write(ws.join("broken"), "x\n").unwrap();
+    c.request(Request::TaskAct { id: first.id.clone(), act: TaskAct::Change { text: "also count to three".into() } }).await.unwrap();
+    let sent_back = task_until(&c, &first.id, "sent back twice, then yours", |t| t.state == TaskState::Review && t.attempts == 2).await;
+    assert!(sent_back.notes.iter().any(|n| n.text.contains("still failing after 2 fix rounds")));
+    assert_eq!(d.backend.written.lock().unwrap().iter().filter(|l| l.contains("Checking your change found problems")).count(), 2);
+
+    std::fs::remove_file(ws.join("broken")).unwrap();
+    std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+    git(&ws, &["commit", "-q", "-am", "fix: count higher"]);
+    c.request(Request::TaskAct { id: first.id.clone(), act: TaskAct::Land }).await.unwrap();
+    let landed = task_until(&c, &first.id, "landed", |t| t.state.finished()).await;
+    assert_eq!(landed.state, TaskState::Landed, "{:?}", landed.notes);
+    assert_eq!(git(&repo, &["log", "-1", "--format=%s"]), "fix: count higher");
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "two\n");
+    assert!(task_until(&c, &second.id, "now it starts", |t| t.session.is_some()).await.state != TaskState::Ready);
+}

@@ -350,6 +350,16 @@ pub fn apply_recheck(findings: &mut [Finding], text: &str) {
     }
 }
 
+pub fn verdict_word(p: &Proof) -> String {
+    match p.verdict {
+        Verdict::Proving => "proving".into(),
+        Verdict::Proven => "proven".into(),
+        Verdict::Concerns => "proven with concerns".into(),
+        Verdict::Failed => format!("failed, {} blocking", p.blocking()),
+        Verdict::Broken => "couldn't be proved".into(),
+    }
+}
+
 pub fn verdict(p: &Proof) -> Verdict {
     if p.verify.iter().any(|v| !v.ok) || p.standing().any(|f| f.severity == Severity::Block) {
         Verdict::Failed
@@ -412,6 +422,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, holdou
     }
     let book: Rulebook = crate::rules::load_with(&ws, &root, holdouts.as_deref());
     let cfg = crate::rules::config(&ws, &root);
+    p.risky = !cfg.risk.is_empty() && crate::rules::applies(&cfg.risk, &change.paths);
     let mut rules: Vec<Rule> = book.rules.into_iter().filter(|r| r.check != Check::Unknown).collect();
     if cfg.starter
         && let Some(r) = crate::rules::commit_style(&change.history)

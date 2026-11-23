@@ -3,7 +3,9 @@
 
 /// one-line descriptions of tool calls. lives in the protocol crate so clients describe tools the same way.
 pub use tessel_proto::activity;
+pub mod board;
 pub mod browser;
+pub mod land;
 pub mod checkpoint;
 pub mod handoff;
 pub mod hub;

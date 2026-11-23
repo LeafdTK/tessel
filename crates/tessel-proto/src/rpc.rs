@@ -244,6 +244,36 @@ pub enum Request {
     Rules {
         session: SessionId,
     },
+    TaskCreate {
+        repo: String,
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        spec: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        deps: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ready: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget_usd: Option<f64>,
+    },
+    TaskEdit {
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spec: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deps: Option<Vec<String>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
+    TaskAct {
+        id: String,
+        act: crate::task::TaskAct,
+    },
+    TaskList,
     /// put a session's files back as they were before one of its turns (a
     /// `Turn` item); or, with no turn, take back the last time that was done.
     Rewind {
@@ -653,6 +683,8 @@ pub struct DaemonSettings {
     /// session goes. none: a daemon from before it kept them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projects: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parallel: Option<u32>,
 }
 
 /// a model in the loadout, and how it runs when picked.
@@ -672,7 +704,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()) }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None }
     }
 }
 
@@ -820,6 +852,12 @@ pub enum Response {
     },
     Rules {
         rulebook: crate::proof::Rulebook,
+    },
+    Task {
+        task: crate::task::Task,
+    },
+    Tasks {
+        tasks: Vec<crate::task::Task>,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {
@@ -1098,6 +1136,9 @@ pub enum Event {
     /// the account's usage changed (to everyone).
     Usage {
         windows: Vec<crate::UsageWindow>,
+    },
+    TaskUpdated {
+        task: crate::task::Task,
     },
     /// the engine changed: found, installing, installed (to everyone).
     BrowserEngine {

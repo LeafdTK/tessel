@@ -86,6 +86,7 @@ pub enum HubMsg {
     RunAdvance { run: SessionId },
     Proof { session: SessionId, proof: Box<tessel_proto::proof::Proof> },
     ProofIdle { session: SessionId },
+    Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -114,6 +115,7 @@ pub struct Create {
     model: Option<String>,
     parent: Option<SessionId>,
     fork: Option<Fork>,
+    task: Option<String>,
 }
 
 /// what a forked session carries on from.
@@ -238,6 +240,9 @@ pub struct Hub {
     deleted_swept: Option<std::time::Instant>,
     runs: HashMap<SessionId, RunLive>,
     proving: HashSet<SessionId>,
+    tasks: std::collections::BTreeMap<String, tessel_proto::task::Task>,
+    land_queue: std::collections::VecDeque<String>,
+    landing: Option<String>,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
     choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
@@ -331,6 +336,9 @@ impl Hub {
             deleted_swept: None,
             runs: HashMap::new(),
             proving: HashSet::new(),
+            tasks: Default::default(),
+            land_queue: Default::default(),
+            landing: None,
             asks: HashMap::new(),
             choices_kept: HashMap::new(),
             next_term: 1,
@@ -387,6 +395,11 @@ impl Hub {
                 hub.name_session(id, was, said);
             }
         }
+        for body in hub.store.load_tasks().await? {
+            if let Ok(t) = serde_json::from_str::<tessel_proto::task::Task>(&body) {
+                hub.tasks.insert(t.id.clone(), t);
+            }
+        }
         for (id, body) in hub.store.load_proofs().await? {
             let Ok(mut proof) = serde_json::from_str::<tessel_proto::proof::Proof>(&body) else { continue };
             if !proof.verdict.done() {
@@ -398,6 +411,7 @@ impl Hub {
                 live.state.proof = Some(proof);
             }
         }
+        hub.tasks_after_restart();
         for (id, body) in hub.store.load_runs().await? {
             let Ok(mut rl) = serde_json::from_str::<RunLive>(&body) else { continue };
             if let Some(live) = hub.sessions.get_mut(&id) {
@@ -681,12 +695,14 @@ impl Hub {
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
+            HubMsg::Landed { task, result } => self.task_landed(task, result),
             HubMsg::ProofIdle { session } => {
                 self.proving.remove(&session);
             }
             HubMsg::Proof { session, proof } => {
                 if proof.verdict.done() {
                     self.proving.remove(&session);
+                    self.task_proved(session, &proof);
                 }
                 if let Ok(body) = serde_json::to_string(&proof) {
                     self.store.save_proof(session, body);
@@ -742,12 +758,16 @@ impl Hub {
                 self.respond(client, id, result);
             }
             HubMsg::WorktreeReady { client, id, create, result, setup } => {
+                let task = create.task.clone();
                 let result = result.and_then(|made| {
                     // a fork's worktree is of the parent's repository, whichever folder it was made from.
                     let repo = create.fork.as_ref().and_then(|f| f.repo.clone()).unwrap_or(made.repo);
                     let wt = WorktreeInfo { repo, branch: made.branch };
                     self.create_session(*create, made.path, Some(wt))
                 });
+                if let Some(task) = task {
+                    self.task_started(&task, &result);
+                }
                 // the new workspace's setup runs where you can watch it: a terminal of its own.
                 if let (Ok(Response::Session { summary }), Some(cmd)) = (&result, setup) {
                     let (session, cwd) = (summary.id, summary.cwd.clone());
@@ -875,7 +895,7 @@ impl Hub {
                 if let Some(bad) = attachments.iter().find(|a| !a.is_supported()) {
                     return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{} can't be attached ({}). images and pdfs can; for anything else, mention its path", bad.name, bad.media_type))));
                 }
-                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, attachments, model, parent, fork: None };
+                let create = Create { cmd_id, cwd: cwd.clone(), goal, prompt, attachments, model, parent, fork: None, task: None };
                 match worktree {
                     None => self.create_session(create, cwd, None),
                     Some(spec) => {
@@ -1220,7 +1240,7 @@ impl Hub {
                     permission_mode: st.permission_mode.clone(),
                     repo: st.meta.worktree.as_ref().map(|w| w.repo.clone()),
                 };
-                let create = Create { cmd_id, cwd: st.meta.cwd.clone(), goal: Some(format!("{} (fork)", st.meta.goal)), prompt: None, attachments: Vec::new(), model: st.model.clone(), parent: None, fork: Some(fork) };
+                let create = Create { cmd_id, cwd: st.meta.cwd.clone(), goal: Some(format!("{} (fork)", st.meta.goal)), prompt: None, attachments: Vec::new(), model: st.model.clone(), parent: None, fork: Some(fork), task: None };
                 if workspace {
                     // a worktree branched from where this one is now: its commit, not the repo's default.
                     let spec = WorktreeSpec { base: Some("HEAD".into()), name: None };
@@ -1470,6 +1490,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 self.start_proof(session, anyway, false);
                 Ok(Response::Ack)
             }
+            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd } => self.task_create(repo, title, spec, deps, parent, ready, budget_usd),
+            Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
+            Request::TaskAct { id, act } => self.task_act(&id, act),
+            Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
             Request::Rules { session } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 let ws = std::path::PathBuf::from(&live.state.meta.cwd);
@@ -2381,7 +2405,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if ended && self.asks.keys().any(|(s, _)| *s == session) {
             self.let_go_of_asks(session, None, "the turn ended before it was answered");
         }
-        if was_open && ended {
+        if was_open && ended && !self.task_turn_ended(session) {
             self.maybe_auto_prove(session);
         }
         Ok(())
@@ -2602,7 +2626,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         };
         std::fs::create_dir_all(&folder).map_err(|e| RpcError::new(ErrorCode::Internal, format!("making {}: {e}", folder.display())))?;
         let folder = folder.to_string_lossy().into_owned();
-        let create = Create { cmd_id: Uuid::new_v4(), cwd: folder.clone(), goal: Some(title), prompt: None, attachments: Vec::new(), model: w.model.clone(), parent: None, fork: None };
+        let create = Create { cmd_id: Uuid::new_v4(), cwd: folder.clone(), goal: Some(title), prompt: None, attachments: Vec::new(), model: w.model.clone(), parent: None, fork: None, task: None };
         let Response::Session { summary } = self.create_session(create, folder.clone(), None)? else {
             return Err(RpcError::new(ErrorCode::Internal, "the run's chat wasn't made"));
         };
@@ -2662,7 +2686,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                         text = format!("What was done so far:\n\n{}\n\n---\n\n{text}", before.join("\n\n"));
                     }
                     let model = step.model.clone().or_else(|| rl.workflow.model.clone());
-                    let create = Create { cmd_id: Uuid::new_v4(), cwd: rl.folder.clone(), goal: Some(step.name.clone()), prompt: None, attachments: Vec::new(), model, parent: Some(run_id), fork: None };
+                    let create = Create { cmd_id: Uuid::new_v4(), cwd: rl.folder.clone(), goal: Some(step.name.clone()), prompt: None, attachments: Vec::new(), model, parent: Some(run_id), fork: None, task: None };
                     match self.create_session(create, rl.folder.clone(), None) {
                         Ok(Response::Session { summary }) => session = summary.id,
                         Ok(_) => {}
@@ -2908,6 +2932,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
     }
 
     fn tick(&mut self) {
+        self.tasks_tick();
         let now = now_ms();
         // every half a minute, while agents run, a look at what's under them:
         // so what they start is known even if it outlives them between looks.
@@ -3113,6 +3138,9 @@ fn not_found_item(item: &tessel_proto::ItemId) -> RpcError {
 /// the settings file, or the defaults when there is none or it can't be read.
 /// the sign-ins a mac can bring: the variable each sets, and the file under `remote/` it's kept in.
 const SIGN_INS: [(&str, &str); 2] = [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token"), ("GH_TOKEN", "gh-token")];
+
+#[path = "hub_tasks.rs"]
+mod tasks;
 
 fn load_settings(path: &std::path::Path) -> tessel_proto::DaemonSettings {
     let mut s = load_settings_as_saved(path);

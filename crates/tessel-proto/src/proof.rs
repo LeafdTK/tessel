@@ -167,6 +167,8 @@ pub struct Proof {
     pub overridden: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub skipped: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub risky: bool,
 }
 
 impl Proof {

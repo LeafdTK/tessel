@@ -46,6 +46,10 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
   tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
                                             vercel makes dev boxes in vercel sandboxes
+  tesselctl task add TITLE… [--spec TEXT] [--after ID]… [--ready] [--budget USD] [--repo DIR]
+                                            a task for the board; ready ones are worked on in workspaces of
+                                            their own, proved, and wait for you to land them
+  tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
   tesselctl prove SESSION [--json]          check a chat's change: its verify commands, the house rules
                                             (.tessel/rules), and independent reviewers. exits 1 when it fails
   tesselctl rules SESSION [--json]          the rules, knowledge and checks that apply where it works
@@ -533,6 +537,61 @@ async fn run() -> anyhow::Result<()> {
                 .await?;
             println!("{} {}", if cmd == "approve" { "allowed" } else { "denied" }, pending_line(request));
         }
+        "task" | "tasks" => {
+            use tessel_proto::task::{Task, TaskAct};
+            let line = |t: &Task| {
+                let cost = if t.proof_cost_usd > 0.0 { format!("  ${:.2} proving", t.proof_cost_usd) } else { String::new() };
+                let after = if t.deps.is_empty() { String::new() } else { format!("  after {}", t.deps.join(", ")) };
+                format!("{}  {:<8} {}{after}{cost}", t.id, format!("{:?}", t.state).to_lowercase(), t.title)
+            };
+            let sub = if cmd == "tasks" { "ls".to_owned() } else { args.next("ls, add, ready, draft, land, change or drop")? };
+            let one = |r: Response| match r {
+                Response::Task { task } => Ok(task),
+                other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
+            };
+            match sub.as_str() {
+                "ls" => {
+                    let Response::Tasks { mut tasks } = client.request(Request::TaskList).await? else { bail!("unexpected reply") };
+                    tasks.sort_by_key(|t| (t.state.finished(), t.created_ms));
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&tasks)?);
+                    } else {
+                        for t in &tasks {
+                            println!("{}", line(t));
+                        }
+                    }
+                }
+                "add" => {
+                    let spec = args.opt("--spec")?.unwrap_or_default();
+                    let repo = match args.opt("--repo")? {
+                        Some(r) => r,
+                        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+                    };
+                    let budget_usd = args.opt("--budget")?.map(|b| b.trim_start_matches('$').parse()).transpose()?;
+                    let mut deps = Vec::new();
+                    while let Some(d) = args.opt("--after")? {
+                        deps.push(d);
+                    }
+                    let ready = args.flag("--ready");
+                    let title = args.rest.join(" ");
+                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd }).await?)?;
+                    println!("{}", line(&t));
+                }
+                "ready" | "draft" | "land" | "drop" | "change" => {
+                    let id = args.next("a task")?;
+                    let act = match sub.as_str() {
+                        "ready" => TaskAct::Ready,
+                        "draft" => TaskAct::Draft,
+                        "land" => TaskAct::Land,
+                        "drop" => TaskAct::Drop,
+                        _ => TaskAct::Change { text: args.rest.join(" ") },
+                    };
+                    let t = one(client.request(Request::TaskAct { id, act }).await?)?;
+                    println!("{}", line(&t));
+                }
+                other => bail!("task {other}? ls, add, ready, draft, land, change or drop"),
+            }
+        }
         "prove" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             let proof = prove(&client, session).await?;
@@ -945,6 +1004,7 @@ async fn follow_events(events: &mut Events, json: bool) {
         match ev {
             Event::SessionUpdated { summary } => println!("{}", summary_line(&summary)),
             Event::SessionRemoved { session } => println!("removed {session}"),
+            Event::TaskUpdated { task } => println!("task {} {:?} {}", task.id, task.state, task.title),
             Event::ItemUpserted { item, .. } => println!("{}", item_line(&item)),
             Event::ItemDelta { text, .. } => println!("  + {}", one_line(&text, 100)),
             Event::PendingChanged { pending, .. } => {

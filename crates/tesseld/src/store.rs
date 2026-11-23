@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 enum Job {
     Save { session: Box<Persisted>, items: Vec<Item> },
@@ -27,6 +27,8 @@ enum Job {
     LoadSession { id: SessionId, reply: oneshot::Sender<anyhow::Result<Option<Persisted>>> },
     SaveRun { table: &'static str, id: SessionId, body: String },
     LoadRuns { table: &'static str, reply: oneshot::Sender<anyhow::Result<Vec<(SessionId, String)>>> },
+    SaveTask { id: String, body: String },
+    LoadTasks { reply: oneshot::Sender<anyhow::Result<Vec<String>>> },
     LoadSessions { reply: oneshot::Sender<anyhow::Result<Vec<Persisted>>> },
     LoadItems { id: SessionId, reply: oneshot::Sender<anyhow::Result<Vec<Item>>> },
     /// resolves once everything queued before it is on disk.
@@ -93,6 +95,16 @@ impl Store {
     pub async fn load_runs(&self) -> anyhow::Result<Vec<(SessionId, String)>> {
         let (reply, rx) = oneshot::channel();
         self.tx.send(Job::LoadRuns { table: "runs", reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
+    }
+
+    pub fn save_task(&self, id: &str, body: String) {
+        let _ = self.tx.send(Job::SaveTask { id: id.to_owned(), body });
+    }
+
+    pub async fn load_tasks(&self) -> anyhow::Result<Vec<String>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::LoadTasks { reply }).ok().context("store thread is gone")?;
         rx.await.context("store thread is gone")?
     }
 
@@ -239,6 +251,17 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 9 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE tasks (
+                 id   TEXT PRIMARY KEY,
+                 body TEXT NOT NULL
+             );
+             PRAGMA user_version = 9;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -288,6 +311,19 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
                 if let Err(e) = r {
                     eprintln!("tesseld: store: saving run {id}: {e:#}");
                 }
+            }
+            Job::SaveTask { id, body } => {
+                if let Err(e) = conn.execute("INSERT INTO tasks (id, body) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET body = excluded.body", params![id, body]) {
+                    eprintln!("tesseld: store: saving task {id}: {e:#}");
+                }
+            }
+            Job::LoadTasks { reply } => {
+                let load = || -> anyhow::Result<Vec<String>> {
+                    let mut stmt = conn.prepare("SELECT body FROM tasks")?;
+                    let rows: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+                    Ok(rows)
+                };
+                let _ = reply.send(load());
             }
             Job::LoadRuns { table, reply } => {
                 let load = || -> anyhow::Result<Vec<(SessionId, String)>> {

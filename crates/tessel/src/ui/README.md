@@ -96,6 +96,7 @@ Modules:
 | `changes`      | what changed in the session's folder, with diffs                      |
 | `files`        | the session's folder, with an editor                                  |
 | `doc`          | the doc a workflow made, rendered, to read, copy and save |
+| `board`        | tasks agents work on in workspaces of their own, proved, then landed (with the software factory on) |
 | `editor`       | the file picked in `files`, in a pane of its own: the tree keeps its height and files open here |
 | `checks`       | the branch, its pull request and CI                                   |
 | `artifacts`    | plans and files the agent made                                        |

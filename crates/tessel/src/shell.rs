@@ -31,6 +31,7 @@ mod setup_flow;
 mod palette;
 mod panel;
 mod proof;
+mod board;
 mod workflows;
 mod panes;
 mod projects;
@@ -318,6 +319,10 @@ pub struct Shell {
     making: bool,
     project_name: Entity<InputState>,
     project_parent: Entity<InputState>,
+    pub(crate) task_title: Entity<InputState>,
+    pub(crate) task_change: Entity<InputState>,
+    pub(crate) tasks: Vec<tessel_proto::task::Task>,
+    pub(crate) changing_task: Option<String>,
     /// a folder on a dev box, being browsed: where, its folders, whether it's a repository.
     pub(crate) host_folders: Option<Result<(String, Vec<String>, bool), String>>,
     github_repo: Entity<InputState>,
@@ -485,6 +490,8 @@ impl Shell {
         let projects_home = std::env::var("TESSEL_PROJECTS").unwrap_or_else(|_| "~/tessel/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
+        let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("A task for an agent…"));
+        let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
 
         // the `/` and `@` menus get their keys before the message box does:
         // here bindings (return sends, arrows move) run ahead of key listeners.
@@ -522,6 +529,16 @@ impl Shell {
             cx.subscribe_in(&kube_filter, window, |_, _, ev: &InputEvent, _, cx| {
                 if matches!(ev, InputEvent::Change) {
                     cx.notify();
+                }
+            }),
+            cx.subscribe_in(&task_title, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { secondary, .. } = ev {
+                    this.add_task(*secondary, window, cx);
+                }
+            }),
+            cx.subscribe_in(&task_change, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.change_task(window, cx);
                 }
             }),
             cx.subscribe_in(&composer, window, |this, _, ev: &InputEvent, window, cx| {
@@ -813,6 +830,10 @@ impl Shell {
             making: false,
             project_name,
             project_parent,
+            task_title,
+            task_change,
+            tasks: Vec::new(),
+            changing_task: None,
             host_folders: None,
             github_repo,
             template: projects::Template::default(),
@@ -997,6 +1018,7 @@ impl Shell {
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
                 self.ask_deleted();
                 self.ask_workflows();
+                self.cmd(Cmd::Ask { tag: "tasks", req: tessel_proto::Request::TaskList });
                 if self.models.is_empty() {
                     self.cmd(Cmd::Models);
                 }
@@ -1239,6 +1261,9 @@ impl Shell {
                 }
             }
             UiEvent::Usage(windows) => self.usage = windows,
+            UiEvent::Task(task) => self.task_updated(task),
+            UiEvent::Answer { tag: "tasks", result } => self.tasks_answer(result),
+            UiEvent::Answer { tag: "task", result } => self.task_answer(result),
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
             UiEvent::BrowserCall { call, session, act, agent, first } => {

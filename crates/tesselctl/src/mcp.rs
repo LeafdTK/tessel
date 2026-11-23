@@ -102,6 +102,19 @@ ops: open (url?), back, forward, reload, snapshot (root?), read (text, with sele
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
+            "name": "tessel_task",
+            "description": "The board's tasks for this repository. ops: add (title, spec, after: ids it waits on, ready: start when a slot is free), list, note (id, text). Use it when asked to split work into tasks.",
+            "inputSchema": {"type": "object", "properties": {
+                "op": {"type": "string", "enum": ["add", "list", "note"]},
+                "id": {"type": "string"},
+                "title": {"type": "string"},
+                "spec": {"type": "string"},
+                "text": {"type": "string"},
+                "after": {"type": "array", "items": {"type": "string"}},
+                "ready": {"type": "boolean"}
+            }, "required": ["op"]}
+        },
+        {
             "name": "tessel_ask",
             "description": "Ask the person and wait, as a small form in the chat, instead of asking in text and ending your turn. A few fields, the likely answer first. Answers come back as JSON (field id to answer; empty fields left out).",
             "inputSchema": {"type": "object", "properties": {
@@ -324,6 +337,33 @@ impl Server {
                     Ok(Response::WorkflowSaved { workflow }) => format!("saved at {}, but it has problems to fix, then save again:\n- {}\n\n{}", workflow.path, workflow.problems.join("\n- "), tessel_proto::workflow::FORMAT),
                     Ok(other) => anyhow::bail!("unexpected reply: {other:?}"),
                     Err(e) => anyhow::bail!("{e:#}\n\n{}", tessel_proto::workflow::FORMAT),
+                }
+            }
+            "tessel_task" => {
+                let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+                let line = |t: &tessel_proto::task::Task| format!("{} {:?} {}{}", t.id, t.state, t.title, if t.deps.is_empty() { String::new() } else { format!(" (after {})", t.deps.join(", ")) });
+                match s("op").as_str() {
+                    "add" => {
+                        let repo = std::env::current_dir()?.to_string_lossy().into_owned();
+                        let deps = args.get("after").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+                        let ready = args.get("ready").and_then(Value::as_bool).unwrap_or(false);
+                        match self.ask(Request::TaskCreate { repo, title: s("title"), spec: s("spec"), deps, parent: None, ready, budget_usd: None }).await? {
+                            Response::Task { task } => format!("added {}", line(&task)),
+                            other => anyhow::bail!("unexpected reply: {other:?}"),
+                        }
+                    }
+                    "note" => match self.ask(Request::TaskEdit { id: s("id"), title: None, spec: None, deps: None, note: Some(s("text")) }).await? {
+                        Response::Task { task } => format!("noted on {}", line(&task)),
+                        other => anyhow::bail!("unexpected reply: {other:?}"),
+                    },
+                    _ => match self.ask(Request::TaskList).await? {
+                        Response::Tasks { tasks } => {
+                            let here = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+                            let mine: Vec<String> = tasks.iter().filter(|t| here.starts_with(&t.repo) || t.repo.starts_with(&here)).map(line).collect();
+                            if mine.is_empty() { "no tasks here".to_owned() } else { mine.join("\n") }
+                        }
+                        other => anyhow::bail!("unexpected reply: {other:?}"),
+                    },
                 }
             }
             "tessel_prove" => {

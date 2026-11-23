@@ -20,6 +20,7 @@ pub mod browser;
 pub mod rpc;
 pub mod state;
 pub mod surface;
+pub mod task;
 pub mod term;
 pub mod voice;
 pub mod workspace;
@@ -36,7 +37,7 @@ pub use workflow::{Choice, Input, InputKind, Options, Pick, Run, RunStep, Step, 
 
 /// bump major on a breaking wire change, minor on an additive one.
 pub const PROTO_MAJOR: u16 = 0;
-pub const PROTO_MINOR: u16 = 34;
+pub const PROTO_MINOR: u16 = 35;
 
 /// milliseconds since the unix epoch.
 pub type Millis = u64;
