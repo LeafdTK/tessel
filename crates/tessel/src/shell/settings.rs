@@ -883,11 +883,11 @@ impl Shell {
                 let p = shell.read(cx).palette.get();
                 let names = installed_fonts(cx);
                 let mut choices: Vec<(String, String)> = if interface {
-                    vec![(crate::theme::DEFAULT_FONT.to_owned(), "Allo".to_owned()), ("system".to_owned(), "System".to_owned())]
+                    vec![(crate::theme::DEFAULT_FONT.to_owned(), "Allo Rounded".to_owned()), ("Allo".to_owned(), "Allo".to_owned()), ("system".to_owned(), "System".to_owned())]
                 } else {
                     vec![(crate::theme::MONO.to_owned(), crate::theme::MONO.to_owned())]
                 };
-                choices.extend(names.iter().filter(|n| *n != crate::theme::DEFAULT_FONT && *n != crate::theme::MONO).map(|n| (n.clone(), n.clone())));
+                choices.extend(names.iter().filter(|n| *n != crate::theme::DEFAULT_FONT && *n != "Allo" && *n != crate::theme::MONO).map(|n| (n.clone(), n.clone())));
                 let choices = std::rc::Rc::new(choices);
                 let current = current.clone();
                 let me = me.clone();

@@ -3138,13 +3138,13 @@ fn the_interface_is_set_in_allo_unless_you_choose_otherwise(cx: &mut TestAppCont
     let ui = layout_dir("font").join("ui.json");
     let idle = session(1, "Fix login", RunState::Idle, None);
     let mut rig = Rig::with_sessions_launched(cx, idle, vec![], Launch { ui: Some(ui.clone()), ..Launch::default() });
-    assert_eq!(crate::theme::ui_font(None), Some("Allo"));
+    assert_eq!(crate::theme::ui_font(None), Some("Allo Rounded"));
     let exec = |rig: &mut Rig, cx: &mut TestAppContext, font: &str| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("theme.font", &serde_json::json!({"font": font}), window, cx))).unwrap().unwrap();
     exec(&mut rig, cx, "system");
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ui).unwrap()).unwrap();
     assert_eq!(saved["theme"]["font"], "system");
     assert_eq!(crate::theme::ui_font(Some("system")), None, "the Mac's own");
-    exec(&mut rig, cx, "Allo");
+    exec(&mut rig, cx, "Allo Rounded");
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ui).unwrap()).unwrap();
     assert!(saved["theme"].get("font").is_none(), "the default isn't written down");
 }

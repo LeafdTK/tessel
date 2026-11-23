@@ -464,7 +464,7 @@ pub fn z(v: f32) -> Pixels {
 /// the named sizes the settings offer.
 pub const SCALES: [(&str, f32); 3] = [("compact", 0.9), ("default", 1.0), ("large", 1.12)];
 
-pub const DEFAULT_FONT: &str = "Allo";
+pub const DEFAULT_FONT: &str = "Allo Rounded";
 
 pub const FEATURES: [(&str, &str); 5] = [("ss01", "Single-story a"), ("ss02", "Clear I l 1 0"), ("ss03", "Open 4 6 9"), ("zero", "Slashed zero"), ("tnum", "Even figures")];
 
@@ -477,7 +477,15 @@ pub fn tabular() -> gpui_kit::FontFeatures {
 }
 const SYSTEM_FONT: &str = ".SystemUIFont";
 
-const ALLO: [&[u8]; 8] = [
+const ALLO: [&[u8]; 16] = [
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-Regular.ttf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-Medium.ttf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-Bold.ttf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-Oblique.otf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-MediumOblique.otf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-SemiBoldOblique.otf"),
+    include_bytes!("../assets/fonts/allo-rounded/AlloRounded-BoldOblique.otf"),
     include_bytes!("../assets/fonts/allo/Allo-Regular.otf"),
     include_bytes!("../assets/fonts/allo/Allo-Medium.otf"),
     include_bytes!("../assets/fonts/allo/Allo-SemiBold.otf"),
