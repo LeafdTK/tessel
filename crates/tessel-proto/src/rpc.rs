@@ -157,6 +157,10 @@ pub enum Request {
         session: SessionId,
         form: serde_json::Value,
     },
+    ChatImage {
+        session: SessionId,
+        path: String,
+    },
     AskAnswer {
         session: SessionId,
         surface: String,

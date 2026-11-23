@@ -3173,3 +3173,12 @@ fn the_agents_work_between_messages_folds_into_one_line(cx: &mut TestAppContext)
     rig.settle(cx);
     assert!(rig.exists(cx, "tool-t2"), "and there on a click");
 }
+
+#[test]
+fn pictures_the_agent_points_at_are_pulled_out_of_its_words() {
+    let (clean, found) = crate::shell::pictures_in("Here:\n\n![upload](/tmp/shots/07-upload.png)\n\nand ![web](https://x.test/a.png) and ![](shots/b.jpg)");
+    assert_eq!(found, [("upload".to_owned(), "/tmp/shots/07-upload.png".to_owned()), (String::new(), "shots/b.jpg".to_owned())]);
+    assert!(clean.contains("![web](https://x.test/a.png)"), "a web picture is left to the markdown: {clean}");
+    assert!(!clean.contains("07-upload"));
+    assert!(crate::shell::pictures_in("no pictures, just ![a bracket").1.is_empty());
+}

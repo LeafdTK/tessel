@@ -1024,6 +1024,25 @@ impl Hub {
                 return None;
             }
             Request::Ask { session, form } => return self.ask_person(client, id, session, form),
+            Request::ChatImage { session, path } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let picture = matches!(path.rsplit('.').next().map(str::to_ascii_lowercase).as_deref(), Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "tiff"));
+                let mentioned = live.state.items().iter().any(|i| matches!(&i.body, tessel_proto::ItemBody::Text { text, .. } if text.contains(path.as_str())));
+                if !picture || !mentioned {
+                    return Some(Err(RpcError::new(ErrorCode::Invalid, "only a picture the agent showed in this chat")));
+                }
+                let full = if Path::new(&path).is_absolute() { std::path::PathBuf::from(&path) } else { Path::new(&live.state.meta.cwd).join(&path) };
+                return self.later(client, id, async move {
+                    use base64::Engine as _;
+                    let meta = tokio::fs::metadata(&full).await.map_err(|e| format!("can't open {path}: {e}"))?;
+                    if meta.len() > tessel_proto::MAX_BYTES {
+                        return Err(format!("{path} is too big to show"));
+                    }
+                    let bytes = tokio::fs::read(&full).await.map_err(|e| format!("can't read {path}: {e}"))?;
+                    let name = full.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    Ok(Response::Bytes { name, data: base64::engine::general_purpose::STANDARD.encode(bytes) })
+                });
+            }
             Request::AskAnswer { session, surface, answers } => self.ask_answered(session, surface, answers),
             Request::Workflows { cwd } => Ok(Response::Workflows { workflows: crate::workflow::load_all(&self.cfg.paths.home, cwd.as_deref().map(Path::new)) }),
             Request::WorkflowSave { name, yaml, .. } => crate::workflow::save(&self.cfg.paths.home, &name, &yaml)

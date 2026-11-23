@@ -76,6 +76,7 @@ pub enum Cmd {
     /// show another machine's daemon (a host's id), or this mac's (none).
     Host(Option<String>),
     AskAnswer { session: SessionId, surface: String, answers: serde_json::Value },
+    ChatImage { session: SessionId, path: String },
     WorkflowOptions { workflow: String, input: String, picked: std::collections::BTreeMap<String, tessel_proto::Pick>, cwd: Option<String>, fresh: bool },
     /// drop the connection and dial the same machine again, at once: the window keeps what it shows.
     Redial,
@@ -131,6 +132,7 @@ pub enum UiEvent {
     Usage(Vec<tessel_proto::UsageWindow>),
     Answer { tag: &'static str, result: Result<Response, String> },
     Choices { workflow: String, input: String, result: Result<Vec<tessel_proto::Choice>, String> },
+    ChatImage { session: SessionId, path: String, result: Result<Vec<u8>, String> },
     /// something the user did failed. shown, not fatal.
     Error(String),
 }
@@ -668,6 +670,20 @@ async fn session(
                         ask(client, ui, Request::SetSettings { patch }, |r| match r {
                             Response::Settings { settings } => Some(UiEvent::DaemonSettings(settings)),
                             _ => None,
+                        });
+                        Ok(())
+                    }
+                    Cmd::ChatImage { session, path } => {
+                        let (client, ui) = (client.clone(), ui.clone());
+                        tokio::spawn(async move {
+                            use base64::Engine as _;
+                            let result = match client.request(Request::ChatImage { session, path: path.clone() }).await {
+                                Ok(Response::Bytes { data, .. }) => base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string()),
+                                Ok(_) => Err("this machine's tessel is too old to show it".into()),
+                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            let _ = ui.send(UiEvent::ChatImage { session, path, result });
                         });
                         Ok(())
                     }

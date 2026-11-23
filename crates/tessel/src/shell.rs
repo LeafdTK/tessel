@@ -410,6 +410,7 @@ pub struct Shell {
     pub(crate) earlier_for: Option<SessionId>,
     pub(crate) fullscreen: bool,
     pub(crate) work_open: std::collections::HashSet<ItemId>,
+    pub(crate) chat_pictures: std::cell::RefCell<HashMap<(SessionId, String), Picture>>,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -860,6 +861,7 @@ impl Shell {
             earlier_for: None,
             fullscreen: false,
             work_open: Default::default(),
+            chat_pictures: Default::default(),
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -1176,6 +1178,16 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("deleted.") => self.deleted_answer(tag, result, cx),
             UiEvent::Answer { tag: tag @ ("workflows" | "workflow.run"), result } => self.workflows_answer(tag, result, cx),
             UiEvent::Answer { tag: "earlier", result } => self.earlier_answer(result, cx),
+            UiEvent::ChatImage { session, path, result } => {
+                let picture = match result {
+                    Ok(bytes) => match picture_format(&path) {
+                        Some(format) => Picture::Ready(std::sync::Arc::new(gpui_kit::Image::from_bytes(format, bytes))),
+                        None => Picture::Failed("not a picture".into()),
+                    },
+                    Err(e) => Picture::Failed(e),
+                };
+                self.chat_pictures.borrow_mut().insert((session, path), picture);
+            }
             UiEvent::Answer { tag: "doc.read", result } => {
                 if let (Ok(tessel_proto::Response::File { file }), Some(view)) = (result, self.doc_view.as_mut()) {
                     view.1 = Some(file.text.unwrap_or_default());
@@ -2200,6 +2212,14 @@ impl Shell {
                         crate::rich::Seg::Mermaid(src) => col.child(self.picture(true, src)),
                         crate::rich::Seg::Math(tex) => col.child(self.picture(false, tex)),
                     };
+                }
+                Some(col.into_any_element())
+            }
+            ItemBody::Text { text, .. } if !pictures_in(text).1.is_empty() => {
+                let (clean, pictures) = pictures_in(text);
+                let mut col = v_flex().gap_3().child(div().set(Type::Prose).text_color(p.label).child(TextView::markdown(ElementId::from(SharedString::from(format!("md-{}", item.id))), clean).selectable(true).style(theme::prose(&p))));
+                for (alt, src) in pictures {
+                    col = col.child(self.picture_el(session, &alt, &src));
                 }
                 Some(col.into_any_element())
             }
@@ -3980,5 +4000,73 @@ impl Shell {
             self.error = Some(e);
         }
         cx.notify();
+    }
+}
+
+pub(crate) enum Picture {
+    Loading,
+    Ready(std::sync::Arc<gpui_kit::Image>),
+    Failed(String),
+}
+
+fn picture_format(path: &str) -> Option<gpui_kit::ImageFormat> {
+    use gpui_kit::ImageFormat as F;
+    Some(match path.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "png" => F::Png,
+        "jpg" | "jpeg" => F::Jpeg,
+        "gif" => F::Gif,
+        "webp" => F::Webp,
+        "svg" => F::Svg,
+        "bmp" => F::Bmp,
+        "tiff" => F::Tiff,
+        _ => return None,
+    })
+}
+
+pub(crate) fn pictures_in(text: &str) -> (String, Vec<(String, String)>) {
+    let mut clean = String::with_capacity(text.len());
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("![") {
+        let after = &rest[at + 2..];
+        let parsed = after.find("](").and_then(|close| {
+            let alt = &after[..close];
+            let tail = &after[close + 2..];
+            let end = tail.find(')')?;
+            let src = tail[..end].trim().trim_matches('<').trim_matches('>').split_whitespace().next().unwrap_or("").to_owned();
+            (!alt.contains('\n')).then_some((alt.to_owned(), src, at + 2 + close + 2 + end + 1))
+        });
+        match parsed {
+            Some((alt, src, len)) if !src.is_empty() && !src.starts_with("http://") && !src.starts_with("https://") && !src.starts_with("data:") && picture_format(&src).is_some() => {
+                clean.push_str(&rest[..at]);
+                found.push((alt, src));
+                rest = &rest[len..];
+            }
+            _ => {
+                clean.push_str(&rest[..at + 2]);
+                rest = &rest[at + 2..];
+            }
+        }
+    }
+    clean.push_str(rest);
+    (clean.trim_end().to_owned(), found)
+}
+
+impl Shell {
+    fn picture_el(&self, session: SessionId, alt: &str, src: &str) -> AnyElement {
+        let p = self.palette.get();
+        let key = (session, src.to_owned());
+        if !self.chat_pictures.borrow().contains_key(&key) {
+            self.chat_pictures.borrow_mut().insert(key.clone(), Picture::Loading);
+            self.cmd(Cmd::ChatImage { session, path: src.to_owned() });
+        }
+        let frame = div().w_full().h(px(280.)).rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(p.fill.opacity(0.4)).overflow_hidden().flex().items_center().justify_center();
+        let pictures = self.chat_pictures.borrow();
+        let inner: AnyElement = match pictures.get(&key) {
+            Some(Picture::Ready(image)) => img(image.clone()).size_full().object_fit(ObjectFit::Contain).into_any_element(),
+            Some(Picture::Failed(why)) => div().px_4().set(Type::Callout).text_color(p.tertiary).child(format!("{} couldn't be shown: {why}", if alt.is_empty() { src } else { alt })).into_any_element(),
+            _ => gpui_kit::component::spinner::Spinner::new().xsmall().color(p.tertiary).into_any_element(),
+        };
+        frame.child(inner).into_any_element()
     }
 }

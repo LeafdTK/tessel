@@ -1818,3 +1818,15 @@ async fn a_chat_gets_a_short_name_unless_you_gave_it_one() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(list(&c).await.into_iter().find(|x| x.id == mine.id).unwrap().goal, "Mine", "a name you gave stays");
 }
+
+#[tokio::test]
+async fn a_picture_the_agent_showed_can_be_fetched_and_nothing_else() {
+    let d = Daemon::start(&["plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), Some("hi")).await;
+    until(&c, s.id, "finished", |s| wants(s) == Some(AttentionReason::Finished)).await;
+    let not_said = c.request(Request::ChatImage { session: s.id, path: "/etc/hosts.png".into() }).await;
+    assert!(matches!(not_said, Err(tessel_client::ClientError::Rpc(e)) if e.message.contains("only a picture")));
+    let not_picture = c.request(Request::ChatImage { session: s.id, path: "/etc/hosts".into() }).await;
+    assert!(not_picture.is_err());
+}
