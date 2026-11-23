@@ -476,3 +476,16 @@ steps:
         assert!(!tmp.path().join("workflows/broken.yaml").exists());
     }
 }
+
+#[cfg(test)]
+mod live {
+    #[test]
+    #[ignore]
+    fn the_workflows_on_this_mac_read_clean() {
+        let home = std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".tessel");
+        for w in super::load_all(&home, None) {
+            println!("{} ({}): {} inputs, {} steps, problems: {:?}", w.name, w.id, w.inputs.len(), w.steps.len(), w.problems);
+            assert!(w.problems.is_empty());
+        }
+    }
+}
