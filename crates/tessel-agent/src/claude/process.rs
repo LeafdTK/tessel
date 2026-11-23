@@ -331,6 +331,32 @@ impl Backend for ClaudeBackend {
         })
     }
 
+    fn review(&self, prompt: String, cwd: PathBuf, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::backend::Reviewed>> + Send>> {
+        let mut cmd = tokio::process::Command::new(&self.program);
+        cmd.args(["-p", "--model", model, "--output-format", "json", "--tools", "Read,Grep,Glob", "--strict-mcp-config"])
+            .current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        if let Some(env) = &self.env {
+            cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
+        }
+        Box::pin(async move {
+            let mut child = cmd.spawn().context("could not start the agent")?;
+            let mut stdin = child.stdin.take().context("no stdin")?;
+            stdin.write_all(prompt.as_bytes()).await?;
+            drop(stdin);
+            let out = tokio::time::timeout(std::time::Duration::from_secs(15 * 60), child.wait_with_output()).await.context("the reviewer took longer than 15 minutes")??;
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|_| anyhow::anyhow!("the reviewer failed: {}", String::from_utf8_lossy(&out.stderr).trim()))?;
+            let text = v.get("result").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+            if v.get("is_error").and_then(serde_json::Value::as_bool) == Some(true) {
+                anyhow::bail!("the reviewer failed: {text}");
+            }
+            Ok(crate::backend::Reviewed { text, cost_usd: v.get("total_cost_usd").and_then(serde_json::Value::as_f64).unwrap_or(0.0) })
+        })
+    }
+
     fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<tessel_proto::Catalog>> + Send>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"])

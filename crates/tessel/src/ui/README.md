@@ -39,6 +39,7 @@ quickest way to see how the pieces fit.
 | `sessions` | the session list's options (`trace`)                                          |
 | `desktops` | a list of desktops, each `{"id", "name", "layout", "scope", "open"}`: its own panes (`layout`, shaped like a `panes` node's), the projects the sidebar lists on it (`scope`, empty for all), and the chat it had open. everything else (the sidebar, the theme, the options) is shared |
 | `desktop` | the id of the desktop showing (or its number, from 1) |
+| `factory` | the software factory: proving each chat's change against the repository's rules, and the proof in Checks. off unless `true` |
 | `notch` | the agents drawn around the camera notch. on where there is one; `false` hides it, `true` shows it on a Mac without one, mid menu bar |
 
 A file with only a `"theme"` restyles the default layout. A file with `"root"` is your
@@ -461,6 +462,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `host.list` | Every host |  |  |
 | `host.bring` | Bring your Claude to a host… |  | host: id or name. its sign-in, CLAUDE.md, settings, skills, git identity: picked in the setup flow |
 | `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
+| `app.factory` | Software factory: On |  | on: true|false. proving changes against the house rules |
+| `proof.run` | Prove this change |  | session? (the open one). runs the checks, rules and reviewers |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |
 | `layout.use` | Layout: Studio |  | name: studio|focus|tiles|rail |

@@ -46,6 +46,9 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
   tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
                                             vercel makes dev boxes in vercel sandboxes
+  tesselctl prove SESSION [--json]          check a chat's change: its verify commands, the house rules
+                                            (.tessel/rules), and independent reviewers. exits 1 when it fails
+  tesselctl rules SESSION [--json]          the rules, knowledge and checks that apply where it works
   tesselctl rm SESSION [--worktree]         delete (optionally with its worktree): kept 30 days in recently deleted,
                                             with the worktree's uncommitted work
   tesselctl deleted [--json]                what's in recently deleted
@@ -530,6 +533,50 @@ async fn run() -> anyhow::Result<()> {
                 .await?;
             println!("{} {}", if cmd == "approve" { "allowed" } else { "denied" }, pending_line(request));
         }
+        "prove" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let json = args.flag("--json");
+            let proof = prove(&client, session).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&proof)?);
+            } else {
+                println!("{}", proof.report());
+            }
+            if proof.verdict == tessel_proto::proof::Verdict::Failed {
+                std::process::exit(1);
+            }
+        }
+        "rules" => {
+            let session = resolve(&client, &args.next("a session")?).await?;
+            let json = args.flag("--json");
+            let Response::Rules { rulebook } = client.request(Request::Rules { session }).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rulebook)?);
+            } else {
+                for r in &rulebook.rules {
+                    let kind = match &r.check {
+                        tessel_proto::proof::Check::Judge => "judge".to_owned(),
+                        tessel_proto::proof::Check::Run { command } => format!("run `{command}`"),
+                        tessel_proto::proof::Check::Match { .. } => "match".to_owned(),
+                        tessel_proto::proof::Check::Unknown => "?".to_owned(),
+                    };
+                    let from = if r.builtin { "built in".to_owned() } else { r.path.clone() };
+                    println!("{:<28} {:<10} {}  ({from})", r.id, kind, r.title);
+                }
+                for k in &rulebook.knowledge {
+                    println!("knowledge {:<18} {}  ({})", k.id, k.title, k.path);
+                }
+                for v in &rulebook.verify {
+                    println!("verify    {v}");
+                }
+                if !rulebook.guidance.is_empty() {
+                    println!("read too  {}", rulebook.guidance.join(", "));
+                }
+                for p in &rulebook.problems {
+                    eprintln!("problem   {p}");
+                }
+            }
+        }
         "interrupt" => {
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionInterrupt { cmd_id: Uuid::new_v4(), session }).await?;
@@ -721,6 +768,31 @@ async fn run() -> anyhow::Result<()> {
 }
 
 /// a full id, or any prefix that names exactly one session.
+pub(crate) async fn proof_of(client: &Client, session: SessionId) -> anyhow::Result<Option<tessel_proto::proof::Proof>> {
+    let Response::Sessions { sessions } = client.request(Request::SessionList).await? else { bail!("unexpected reply") };
+    Ok(sessions.into_iter().find(|s| s.id == session).and_then(|s| s.proof))
+}
+
+async fn prove(client: &Client, session: SessionId) -> anyhow::Result<tessel_proto::proof::Proof> {
+    let before = proof_of(client, session).await?.map(|p| p.started_ms);
+    client.request(Request::ProofRun { session }).await?;
+    let mut said = String::new();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        let Some(p) = proof_of(client, session).await? else { continue };
+        if Some(p.started_ms) == before {
+            continue;
+        }
+        if p.verdict.done() {
+            return Ok(p);
+        }
+        if p.stage != said {
+            eprintln!("{}…", p.stage);
+            said = p.stage.clone();
+        }
+    }
+}
+
 async fn resolve(client: &Client, prefix: &str) -> anyhow::Result<SessionId> {
     if let Ok(id) = prefix.parse::<SessionId>() {
         return Ok(id);

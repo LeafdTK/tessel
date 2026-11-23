@@ -424,6 +424,29 @@ impl Shell {
                 }
                 Ok(json!(list))
             }
+            "app.factory" => {
+                let on = args.get("on").and_then(|v| v.as_bool()).ok_or("on: true or false")?;
+                self.edit_ui(
+                    |f| {
+                        if on {
+                            f.insert("factory".into(), json!(true));
+                        } else {
+                            f.remove("factory");
+                        }
+                    },
+                    window,
+                    cx,
+                );
+                done
+            }
+            "proof.run" => {
+                let session = match args.get("session").and_then(|v| v.as_str()) {
+                    Some(s) => s.parse().map_err(|_| format!("session: {s} isn't a session id"))?,
+                    None => self.model.open.as_ref().map(|o| o.id).ok_or("no chat is open")?,
+                };
+                self.prove(session, cx);
+                done
+            }
             "app.notch" => {
                 let show = args.get("show").and_then(|v| v.as_bool()).ok_or("show: true or false")?;
                 // what the screen would choose isn't written down, so it keeps following the screen.

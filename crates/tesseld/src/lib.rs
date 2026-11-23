@@ -11,6 +11,8 @@ pub mod kube;
 pub mod mcp_call;
 pub mod orphans;
 pub mod procs;
+pub mod proof;
+pub mod rules;
 pub mod projects;
 pub mod paths;
 pub mod reducer;

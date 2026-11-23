@@ -26,7 +26,7 @@ async fn run(program: &str, dir: &Path, args: &[&str], secs: u64) -> Result<Stri
     }
 }
 
-async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     run("git", dir, args, 60).await
 }
 

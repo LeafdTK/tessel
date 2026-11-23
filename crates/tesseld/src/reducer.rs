@@ -164,6 +164,7 @@ pub struct SessionState {
     cost_process: f64,
     pub updated_ms: Millis,
     pub run: Option<tessel_proto::Run>,
+    pub proof: Option<tessel_proto::proof::Proof>,
 }
 
 /// the persisted half of a session, for rebuilding one from the store.
@@ -224,6 +225,7 @@ impl SessionState {
             cost_process: 0.0,
             updated_ms: created,
             run: None,
+            proof: None,
         }
     }
 
@@ -503,6 +505,7 @@ impl SessionState {
             trace: self.trace(now),
             asking: self.pending.iter().find(|p| !p.is_question && p.plan.is_none()).map(|p| p.request_id.clone()),
             run: self.run.clone(),
+            proof: self.proof.clone(),
             last_seq: self.seq,
             created_ms: self.meta.created_ms,
             updated_ms: self.updated_ms,

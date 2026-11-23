@@ -55,6 +55,16 @@ fn sources(workspace: &Path, root: &Path) -> Vec<PathBuf> {
 
 /// read what a workspace needs.
 pub fn load(workspace: &Path, root: &Path) -> WorkspaceScripts {
+    let (merged, from) = merged(workspace, root);
+    let mut scripts = parse(&merged);
+    scripts.from = from;
+    if scripts.copy.is_empty() {
+        scripts.copy = worktreeinclude(root).unwrap_or_else(|| vec![DEFAULT_COPY.to_owned()]);
+    }
+    scripts
+}
+
+pub fn merged(workspace: &Path, root: &Path) -> (toml::Table, Vec<String>) {
     let mut merged = toml::Table::new();
     let mut from = Vec::new();
     for path in sources(workspace, root) {
@@ -64,12 +74,7 @@ pub fn load(workspace: &Path, root: &Path) -> WorkspaceScripts {
             from.push(path.to_string_lossy().into_owned());
         }
     }
-    let mut scripts = parse(&merged);
-    scripts.from = from;
-    if scripts.copy.is_empty() {
-        scripts.copy = worktreeinclude(root).unwrap_or_else(|| vec![DEFAULT_COPY.to_owned()]);
-    }
-    scripts
+    (merged, from)
 }
 
 /// a later table's keys over an earlier one's, tables merged key by key.

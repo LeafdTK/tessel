@@ -30,6 +30,7 @@ mod avatar;
 mod setup_flow;
 mod palette;
 mod panel;
+mod proof;
 mod workflows;
 mod panes;
 mod projects;
@@ -242,6 +243,7 @@ pub struct Shell {
     /// a ship step under way, and what the last one did.
     pub(crate) shipping: bool,
     pub(crate) shipped: Option<Result<(String, Option<String>), String>>,
+    pub(crate) last_ship: Option<tessel_proto::ShipStep>,
     /// the files were just put back to before a turn: the result line offers to undo it.
     pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
@@ -770,6 +772,7 @@ impl Shell {
             tour: launch.tour_seen.as_ref().is_some_and(|p| !p.exists()).then_some(0),
             tour_seen: launch.tour_seen.clone(),
             shipped: None,
+            last_ship: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
             desk: desktops::DeskDrag::new(),
@@ -1224,6 +1227,7 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("project.") => self.project_answer(tag, result),
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
+            UiEvent::Answer { tag: "proof.run", result } => self.proof_answer(result),
             UiEvent::Answer { tag: "usage", result } => {
                 if let Ok(tessel_proto::Response::Usage { windows }) = result {
                     self.usage = windows;

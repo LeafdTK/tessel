@@ -473,6 +473,18 @@ impl Shell {
             })
         }));
 
+        let agents_rows = agents_rows.child(self.setting_row("Software factory", "Prove each chat's change against the repository's rules before it ships.", {
+            let me = cx.entity().downgrade();
+            Switch::new("factory").checked(self.factory_on()).on_click(move |on, window, cx| {
+                let on = *on;
+                let _ = me.update(cx, |this, cx| {
+                    if let Err(e) = this.exec("app.factory", &json!({"on": on}), window, cx) {
+                        this.error = Some(e);
+                    }
+                });
+            })
+        }));
+
         let current = self.settings_section;
         let (title, rows) = match current {
             "conversation" => ("Conversation", conversation_rows),

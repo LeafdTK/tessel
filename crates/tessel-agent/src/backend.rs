@@ -94,6 +94,12 @@ pub struct Released {
     pub carried: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Reviewed {
+    pub text: String,
+    pub cost_usd: f64,
+}
+
 pub struct Spawned {
     pub agent: Box<dyn Agent>,
     pub output: mpsc::UnboundedReceiver<AgentOutput>,
@@ -109,6 +115,10 @@ pub trait Backend: Send + Sync + 'static {
     fn one_shot(&self, prompt: String, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<String>> + Send>> {
         let _ = (prompt, model);
         Box::pin(async { anyhow::bail!("this agent can't answer one-off questions") })
+    }
+    fn review(&self, prompt: String, cwd: PathBuf, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<Reviewed>> + Send>> {
+        let _ = (prompt, cwd, model);
+        Box::pin(async { anyhow::bail!("this agent can't review") })
     }
     /// take over an agent another daemon let go of, carrying on where it was.
     fn adopt(&self, released: Released, raw_log: Option<PathBuf>) -> anyhow::Result<Spawned> {

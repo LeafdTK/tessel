@@ -9040,6 +9040,7 @@ dependencies = [
  "base64 0.22.1",
  "globset",
  "libc",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

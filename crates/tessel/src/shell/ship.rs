@@ -20,7 +20,8 @@ impl Shell {
         let Some(session) = self.model.open.as_ref().map(|o| o.id) else { return };
         self.shipping = true;
         self.shipped = None;
-        self.cmd(Cmd::Ask { tag: "ship", req: Request::Ship { session, step } });
+        self.remember_ship(&step);
+        self.cmd(Cmd::Ask { tag: "ship", req: Request::Ship { session, step, force: false } });
         cx.notify();
     }
 
@@ -78,6 +79,7 @@ impl Shell {
             Err(e) => (e.clone(), p.failed),
         };
         let conflict = matches!(r, Err(e) if e.starts_with("Conflicts in"));
+        let held = matches!(r, Err(e) if e.starts_with("proof failed"));
         let url = r.as_ref().ok().and_then(|(_, u)| u.clone());
         Some(
             h_flex()
@@ -91,6 +93,10 @@ impl Shell {
                 .when_some(url, |d, url| d.child(Button::new("shipped-open").ghost().small().label("Open").icon(Icon::empty().path("icons/arrow-up-right.svg")).on_click(move |_, _, cx| cx.open_url(&url))))
                 .when(self.rewound, |d| {
                     d.child(Button::new("shipped-undo").outline().small().label("Undo").on_click(cx.listener(|this, _, _, cx| this.rewind(None, cx))))
+                })
+                .when(held, |d| {
+                    d.child(Button::new("shipped-proof").ghost().small().label("Show Proof").on_click(cx.listener(|this, _, _, cx| this.show_checks(cx))))
+                        .child(Button::new("shipped-anyway").outline().small().label("Ship Anyway").on_click(cx.listener(|this, _, _, cx| this.ship_anyway(cx))))
                 })
                 .when(conflict, |d| {
                     d.child(Button::new("shipped-agent").outline().small().label("Have the agent resolve it").on_click(cx.listener(move |this, _, _, cx| this.resolve_with_agent(&text, cx))))

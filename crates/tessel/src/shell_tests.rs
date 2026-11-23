@@ -55,6 +55,7 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
         trace: vec![],
         asking: None,
         run: None,
+        proof: None,
         last_seq: 5,
         created_ms: n as u64,
         updated_ms: 0,
@@ -2512,7 +2513,7 @@ fn work_ships_by_pull_request_or_straight_into_main_and_conflicts_go_to_the_agen
     let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
     let shipped = |rig: &mut Rig| {
         rig.asked().into_iter().find_map(|c| match c {
-            Cmd::Ask { tag: "ship", req: tessel_proto::Request::Ship { session, step } } => Some((session, step)),
+            Cmd::Ask { tag: "ship", req: tessel_proto::Request::Ship { session, step, .. } } => Some((session, step)),
             _ => None,
         })
     };
@@ -3181,4 +3182,47 @@ fn pictures_the_agent_points_at_are_pulled_out_of_its_words() {
     assert!(clean.contains("![web](https://x.test/a.png)"), "a web picture is left to the markdown: {clean}");
     assert!(!clean.contains("07-upload"));
     assert!(crate::shell::pictures_in("no pictures, just ![a bracket").1.is_empty());
+}
+
+#[gpui_kit::test]
+fn the_software_factory_stays_out_of_the_way_until_it_is_on_and_a_failed_proof_holds_the_ship(cx: &mut TestAppContext) {
+    use tessel_proto::proof::{Finding, Proof, Severity, Verdict};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.press(cx, "alt-cmd-i");
+    rig.click(cx, "tab-checks");
+    assert!(!rig.exists(cx, "proof-run") && !rig.exists(cx, "proof-chip"), "off, tessel is as it was");
+
+    rig.layout(cx, r#"{"preset": "default", "factory": true}"#);
+    if !rig.exists(cx, "tab-checks") {
+        rig.press(cx, "alt-cmd-i");
+    }
+    rig.click(cx, "tab-checks");
+    rig.asked();
+    rig.click(cx, "proof-run");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "proof.run", req: tessel_proto::Request::ProofRun { session } } if *session == a.id)));
+
+    let finding = Finding { lens: "security".into(), rule: Some("no-token-logs".into()), file: Some("src/login.rs".into()), line: Some(3), severity: Severity::Block, title: "Token logged".into(), why: "the session token reaches the log".into(), confirmed: Some(true) };
+    let refuted = Finding { title: "Imagined".into(), confirmed: Some(false), ..finding.clone() };
+    let mut proved = a.clone();
+    proved.proof = Some(Proof { verdict: Verdict::Failed, files: 2, findings: vec![finding, refuted], ..Default::default() });
+    rig.feed(cx, vec![UiEvent::Session(proved)]);
+    assert!(rig.exists(cx, "proof-chip"), "the verdict sits on the chat");
+    assert!(rig.exists(cx, "proof-finding-0") && !rig.exists(cx, "proof-finding-1"), "only what held up is shown");
+    rig.click(cx, "proof-send");
+    match rig.asked().iter().find(|c| matches!(c, Cmd::Send { .. })) {
+        Some(Cmd::Send { session, text, .. }) => assert!(*session == a.id && text.contains("Token logged") && text.contains("src/login.rs:3") && text.contains("tessel_prove") && !text.contains("Imagined")),
+        other => panic!("{other:?}"),
+    }
+
+    rig.click(cx, "ship");
+    rig.click(cx, "ship-push");
+    rig.asked();
+    rig.feed(cx, vec![UiEvent::Answer { tag: "ship", result: Err("proof failed: 1 blocking. fix them, prove it again, or ship anyway".into()) }]);
+    rig.click(cx, "shipped-anyway");
+    let forced = rig.asked().into_iter().find_map(|c| match c {
+        Cmd::Ask { tag: "ship", req: tessel_proto::Request::Ship { step, force, .. } } => Some((step, force)),
+        _ => None,
+    });
+    assert_eq!(forced, Some((tessel_proto::ShipStep::Push, true)), "the same step, past the proof");
 }

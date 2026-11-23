@@ -52,6 +52,7 @@ pub struct Ui {
     /// the agents at work, drawn around the camera notch. none: on where
     /// there is a notch, off where there isn't.
     pub notch: Option<bool>,
+    pub factory: Option<bool>,
     /// every desktop, in order. empty: the file is one desktop.
     pub desktops: Vec<Desktop>,
     /// which of them is showing (`root` is its layout).
@@ -220,9 +221,10 @@ fn desktop_overlay(v: Value) -> Result<(Value, Vec<Desktop>, usize), String> {
 
 fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
     let obj = v.as_object().ok_or("ui.json must be an object with \"root\" and/or \"preset\"")?;
-    keys(obj, "ui.json", &["$schema", "preset", "theme", "root", "freestyle", "transcript", "sessions", "notch"])?;
+    keys(obj, "ui.json", &["$schema", "preset", "theme", "root", "freestyle", "transcript", "sessions", "notch", "factory"])?;
     let freestyle = obj.get("freestyle").map(|v| flag(v, "freestyle")).transpose()?.unwrap_or(false);
     let notch = obj.get("notch").map(|v| flag(v, "notch")).transpose()?;
+    let factory = obj.get("factory").map(|v| flag(v, "factory")).transpose()?;
     let base = match obj.get("preset") {
         None => None,
         Some(Value::String(name)) if depth < 4 => {
@@ -244,6 +246,7 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
         (None, None) => return Err("a preset needs a \"root\" node".into()),
     };
     let base_notch = base.as_ref().map(|b| b.notch);
+    let base_factory = base.as_ref().map(|b| b.factory);
     let mut theme = base.map(|b| b.theme).unwrap_or_default();
     if let Some(t) = obj.get("theme") {
         theme.merge(ThemeSpec::parse(t)?);
@@ -294,10 +297,11 @@ fn parse_value(v: &Value, depth: usize) -> Result<Ui, String> {
         }
     }
     let notch = notch.or(base_notch.flatten());
+    let factory = factory.or(base_factory.flatten());
     if depth == 0 {
         place_desktops(&mut root);
     }
-    let mut ui = Ui { root, theme, freestyle, notch, desktops: Vec::new(), desktop: 0, report: harmony::Report::default() };
+    let mut ui = Ui { root, theme, freestyle, notch, factory, desktops: Vec::new(), desktop: 0, report: harmony::Report::default() };
     check(&ui)?;
     ui.report = harmony::harmonize(&mut ui);
     Ok(ui)

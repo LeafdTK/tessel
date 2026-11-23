@@ -84,6 +84,7 @@ pub enum HubMsg {
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
     WorkKept { session: SessionId, kept: Option<String> },
     RunAdvance { run: SessionId },
+    Proof { session: SessionId, proof: Box<tessel_proto::proof::Proof> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -235,6 +236,7 @@ pub struct Hub {
     deleted: HashMap<SessionId, Deleted>,
     deleted_swept: Option<std::time::Instant>,
     runs: HashMap<SessionId, RunLive>,
+    proving: HashSet<SessionId>,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
     choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
@@ -327,6 +329,7 @@ impl Hub {
             deleted: HashMap::new(),
             deleted_swept: None,
             runs: HashMap::new(),
+            proving: HashSet::new(),
             asks: HashMap::new(),
             choices_kept: HashMap::new(),
             next_term: 1,
@@ -381,6 +384,17 @@ impl Hub {
                 .collect();
             for (id, was, said) in unnamed {
                 hub.name_session(id, was, said);
+            }
+        }
+        for (id, body) in hub.store.load_proofs().await? {
+            let Ok(mut proof) = serde_json::from_str::<tessel_proto::proof::Proof>(&body) else { continue };
+            if !proof.verdict.done() {
+                proof.verdict = tessel_proto::proof::Verdict::Broken;
+                proof.problem = Some("tessel restarted while proving it".into());
+                proof.stage.clear();
+            }
+            if let Some(live) = hub.sessions.get_mut(&id) {
+                live.state.proof = Some(proof);
             }
         }
         for (id, body) in hub.store.load_runs().await? {
@@ -666,6 +680,18 @@ impl Hub {
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
+            HubMsg::Proof { session, proof } => {
+                if proof.verdict.done() {
+                    self.proving.remove(&session);
+                }
+                if let Ok(body) = serde_json::to_string(&proof) {
+                    self.store.save_proof(session, body);
+                }
+                if let Some(live) = self.sessions.get_mut(&session) {
+                    live.state.proof = Some(*proof);
+                    self.publish_summary(session, now_ms());
+                }
+            }
             HubMsg::Named { session, was, goal } => {
                 if self.sessions.get(&session).is_some_and(|l| l.state.meta.goal == was) {
                     let _ = self.apply(session, Input::SetGoal { goal });
@@ -1430,11 +1456,62 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     r.map(|said| Response::Shipped { said, url: None }).map_err(|e| RpcError::new(ErrorCode::Invalid, e))
                 });
             }
-            Request::Ship { session, step } => {
+            Request::ProofRun { session } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                if self.proving.contains(&session) {
+                    return Some(Err(RpcError::new(ErrorCode::Conflict, "it's being proved already")));
+                }
+                let ws = std::path::PathBuf::from(&live.state.meta.cwd);
+                let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
+                let said: Vec<String> = live
+                    .state
+                    .items()
+                    .iter()
+                    .filter_map(|i| match &i.body {
+                        tessel_proto::ItemBody::User { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                let said = said.into_iter().rev().take(4).rev().collect();
+                let ask = crate::proof::Ask { goal: live.state.meta.goal.clone(), said };
+                self.proving.insert(session);
+                let (tx, backend) = (self.tx.clone(), self.backend.clone());
+                tokio::spawn(async move {
+                    let tell = move |p: &tessel_proto::proof::Proof| {
+                        let _ = tx.send(HubMsg::Proof { session, proof: Box::new(p.clone()) });
+                    };
+                    crate::proof::prove(backend, ws, root, ask, now_ms, tell).await;
+                });
+                Ok(Response::Ack)
+            }
+            Request::Rules { session } => {
+                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                let ws = std::path::PathBuf::from(&live.state.meta.cwd);
+                let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
+                Ok(Response::Rules { rulebook: crate::rules::load(&ws, &root) })
+            }
+            Request::Ship { session, step, force } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 let root = live.state.meta.worktree.as_ref().map_or_else(|| live.state.meta.cwd.clone(), |w| w.repo.clone());
                 let goal = live.state.meta.goal.clone();
+                let failed = live.state.proof.as_ref().filter(|p| !force && p.verdict == tessel_proto::proof::Verdict::Failed).map(|p| (p.fingerprint.clone(), p.blocking()));
+                let gate = crate::rules::config(std::path::Path::new(&live.state.meta.cwd), std::path::Path::new(&root)).gate;
+                if force
+                    && let Some(live) = self.sessions.get_mut(&session)
+                    && let Some(p) = live.state.proof.as_mut().filter(|p| p.verdict == tessel_proto::proof::Verdict::Failed && !p.overridden)
+                {
+                    p.overridden = true;
+                    if let Ok(body) = serde_json::to_string(&p) {
+                        self.store.save_proof(session, body);
+                    }
+                    self.publish_summary(session, now_ms());
+                }
                 return self.in_workdir(client, id, session, move |dir| async move {
+                    if let Some((fingerprint, blocking)) = failed.filter(|_| gate)
+                        && crate::proof::change(&dir).await.is_ok_and(|c| c.fingerprint() == fingerprint)
+                    {
+                        return Err(RpcError::new(ErrorCode::Conflict, format!("proof failed: {blocking} blocking. fix them, prove it again, or ship anyway")));
+                    }
                     crate::ship::ship(&dir, std::path::Path::new(&root), &goal, step)
                         .await
                         .map(|(said, url)| Response::Shipped { said, url })

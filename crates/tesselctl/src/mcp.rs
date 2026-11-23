@@ -122,6 +122,11 @@ key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
             }, "required": ["name", "yaml"]}
         },
         {
+            "name": "tessel_prove",
+            "description": "Prove your change before you say it's done. Runs the repository's verify commands and house rules (.tessel/rules), and has independent reviewers check correctness, edge cases, security, the rules and scope; their findings are double-checked. Answers with what failed and where. Fix what's real, then prove again. It takes a few minutes.",
+            "inputSchema": {"type": "object", "properties": {}}
+        },
+        {
             "name": "tessel_ask",
             "description": "Ask the person something and wait for the answer, as a small form in the chat. Use it whenever you need details, a choice or a preference before going on, instead of asking in text and ending your turn: their answers come back as this tool's result and you carry on. Keep it short: a few fields, the likely answer first. Field types: text (a line), long (a paragraph), select (one of options), multiselect (any of options), toggle (yes or no). The result is a JSON object of field id to answer; a field left empty is missing from it.",
             "inputSchema": {"type": "object", "properties": {
@@ -345,6 +350,22 @@ impl Server {
                     other => anyhow::bail!("unexpected reply: {other:?}"),
                 }
             }
+            "tessel_prove" => {
+                let session = self.session.ok_or_else(|| anyhow::anyhow!("proving belongs to a session, and this agent wasn't started by tessel"))?;
+                let current = |r: Response| match r {
+                    Response::Sessions { sessions } => sessions.into_iter().find(|s| s.id == session).and_then(|s| s.proof),
+                    _ => None,
+                };
+                let before = current(self.ask(Request::SessionList).await?).map(|p| p.started_ms);
+                self.ask(Request::ProofRun { session }).await?;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let Some(p) = current(self.ask(Request::SessionList).await?) else { continue };
+                    if Some(p.started_ms) != before && p.verdict.done() {
+                        break p.report();
+                    }
+                }
+            }
             "tessel_ask" => {
                 let session = self.session.ok_or_else(|| anyhow::anyhow!("asking belongs to a session, and this agent wasn't started by tessel"))?;
                 match self.ask(Request::Ask { session, form: args.clone() }).await? {
@@ -385,7 +406,7 @@ pub async fn serve() -> anyhow::Result<()> {
                 // a backstop: one call never holds up every call after it (they're answered in turn).
                 // waiting on a terminal may take as long as it was asked to.
                 let asked = args.get("timeout").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 3600.0);
-                let limit = if name == "tessel_ask" { Duration::from_secs(24 * 3600) } else { Duration::from_secs_f64(150f64.max(asked + 30.0)) };
+                let limit = if name == "tessel_prove" { Duration::from_secs(45 * 60) } else if name == "tessel_ask" { Duration::from_secs(24 * 3600) } else { Duration::from_secs_f64(150f64.max(asked + 30.0)) };
                 let done = match tokio::time::timeout(limit, server.call(&name, &args)).await {
                     Ok(done) => done,
                     Err(_) => {

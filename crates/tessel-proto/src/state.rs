@@ -137,6 +137,8 @@ pub struct SessionSummary {
     pub asking: Option<crate::RequestId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<crate::Run>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof: Option<crate::proof::Proof>,
     pub last_seq: Seq,
     pub created_ms: Millis,
     pub updated_ms: Millis,

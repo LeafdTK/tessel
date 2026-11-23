@@ -233,6 +233,14 @@ pub enum Request {
     Ship {
         session: SessionId,
         step: crate::workspace::ShipStep,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+    },
+    ProofRun {
+        session: SessionId,
+    },
+    Rules {
+        session: SessionId,
     },
     /// put a session's files back as they were before one of its turns (a
     /// `Turn` item); or, with no turn, take back the last time that was done.
@@ -807,6 +815,9 @@ pub enum Response {
     },
     WorkflowSaved {
         workflow: crate::Workflow,
+    },
+    Rules {
+        rulebook: crate::proof::Rulebook,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {

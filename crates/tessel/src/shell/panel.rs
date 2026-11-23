@@ -793,7 +793,7 @@ impl Shell {
         div().px_3().py_3().set(Type::Subheadline).text_color(self.palette.get().secondary).child(text.into())
     }
 
-    fn section(&self, title: &'static str) -> Div {
+    pub(crate) fn section(&self, title: &'static str) -> Div {
         div().px_3().pt_4().pb_1().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(self.palette.get().secondary).child(title)
     }
 
@@ -1162,6 +1162,7 @@ impl Shell {
         let dim = |text: String| div().px_3().set(Type::Subheadline).text_color(p.secondary).child(text);
         let mut col = v_flex().id("checks").size_full().overflow_y_scroll().pb_4();
 
+        col = col.children(self.proof_section(cx));
         col = col.child(self.section("Branch"));
         match &self.ws.git {
             None => col = col.child(dim("Looking…".into())),

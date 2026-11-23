@@ -663,6 +663,7 @@ impl Shell {
                 if !self.views.contains_key(pane_id) {
                     out.extend(self.visual_button(cx));
                     out.extend(self.run_button(cx));
+                    out.extend(self.proof_chip(cx));
                     out.extend(self.ship_button(cx));
                 }
                 out.push(Button::new("toolbar-overview").ghost().small().icon(Icon::empty().path("icons/layout-grid.svg")).tooltip("All Sessions").on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))).into_any_element());

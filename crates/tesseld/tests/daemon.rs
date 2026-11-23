@@ -1830,3 +1830,56 @@ async fn a_picture_the_agent_showed_can_be_fetched_and_nothing_else() {
     let not_picture = c.request(Request::ChatImage { session: s.id, path: "/etc/hosts".into() }).await;
     assert!(not_picture.is_err());
 }
+
+#[tokio::test]
+async fn a_change_is_proved_against_the_house_rules_and_a_failed_proof_holds_the_ship() {
+    use tessel_proto::proof::{Severity, Verdict};
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(repo.join("src/k8s")).unwrap();
+    std::fs::create_dir_all(repo.join(".tessel/rules")).unwrap();
+    std::fs::write(repo.join("src/k8s/deploy.go"), "package k8s\n").unwrap();
+    std::fs::write(repo.join(".tessel/rules/k8s.md"), "---\npaths: \"**/k8s/**\"\n---\nKubernetes objects change only through the reconciler.\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nverify = \"true\"\nlenses = [\"rules\", \"correctness\"]\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    d.backend.reviews.lock().unwrap().extend([
+        ("one thing only: rules".to_owned(), "```json\n[{\"file\":\"src/k8s/deploy.go\",\"line\":2,\"severity\":\"block\",\"rule\":\"k8s\",\"title\":\"Updates the object directly\",\"why\":\"client.Update skips the reconciler\"}]\n```".to_owned()),
+        ("one thing only: correctness".to_owned(), "```json\n[{\"file\":\"src/k8s/deploy.go\",\"line\":2,\"severity\":\"warn\",\"title\":\"Imagined problem\",\"why\":\"maybe\"}]\n```".to_owned()),
+        ("Other reviewers reported".to_owned(), "```json\n[{\"n\":0,\"real\":true},{\"n\":1,\"real\":false}]\n```".to_owned()),
+    ]);
+    let (c, _) = d.client().await;
+    let req = Request::SessionCreate {
+        cmd_id: Uuid::new_v4(), cwd: repo.to_string_lossy().into_owned(), worktree: Some(WorktreeSpec { base: None, name: Some("direct".into()) }),
+        goal: Some("make deploys faster".into()), prompt: None, model: None, parent: None, attachments: vec![],
+    };
+    let Response::Session { summary: s } = c.request(req).await.unwrap() else { panic!() };
+    let ws = PathBuf::from(&s.cwd);
+    std::fs::write(ws.join("src/k8s/deploy.go"), "package k8s\nfunc Deploy() { client.Update(obj) }\n").unwrap();
+
+    c.request(Request::ProofRun { session: s.id }).await.unwrap();
+    let done = until(&c, s.id, "proved", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await;
+    let p = done.proof.unwrap();
+    assert_eq!(p.verdict, Verdict::Failed);
+    assert_eq!(p.rules.iter().filter(|r| *r == "k8s").count(), 1, "the rule for those paths applied");
+    assert!(p.verify.iter().all(|v| v.ok));
+    let k8s = p.findings.iter().find(|f| f.rule.as_deref() == Some("k8s")).expect("the rule's finding");
+    assert_eq!((k8s.severity.clone(), k8s.confirmed, k8s.file.as_deref(), k8s.line), (Severity::Block, Some(true), Some("src/k8s/deploy.go"), Some(2)));
+    assert_eq!(p.findings.iter().find(|f| f.title == "Imagined problem").unwrap().confirmed, Some(false), "refuted on a second look");
+    let asked = d.backend.asked.lock().unwrap().clone();
+    assert!(asked.iter().any(|(q, _)| q.contains("one thing only: rules") && q.contains("reconciler") && q.contains("client.Update")), "the reviewer sees the rule and the change");
+
+    let ship = |force| Request::Ship { session: s.id, step: ShipStep::Push, force };
+    match c.request(ship(false)).await {
+        Err(tessel_client::ClientError::Rpc(e)) => assert!(e.code == ErrorCode::Conflict && e.message.starts_with("proof failed"), "{e:?}"),
+        other => panic!("shipped past a failed proof: {other:?}"),
+    }
+    let forced = c.request(ship(true)).await;
+    assert!(!matches!(&forced, Err(tessel_client::ClientError::Rpc(e)) if e.message.starts_with("proof failed")), "ship anyway goes past it");
+    until(&c, s.id, "the override is kept", |s| s.proof.as_ref().is_some_and(|p| p.overridden)).await;
+
+    std::fs::write(ws.join("src/k8s/deploy.go"), "package k8s\nfunc Deploy() { reconcile(obj) }\n").unwrap();
+    let changed = c.request(ship(false)).await;
+    assert!(!matches!(&changed, Err(tessel_client::ClientError::Rpc(e)) if e.message.starts_with("proof failed")), "a proof of different code doesn't hold this one");
+}

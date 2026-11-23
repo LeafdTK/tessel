@@ -27,6 +27,7 @@ pub struct ReplayBackend {
     pub spawned: Arc<Mutex<Vec<SpawnOpts>>>,
     /// every one-off question asked, and the model it was asked of.
     pub asked: Arc<Mutex<Vec<(String, String)>>>,
+    pub reviews: Arc<Mutex<Vec<(String, String)>>>,
     again: bool,
 }
 
@@ -40,6 +41,7 @@ impl ReplayBackend {
             written: Default::default(),
             spawned: Default::default(),
             asked: Default::default(),
+            reviews: Default::default(),
             again: false,
         }
     }
@@ -60,6 +62,12 @@ impl Backend for ReplayBackend {
     fn one_shot(&self, prompt: String, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
         self.asked.lock().unwrap().push((prompt, model.to_owned()));
         Box::pin(async { Ok("fix: what the replay agent would say".to_owned()) })
+    }
+
+    fn review(&self, prompt: String, _cwd: std::path::PathBuf, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::backend::Reviewed>> + Send>> {
+        let answer = self.reviews.lock().unwrap().iter().find(|(key, _)| prompt.contains(key.as_str())).map(|(_, a)| a.clone()).unwrap_or_else(|| "```json\n[]\n```".into());
+        self.asked.lock().unwrap().push((prompt, model.to_owned()));
+        Box::pin(async move { Ok(crate::backend::Reviewed { text: answer, cost_usd: 0.01 }) })
     }
 
     fn models(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<tessel_proto::Catalog>> + Send>> {
