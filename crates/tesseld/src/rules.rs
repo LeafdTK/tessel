@@ -13,10 +13,15 @@ const RULE_KEYS: [&str; 9] = ["id", "title", "paths", "check", "severity", "run"
 pub struct Config {
     pub verify: Vec<String>,
     pub model: String,
-    pub lenses: Vec<String>,
+    pub lenses: Option<Vec<String>>,
+    pub risk: Vec<String>,
     pub starter: bool,
     pub gate: bool,
 }
+
+pub const RISK: [&str; 12] = [
+    "**/auth/**", "**/*auth*", "**/crypto/**", "**/*secret*", "**/*token*", "**/migrations/**", "**/*.sql", "**/infra/**", "**/*.tf", "**/Dockerfile", ".github/workflows/**", "**/*.pem",
+];
 
 pub const LENSES: [&str; 5] = ["correctness", "edge-cases", "security", "rules", "scope"];
 
@@ -34,7 +39,8 @@ pub fn config(workspace: &Path, root: &Path) -> Config {
     Config {
         verify: list(get("verify")).unwrap_or_default(),
         model: get("model").and_then(toml::Value::as_str).unwrap_or("sonnet").to_owned(),
-        lenses: list(get("lenses")).filter(|l| !l.is_empty()).unwrap_or_else(|| LENSES.iter().map(|s| (*s).to_owned()).collect()),
+        lenses: list(get("lenses")).filter(|l| !l.is_empty()),
+        risk: RISK.iter().map(|s| (*s).to_owned()).chain(list(get("risk")).unwrap_or_default()).collect(),
         starter: get("starter").and_then(toml::Value::as_bool).unwrap_or(true),
         gate: get("gate").and_then(toml::Value::as_bool).unwrap_or(true),
     }

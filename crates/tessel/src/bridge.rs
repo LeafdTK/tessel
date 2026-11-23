@@ -421,8 +421,25 @@ fn list_terms(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>) {
 /// the disk can take a while, and tokens must keep streaming meanwhile.
 const TAIL: u32 = 120;
 
+static AWAKE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 fn keep_awake(id: String) {
+    {
+        let mut awake = AWAKE.lock().unwrap();
+        if awake.contains(&id) {
+            return;
+        }
+        awake.push(id.clone());
+    }
     tokio::spawn(async move {
+        let done = id.clone();
+        held_awake(id).await;
+        AWAKE.lock().unwrap().retain(|h| *h != done);
+    });
+}
+
+async fn held_awake(id: String) {
+    {
         let home = tessel_proto::local::home();
         let hosts = tessel_remote::hosts::Hosts::load(&home);
         let Some(host) = hosts.get(&id).cloned() else { return };
@@ -441,7 +458,7 @@ fn keep_awake(id: String) {
             }
         }
         drop(held);
-    });
+    }
 }
 
 fn stale(e: &tessel_proto::RpcError) -> bool {

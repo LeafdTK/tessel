@@ -16,6 +16,7 @@ pub struct Change {
     pub head: String,
     pub diff: String,
     pub added: Vec<(String, u32, String)>,
+    pub changed: usize,
     pub paths: Vec<String>,
     pub subjects: Vec<String>,
     pub history: Vec<String>,
@@ -60,7 +61,12 @@ pub async fn change(ws: &Path) -> Result<Change, String> {
     let subjects = if base == head { Vec::new() } else { git(ws, &["log", "--format=%s", &format!("{base}..HEAD")]).await.unwrap_or_default().lines().map(str::to_owned).collect() };
     let history = git(ws, &["log", "--format=%s", "-n", "60", &main]).await.unwrap_or_default().lines().map(str::to_owned).collect();
     let added = added_lines(&diff);
-    Ok(Change { base, head, diff, added, paths, subjects, history })
+    let changed = changed_lines(&diff);
+    Ok(Change { base, head, diff, added, changed, paths, subjects, history })
+}
+
+pub fn changed_lines(diff: &str) -> usize {
+    diff.lines().filter(|l| (l.starts_with('+') && !l.starts_with("+++")) || (l.starts_with('-') && !l.starts_with("---"))).count()
 }
 
 pub fn added_lines(diff: &str) -> Vec<(String, u32, String)> {
@@ -183,11 +189,19 @@ fn lens_brief(lens: &str) -> &'static str {
     }
 }
 
-pub fn review_prompt(lens: &str, ask: &Ask, change: &Change, rules: &[&Rule], knowledge: &[&Knowledge], guidance: &[String]) -> String {
-    let mut p = format!(
-        "You are reviewing a change for one thing only: {lens}.\n{}\n\nYou can read any file in this repository (Read, Grep, Glob). You can't change anything.\n",
-        lens_brief(lens)
-    );
+pub fn review_prompt(lenses: &[String], ask: &Ask, change: &Change, rules: &[&Rule], knowledge: &[&Knowledge], guidance: &[String]) -> String {
+    let mut p = match lenses {
+        [one] => format!("You are reviewing a change for one thing only: {one}.\n{}\n", lens_brief(one)),
+        many => {
+            let mut p = format!("You are reviewing a change for these things: {}.\n", many.join(", "));
+            for l in many {
+                p.push_str(&format!("\n- {l}: {}", lens_brief(l)));
+            }
+            p.push('\n');
+            p
+        }
+    };
+    p.push_str("\nYou can read any file in this repository (Read, Grep, Glob). You can't change anything. Read only what you need.\n");
     p.push_str(&format!("\n## What was asked\n{}\n", ask.goal));
     for s in ask.said.iter().take(4) {
         p.push_str(&format!("\n> {}\n", s.chars().take(1500).collect::<String>().replace('\n', "\n> ")));
@@ -222,7 +236,7 @@ pub fn review_prompt(lens: &str, ask: &Ask, change: &Change, rules: &[&Rule], kn
     p.push_str(&format!("\n## The change ({} files)\n```diff\n{diff}\n```\n", change.paths.len()));
     p.push_str(
         "\n## Answer\nEnd with a JSON array in a ```json block, and nothing after it. One object per problem:\n\
-{\"file\": \"path as in the diff\", \"line\": 42, \"severity\": \"block\" | \"warn\" | \"note\", \"rule\": \"rule id or null\", \"title\": \"under 80 characters\", \"why\": \"the evidence: what goes wrong, and when\"}\n\
+{\"lens\": \"which of the things above\", \"file\": \"path as in the diff\", \"line\": 42, \"severity\": \"block\" | \"warn\" | \"note\", \"rule\": \"rule id or null\", \"title\": \"under 80 characters\", \"why\": \"the evidence: what goes wrong, and when\"}\n\
 `block`: it's wrong or unsafe and must not land. `warn`: it should change. `note`: worth knowing.\n\
 Every problem cites a file and a line in the new code. No style preferences unless a house rule asks for them. If you find nothing real, answer `[]`.\n",
     );
@@ -232,7 +246,7 @@ Every problem cites a file and a line in the new code. No style preferences unle
 pub fn recheck_prompt(change: &Change, findings: &[Finding]) -> String {
     let mut p = String::from(
         "Other reviewers reported the problems below in a change. Check each one against the code (Read, Grep, Glob; you can't change anything). \
-Decide whether it is real: the code really does what they say, and it really matters. When the evidence is weak, it isn't real.\n\n## Reported\n",
+For each, decide whether the claim is true: does the code really behave the way they say? Refute it only when the code shows the claim is wrong (it misreads the code, the case can't happen, or something else already handles it). Don't refute something because it seems small: lower its severity instead.\n\n## Reported\n",
     );
     for (n, f) in findings.iter().enumerate() {
         p.push_str(&format!(
@@ -246,7 +260,7 @@ Decide whether it is real: the code really does what they say, and it really mat
     }
     let diff: String = change.diff.chars().take(DIFF_CAP / 2).collect();
     p.push_str(&format!("\n## The change\n```diff\n{diff}\n```\n"));
-    p.push_str("\n## Answer\nEnd with a JSON array in a ```json block: one {\"n\": 0, \"real\": true, \"note\": \"why\"} per reported problem.\n");
+    p.push_str("\n## Answer\nEnd with a JSON array in a ```json block: one {\"n\": 0, \"real\": true, \"severity\": \"block\" | \"warn\" | \"note\", \"note\": \"why\"} per reported problem.\n");
     p
 }
 
@@ -262,7 +276,8 @@ pub fn json_tail(text: &str) -> Option<serde_json::Value> {
     serde_json::from_str(text[start..].trim()).ok()
 }
 
-pub fn parse_findings(lens: &str, text: &str, changed: &[String], rule_ids: &[String]) -> Result<Vec<Finding>, String> {
+pub fn parse_findings(lenses: &[String], text: &str, changed: &[String], rule_ids: &[String]) -> Result<Vec<Finding>, String> {
+    let first = lenses.first().cloned().unwrap_or_default();
     let Some(serde_json::Value::Array(items)) = json_tail(text) else { return Err("the reviewer didn't answer with a list".into()) };
     let mut out = Vec::new();
     for v in items {
@@ -279,7 +294,8 @@ pub fn parse_findings(lens: &str, text: &str, changed: &[String], rule_ids: &[St
         };
         let rule = s("rule").filter(|r| r != "null" && rule_ids.contains(r));
         let line = v.get("line").and_then(serde_json::Value::as_u64).map(|l| l as u32);
-        out.push(Finding { lens: lens.to_owned(), rule, file: Some(file), line, severity, title: title.chars().take(120).collect(), why: s("why").unwrap_or_default(), confirmed: None });
+        let lens = s("lens").filter(|l| lenses.contains(l)).unwrap_or_else(|| first.clone());
+        out.push(Finding { lens, rule, file: Some(file), line, severity, title: title.chars().take(120).collect(), why: s("why").unwrap_or_default(), confirmed: None });
     }
     Ok(out)
 }
@@ -321,6 +337,14 @@ pub fn apply_recheck(findings: &mut [Finding], text: &str) {
         let (Some(n), Some(real)) = (v.get("n").and_then(serde_json::Value::as_u64), v.get("real").and_then(serde_json::Value::as_bool)) else { continue };
         if let Some(f) = findings.get_mut(n as usize) {
             f.confirmed = Some(real);
+            let lower = match v.get("severity").and_then(serde_json::Value::as_str) {
+                Some("warn") if f.severity == Severity::Block => Some(Severity::Warn),
+                Some("note") if f.severity != Severity::Note => Some(Severity::Note),
+                _ => None,
+            };
+            if let Some(s) = lower.filter(|_| real) {
+                f.severity = s;
+            }
         }
     }
 }
@@ -377,28 +401,18 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
     p.rules = applying.iter().map(|r| r.id.clone()).collect();
     p.knowledge = knowledge.iter().map(|k| k.id.clone()).collect();
     p.findings = matched(&applying, &change);
-    p.stage = format!("Reviewing with {} reviewers", cfg.lenses.len());
-    tell(&p);
-
-    let rule_ids: Vec<String> = applying.iter().map(|r| r.id.clone()).collect();
-    let mut panel = tokio::task::JoinSet::new();
-    for lens in &cfg.lenses {
-        let rule_refs: Vec<&Rule> = applying.iter().filter(|r| lens == "rules" || r.check == Check::Judge && r.severity == Severity::Block && lens == "security").collect();
-        let know_refs: Vec<&Knowledge> = knowledge.iter().collect();
-        let prompt = review_prompt(lens, &ask, &change, &rule_refs, &know_refs, &book.guidance);
-        let (b, cwd, model, lens, changed, ids) = (backend.clone(), ws.clone(), cfg.model.clone(), lens.clone(), change.paths.clone(), rule_ids.clone());
-        panel.spawn(async move {
-            let start = Instant::now();
-            let got = b.review(prompt, cwd, &model).await;
-            let ms = start.elapsed().as_millis() as u64;
-            match got {
-                Ok(r) => match parse_findings(&lens, &r.text, &changed, &ids) {
-                    Ok(f) => (Reviewer { lens, error: None, cost_usd: r.cost_usd, ms }, f),
-                    Err(e) => (Reviewer { lens, error: Some(e), cost_usd: r.cost_usd, ms }, Vec::new()),
-                },
-                Err(e) => (Reviewer { lens, error: Some(format!("{e:#}")), cost_usd: 0.0, ms }, Vec::new()),
-            }
-        });
+    let finish = |mut p: Proof, why: Option<&str>| {
+        if let Some(why) = why {
+            p.problem = Some(why.to_owned());
+        }
+        p.verdict = verdict(&p);
+        p.stage.clear();
+        p.finished_ms = Some(now());
+        tell(&p);
+        p
+    };
+    if p.findings.iter().any(|f| f.severity == Severity::Block) {
+        return finish(p, Some("a house rule is broken: fix that first, and the reviewers look after"));
     }
 
     let mut commands: Vec<(String, Option<String>)> = cfg.verify.iter().map(|c| (c.clone(), None)).collect();
@@ -412,11 +426,45 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
         p.verify.push(run_check(&ws, &command, rule).await);
         tell(&p);
     }
+    if p.verify.iter().any(|v| !v.ok) {
+        return finish(p, Some("a check failed: fix that first, and the reviewers look after"));
+    }
 
-    p.stage = "Waiting on reviewers".into();
+    let judged = applying.iter().any(|r| r.check == Check::Judge);
+    let calls = panel(&cfg, &change, judged);
+    p.stage = match calls.len() {
+        1 => "Reviewing".to_owned(),
+        n => format!("Reviewing with {n} reviewers"),
+    };
     tell(&p);
+    let order: Vec<&str> = calls.iter().flatten().map(String::as_str).collect();
+    let order: Vec<String> = order.into_iter().map(str::to_owned).collect();
+    let rule_ids: Vec<String> = applying.iter().map(|r| r.id.clone()).collect();
+    let mut reviewers = tokio::task::JoinSet::new();
+    for lenses in calls {
+        let rule_refs: Vec<&Rule> = applying
+            .iter()
+            .filter(|r| lenses.iter().any(|l| l == "rules") || (r.check == Check::Judge && r.severity == Severity::Block && lenses.iter().any(|l| l == "security")))
+            .collect();
+        let know_refs: Vec<&Knowledge> = knowledge.iter().collect();
+        let prompt = review_prompt(&lenses, &ask, &change, &rule_refs, &know_refs, &book.guidance);
+        let (b, cwd, model, changed, ids) = (backend.clone(), ws.clone(), cfg.model.clone(), change.paths.clone(), rule_ids.clone());
+        reviewers.spawn(async move {
+            let start = Instant::now();
+            let got = b.review(prompt, cwd, &model).await;
+            let ms = start.elapsed().as_millis() as u64;
+            let lens = lenses.join(" · ");
+            match got {
+                Ok(r) => match parse_findings(&lenses, &r.text, &changed, &ids) {
+                    Ok(f) => (Reviewer { lens, error: None, cost_usd: r.cost_usd, ms }, f),
+                    Err(e) => (Reviewer { lens, error: Some(e), cost_usd: r.cost_usd, ms }, Vec::new()),
+                },
+                Err(e) => (Reviewer { lens, error: Some(format!("{e:#}")), cost_usd: 0.0, ms }, Vec::new()),
+            }
+        });
+    }
     let mut found = Vec::new();
-    while let Some(done) = panel.join_next().await {
+    while let Some(done) = reviewers.join_next().await {
         if let Ok((r, f)) = done {
             p.cost_usd += r.cost_usd;
             p.reviewers.push(r);
@@ -424,18 +472,23 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
             tell(&p);
         }
     }
-    p.reviewers.sort_by_key(|r| cfg.lenses.iter().position(|l| *l == r.lens));
-    found.sort_by_key(|f| (cfg.lenses.iter().position(|l| *l == f.lens), f.file.clone(), f.line));
-    let found = merged(found);
-    let mut found = found;
+    let at = |lens: &str| order.iter().position(|l| lens.starts_with(l.as_str()));
+    p.reviewers.sort_by_key(|r| at(&r.lens));
+    found.sort_by_key(|f| (at(&f.lens), f.file.clone(), f.line));
+    let mut found = merged(found);
 
-    if !found.is_empty() {
-        p.stage = format!("Checking {} findings", found.len());
+    let weighty: Vec<usize> = found.iter().enumerate().filter(|(_, f)| f.severity != Severity::Note).map(|(i, _)| i).collect();
+    if !weighty.is_empty() {
+        p.stage = format!("Checking {} findings", weighty.len());
         tell(&p);
         let start = Instant::now();
-        match backend.review(recheck_prompt(&change, &found), ws.clone(), &cfg.model).await {
+        let mut checking: Vec<Finding> = weighty.iter().map(|&i| found[i].clone()).collect();
+        match backend.review(recheck_prompt(&change, &checking), ws.clone(), &cfg.model).await {
             Ok(r) => {
-                apply_recheck(&mut found, &r.text);
+                apply_recheck(&mut checking, &r.text);
+                for (k, &i) in weighty.iter().enumerate() {
+                    found[i].confirmed = checking[k].confirmed;
+                }
                 p.cost_usd += r.cost_usd;
                 p.reviewers.push(Reviewer { lens: "recheck".into(), error: None, cost_usd: r.cost_usd, ms: start.elapsed().as_millis() as u64 });
             }
@@ -444,11 +497,28 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
     }
     found.sort_by_key(|f| (f.confirmed == Some(false), f.severity != Severity::Block, f.severity != Severity::Warn));
     p.findings.extend(found);
-    p.verdict = verdict(&p);
-    p.stage.clear();
-    p.finished_ms = Some(now());
-    tell(&p);
-    p
+    finish(p, None)
+}
+
+pub fn panel(cfg: &crate::rules::Config, c: &Change, judged: bool) -> Vec<Vec<String>> {
+    let own = |l: &[&str]| l.iter().map(|s| (*s).to_owned()).collect::<Vec<String>>();
+    if let Some(lenses) = &cfg.lenses {
+        return lenses.iter().map(|l| vec![l.clone()]).collect();
+    }
+    let risky = crate::rules::applies(&cfg.risk, &c.paths) && !cfg.risk.is_empty();
+    if risky || c.changed > 400 {
+        return crate::rules::LENSES.iter().map(|l| vec![(*l).to_owned()]).collect();
+    }
+    let with_rules = |mut l: Vec<String>| {
+        if judged {
+            l.push("rules".into());
+        }
+        l
+    };
+    if c.changed > 60 || c.paths.len() > 4 {
+        return vec![with_rules(own(&["correctness", "edge-cases", "security", "scope"]))];
+    }
+    vec![with_rules(own(&["correctness", "scope"]))]
 }
 
 #[cfg(test)]
@@ -481,12 +551,12 @@ mod tests {
     #[test]
     fn a_reviewer_s_findings_need_a_file_and_a_known_rule() {
         let text = "I looked.\n```json\n[{\"file\":\"src/a.rs\",\"line\":11,\"severity\":\"block\",\"rule\":\"k8s\",\"title\":\"Direct update\",\"why\":\"calls Update\"},\n{\"title\":\"vague worry\",\"severity\":\"block\"},\n{\"file\":\"src/a.rs\",\"severity\":\"warn\",\"rule\":\"made-up\",\"title\":\"x\"}]\n```";
-        let f = parse_findings("rules", text, &["src/a.rs".into()], &["k8s".into()]).unwrap();
+        let f = parse_findings(&["rules".into()], text, &["src/a.rs".into()], &["k8s".into()]).unwrap();
         assert_eq!(f.len(), 2, "no file, no finding");
         assert_eq!(f[0].rule.as_deref(), Some("k8s"));
         assert_eq!(f[1].rule, None, "a rule that doesn't exist isn't cited");
-        assert!(parse_findings("x", "all good!", &[], &[]).is_err());
-        assert!(parse_findings("x", "nothing\n[]", &[], &[]).unwrap().is_empty());
+        assert!(parse_findings(&["x".into()], "all good!", &[], &[]).is_err());
+        assert!(parse_findings(&["x".into()], "nothing\n[]", &[], &[]).unwrap().is_empty());
     }
 
     #[test]
@@ -496,6 +566,11 @@ mod tests {
         assert_eq!(verdict(&p), Verdict::Failed);
         apply_recheck(&mut p.findings, "```json\n[{\"n\":0,\"real\":false},{\"n\":1,\"real\":true}]\n```");
         assert_eq!(verdict(&p), Verdict::Concerns, "the refuted block no longer counts");
+        let mut q = Proof { findings: vec![f(Severity::Block)], ..Default::default() };
+        apply_recheck(&mut q.findings, "```json\n[{\"n\":0,\"real\":true,\"severity\":\"warn\"}]\n```");
+        assert_eq!((q.findings[0].severity.clone(), verdict(&q)), (Severity::Warn, Verdict::Concerns), "true but smaller is lowered, not dropped");
+        apply_recheck(&mut q.findings, "```json\n[{\"n\":0,\"real\":true,\"severity\":\"block\"}]\n```");
+        assert_eq!(q.findings[0].severity, Severity::Warn, "a recheck never raises one");
         p.findings[1].confirmed = Some(false);
         assert_eq!(verdict(&p), Verdict::Proven);
         p.verify.push(Verified { command: "cargo test".into(), ok: false, output: String::new(), ms: 1, rule: None });
@@ -516,6 +591,22 @@ mod tests {
         assert_eq!(m.len(), 3);
         assert_eq!((m[0].lens.as_str(), m[0].severity.clone()), ("rules · security · correctness", Severity::Block), "the strongest word wins");
         assert_eq!(m[1].lens, "correctness · edge-cases");
+    }
+
+    #[test]
+    fn the_panel_grows_with_the_change_and_its_risk() {
+        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "sonnet".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true };
+        let change = |changed: usize, paths: &[&str]| Change { changed, paths: paths.iter().map(|p| (*p).to_owned()).collect(), ..Default::default() };
+        let small = change(12, &["src/list.rs"]);
+        assert_eq!(panel(&cfg(None), &small, false), vec![vec!["correctness".to_owned(), "scope".to_owned()]], "a small change is one reviewer");
+        assert_eq!(panel(&cfg(None), &small, true)[0].last().map(String::as_str), Some("rules"), "the house rules ride along when one applies");
+        assert_eq!(panel(&cfg(None), &change(120, &["src/list.rs"]), false), vec![vec!["correctness".to_owned(), "edge-cases".to_owned(), "security".to_owned(), "scope".to_owned()]], "a medium change is still one reviewer, looking further");
+        assert_eq!(panel(&cfg(None), &change(5, &["src/auth/session.rs"]), false).len(), 5, "anything near auth gets everyone");
+        assert_eq!(panel(&cfg(None), &change(900, &["src/list.rs"]), false).len(), 5);
+        assert_eq!(panel(&cfg(Some(vec!["security".into()])), &small, false), vec![vec!["security".to_owned()]], "a repository that names its lenses gets those");
+        let both = vec!["correctness".to_owned(), "scope".to_owned()];
+        let f = parse_findings(&both, "```json\n[{\"lens\":\"scope\",\"file\":\"a\",\"title\":\"x\"},{\"lens\":\"made-up\",\"file\":\"a\",\"title\":\"y\"}]\n```", &[], &[]).unwrap();
+        assert_eq!((f[0].lens.as_str(), f[1].lens.as_str()), ("scope", "correctness"));
     }
 
     #[test]

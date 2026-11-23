@@ -1883,3 +1883,25 @@ async fn a_change_is_proved_against_the_house_rules_and_a_failed_proof_holds_the
     let changed = c.request(ship(false)).await;
     assert!(!matches!(&changed, Err(tessel_client::ClientError::Rpc(e)) if e.message.starts_with("proof failed")), "a proof of different code doesn't hold this one");
 }
+
+#[tokio::test]
+async fn a_failing_check_stops_a_proof_before_any_reviewer_is_paid_for() {
+    use tessel_proto::proof::Verdict;
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nverify = \"echo 'error: it broke' && false\"\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    let (c, _) = d.client().await;
+    let s = create(&c, &repo.to_string_lossy(), None).await;
+    c.request(Request::ProofRun { session: s.id }).await.unwrap();
+    let p = until(&c, s.id, "proved", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await.proof.unwrap();
+    assert_eq!(p.verdict, Verdict::Failed);
+    assert!(p.verify[0].output.contains("error: it broke"));
+    assert!(p.reviewers.is_empty() && p.cost_usd == 0.0);
+    assert!(!d.backend.asked.lock().unwrap().iter().any(|(q, _)| q.contains("reviewing a change")), "no reviewer was asked");
+}

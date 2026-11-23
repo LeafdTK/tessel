@@ -535,7 +535,6 @@ async fn run() -> anyhow::Result<()> {
         }
         "prove" => {
             let session = resolve(&client, &args.next("a session")?).await?;
-            let json = args.flag("--json");
             let proof = prove(&client, session).await?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&proof)?);
@@ -548,7 +547,6 @@ async fn run() -> anyhow::Result<()> {
         }
         "rules" => {
             let session = resolve(&client, &args.next("a session")?).await?;
-            let json = args.flag("--json");
             let Response::Rules { rulebook } = client.request(Request::Rules { session }).await? else { bail!("unexpected reply") };
             if json {
                 println!("{}", serde_json::to_string_pretty(&rulebook)?);

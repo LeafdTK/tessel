@@ -309,7 +309,7 @@ impl Backend for ClaudeBackend {
     fn one_shot(&self, prompt: String, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send>> {
         let mut cmd = tokio::process::Command::new(&self.program);
         // the question goes on stdin: a diff can be longer than an argument may be.
-        cmd.args(["-p", "--model", model, "--output-format", "text", "--tools", ""])
+        cmd.args(["-p", "--model", model, "--output-format", "text", "--tools", "", "--setting-sources", "", "--system-prompt", "Answer exactly what is asked, in the form asked for."])
             .current_dir(std::env::temp_dir())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -333,7 +333,20 @@ impl Backend for ClaudeBackend {
 
     fn review(&self, prompt: String, cwd: PathBuf, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::backend::Reviewed>> + Send>> {
         let mut cmd = tokio::process::Command::new(&self.program);
-        cmd.args(["-p", "--model", model, "--output-format", "json", "--tools", "Read,Grep,Glob", "--strict-mcp-config"])
+        cmd.args([
+            "-p",
+            "--model",
+            model,
+            "--output-format",
+            "json",
+            "--tools",
+            "Read,Grep,Glob",
+            "--strict-mcp-config",
+            "--setting-sources",
+            "",
+            "--system-prompt",
+            "You review code changes in this repository. You can read files with Read, Grep and Glob; you can't change anything. Be precise and brief.",
+        ])
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

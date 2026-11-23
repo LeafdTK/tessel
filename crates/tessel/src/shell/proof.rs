@@ -99,6 +99,7 @@ impl Shell {
                 .when(proof.verdict == Verdict::Proving, |d| d.child(super::live_dot(p.blocked, &p)))
                 .when(proof.verdict != Verdict::Proving, |d| d.child(Icon::empty().path("icons/badge-check.svg").size(theme::z(12.)).text_color(ink)))
                 .child(div().set(Type::Subheadline).text_color(ink).child(verdict_word(proof)))
+                .when(proof.verdict.done() && proof.cost_usd >= 0.005, |d| d.child(div().set(Type::Subheadline).text_color(p.tertiary).font_features(theme::tabular()).child(format!("${:.2}", proof.cost_usd))))
                 .into_any_element(),
         )
     }
