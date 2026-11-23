@@ -43,6 +43,7 @@ pub static COMMANDS: &[Spec] = &[
     c("app.focus", "Focus on this session", "focus", Some("⇧ ⌘ F"), "{}", ""),
     // sessions
     c("session.new", "New session", "square-pen", Some("⌘ N"), "{}", "cwd?, prompt?, worktree?: with a prompt it starts at once"),
+    q("theme.features", "Turn on the font's alternates", "features: a list of ss01 (single-story a), ss02 (clear I l 1 0), ss03 (open 4 6 9), zero (slashed zero), tnum (even figures)"),
     q("theme.font", "Set the interface font", "font: Allo (the default), system for the Mac's own, or any installed family"),
     c("workflow.from_chat", "Make this chat a workflow", "workflow", None, "{}", "session?: the open chat if left out"),
     c("workflow.new", "New workflow", "workflow", None, "{}", ""),

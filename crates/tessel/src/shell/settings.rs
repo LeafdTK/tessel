@@ -296,6 +296,7 @@ impl Shell {
                 }),
             ))
             .child(self.setting_row("Accent", "", self.swatches(accent, cx)))
+            .child(self.setting_row("Characters", "", self.feature_chips(cx)))
             .child(self.setting_row(
                 "Fonts",
                 "",
@@ -518,6 +519,7 @@ impl Shell {
             .key_context("Settings")
             .on_action(cx.listener(|this, _: &crate::CloseSettings, _, cx| this.close_settings(cx)))
             .when(!self.ui.theme.glass.unwrap_or(false), |d| d.bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 })))
+            .when(crate::glass::liquid(), |d| d.child(super::glass_float(0.)))
             .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
             .flex()
             .items_center()
@@ -536,7 +538,7 @@ impl Shell {
                     .border_color(p.separator)
                     // liquid glass, the window bending through it; else solid.
                     .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_lg())
-                    .when(crate::glass::liquid(), |d| d.relative().child(super::glass_float(theme::R_PANEL)))
+                    .when(crate::glass::liquid(), |d| d.relative().child(super::glass_float(theme::R_PANEL)).child(super::glass_veil(theme::R_PANEL, &p)))
                     .overflow_hidden()
                     // clicks inside the sheet stay inside it.
                     .on_click(|_, _, cx| cx.stop_propagation())
@@ -568,7 +570,7 @@ impl Shell {
                                 .child(if current == "hosts" {
                                     div().flex_shrink_0().child(rows).into_any_element()
                                 } else {
-                                    v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if crate::glass::liquid() { p.fill } else { p.window }).overflow_hidden().child(div().mt(px(-1.)).child(rows)).into_any_element()
+                                    v_flex().flex_shrink_0().rounded(px(theme::R_CARD)).border_1().border_color(p.separator).bg(if crate::glass::liquid() && p.dark { p.fill } else if crate::glass::liquid() { p.raised } else { p.window }).overflow_hidden().child(div().mt(px(-1.)).child(rows)).into_any_element()
                                 }),
                         ),
                     ),
@@ -831,6 +833,38 @@ fn pic_space(_: &theme::Palette) -> Div {
 }
 
 impl Shell {
+    fn feature_chips(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = self.palette.get();
+        let on: Vec<String> = self.ui.theme.features.clone();
+        let mut row = h_flex().flex_wrap().justify_end().gap_1p5().max_w(px(360.));
+        for (tag, label) in crate::theme::FEATURES {
+            let lit = on.iter().any(|f| f == tag);
+            let next: Vec<String> = if lit { on.iter().filter(|f| *f != tag).cloned().collect() } else { on.iter().cloned().chain([tag.to_owned()]).collect() };
+            row = row.child(
+                div()
+                    .id(SharedString::from(format!("feature-{tag}")))
+                    .test_support()
+                    .px_2()
+                    .h(px(26.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(theme::R_TILE))
+                    .border_1()
+                    .border_color(if lit { p.accent } else { p.separator })
+                    .when(lit, |d| d.bg(p.accent.opacity(0.12)).text_color(p.accent))
+                    .when(!lit, |d| d.text_color(p.label).hover(|d| d.bg(p.hover)))
+                    .cursor_pointer()
+                    .set(Type::Callout)
+                    .font_features(crate::theme::features(&[tag.to_owned()]))
+                    .child(label)
+                    .on_click(cx.listener(move |this, _, w, cx| {
+                        let _ = this.exec("theme.features", &json!({"features": next}), w, cx);
+                    })),
+            );
+        }
+        row
+    }
+
     fn font_picker(&self, id: &'static str, current: String, interface: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
         gpui_kit::component::popover::Popover::new(id)

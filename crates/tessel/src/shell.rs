@@ -2846,6 +2846,7 @@ impl Render for Shell {
             .text_color(p.label)
             .set(Type::Body)
             .when_some(font, |d, f| d.font_family(f))
+            .when(!ui.theme.features.is_empty(), |d| d.font_features(crate::theme::features(&ui.theme.features)))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
                 if this.drag.is_some() {
                     this.drag_to(f32::from(ev.position.x), cx);
@@ -3635,6 +3636,10 @@ pub(crate) fn glass_tinted(radius: f32, tint: Hsla) -> impl IntoElement {
 /// glass under the window's drawing (it bends the desktop) with a colour in it.
 pub(crate) fn glass_spot_tinted(radius: f32, tint: Hsla) -> impl IntoElement {
     glass_el(radius, false, Some(tint))
+}
+
+pub(crate) fn glass_veil(radius: f32, p: &Palette) -> impl IntoElement {
+    div().absolute().inset_0().rounded(px(radius)).bg(p.raised.opacity(if p.dark { 0.55 } else { 0.86 }))
 }
 
 fn glass_el(radius: f32, float: bool, tint: Option<Hsla>) -> impl IntoElement {

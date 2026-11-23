@@ -535,6 +535,7 @@ pub struct ThemeSpec {
     /// `Some(true)` always dark, `Some(false)` always light, `None` follows the system.
     pub dark: Option<Option<bool>>,
     pub font: Option<String>,
+    pub features: Vec<String>,
     pub mono: Option<String>,
     pub light: Vec<(Token, Hsla)>,
     pub dark_tokens: Vec<(Token, Hsla)>,
@@ -569,7 +570,7 @@ impl ThemeSpec {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
         let obj = v.as_object().ok_or("theme: expected a base name (\"tessel\", \"orchard\") or an object")?;
-        keys(obj, "theme", &["base", "appearance", "font", "mono", "light", "dark", "size", "density", "material", "glow", "backdrop", "terminal", "message_size"])?;
+        keys(obj, "theme", &["base", "appearance", "font", "features", "mono", "light", "dark", "size", "density", "material", "glow", "backdrop", "terminal", "message_size"])?;
         let mut t = Self::default();
         let (mut t_size, mut t_colors) = (None, None);
         if let Some(b) = obj.get("base") {
@@ -580,6 +581,16 @@ impl ThemeSpec {
         }
         if let Some(f) = obj.get("font") {
             t.font = Some(text(f, "theme.font")?.to_owned());
+        }
+        if let Some(Value::Array(list)) = obj.get("features") {
+            for f in list {
+                let name = text(f, "theme.features")?;
+                if !crate::theme::FEATURES.iter().any(|(tag, _)| *tag == name) {
+                    let known: Vec<&str> = crate::theme::FEATURES.iter().map(|(t, _)| *t).collect();
+                    return Err(format!("theme.features: \"{name}\" isn't one. features: {}", known.join(", ")));
+                }
+                t.features.push(name.to_owned());
+            }
         }
         if let Some(v) = obj.get("size") {
             t.scale = Some(match v {

@@ -465,6 +465,16 @@ pub fn z(v: f32) -> Pixels {
 pub const SCALES: [(&str, f32); 3] = [("compact", 0.9), ("default", 1.0), ("large", 1.12)];
 
 pub const DEFAULT_FONT: &str = "Allo";
+
+pub const FEATURES: [(&str, &str); 5] = [("ss01", "Single-story a"), ("ss02", "Clear I l 1 0"), ("ss03", "Open 4 6 9"), ("zero", "Slashed zero"), ("tnum", "Even figures")];
+
+pub fn features(on: &[String]) -> gpui_kit::FontFeatures {
+    gpui_kit::FontFeatures(std::sync::Arc::new(on.iter().map(|f| (f.clone(), 1)).collect()))
+}
+
+pub fn tabular() -> gpui_kit::FontFeatures {
+    gpui_kit::FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
 const SYSTEM_FONT: &str = ".SystemUIFont";
 
 const ALLO: [&[u8]; 8] = [
@@ -572,6 +582,7 @@ pub fn count_pill(p: &Palette, n: impl Into<SharedString>, hot: bool) -> gpui_ki
         .bg(if hot { info(p).opacity(0.16) } else { p.label.opacity(0.08) })
         .text_size(z(11.))
         .font_weight(FontWeight::MEDIUM)
+        .font_features(tabular())
         .text_color(if hot { info(p) } else { p.secondary })
         .child(n.into())
 }

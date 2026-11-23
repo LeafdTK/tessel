@@ -367,6 +367,7 @@ impl Shell {
             .inset_0()
             .occlude()
             .when(!self.ui.theme.glass.unwrap_or(false), |d| d.bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 })))
+            .when(crate::glass::liquid(), |d| d.child(super::glass_float(0.)))
             .on_click(cx.listener(|this, _, _, cx| this.close_workflow(cx)))
             .flex()
             .items_center()
@@ -383,7 +384,7 @@ impl Shell {
                     .border_1()
                     .border_color(p.separator)
                     .when(!crate::glass::liquid(), |d| d.bg(p.raised).shadow_lg())
-                    .when(crate::glass::liquid(), |d| d.relative().child(super::glass_float(theme::R_PANEL)))
+                    .when(crate::glass::liquid(), |d| d.relative().child(super::glass_float(theme::R_PANEL)).child(super::glass_veil(theme::R_PANEL, &p)))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         h_flex()
@@ -643,7 +644,7 @@ impl Shell {
                         StepState::Asking => format!("{}: waiting for you", step.name),
                         _ => step.name.clone(),
                     }))
-                    .children(time.map(|t| div().set(Type::Subheadline).text_color(p.tertiary).child(t)))
+                    .children(time.map(|t| div().set(Type::Subheadline).font_features(theme::tabular()).text_color(p.tertiary).child(t)))
                     .when_some(to, |d, to| d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.open(to, cx)))),
             );
         }
@@ -670,7 +671,7 @@ impl Shell {
                 .border_color(p.separator)
                 .child(Icon::empty().path(format!("icons/{}.svg", run.icon.as_deref().unwrap_or("workflow"))).size(theme::z(14.)).text_color(p.secondary))
                 .child(div().flex_1().min_w_0().child(row))
-                .when(cost > 0.005, |d| d.child(div().set(Type::Subheadline).text_color(p.tertiary).child(format!("${cost:.2}"))))
+                .when(cost > 0.005, |d| d.child(div().set(Type::Subheadline).font_features(theme::tabular()).text_color(p.tertiary).child(format!("${cost:.2}"))))
                 .child(tail)
                 .into_any_element(),
         )

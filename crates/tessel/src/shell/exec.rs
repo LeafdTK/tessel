@@ -358,6 +358,14 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "density", v), window, cx);
                 done
             }
+            "theme.features" => {
+                let list: Vec<String> = args.get("features").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                if let Some(bad) = list.iter().find(|f| !crate::theme::FEATURES.iter().any(|(t, _)| t == f)) {
+                    return Err(format!("\"{bad}\" isn't a feature. features: {}", crate::theme::FEATURES.iter().map(|(t, _)| *t).collect::<Vec<_>>().join(", ")));
+                }
+                self.edit_ui(|f| Self::set_in(f, "theme", "features", (!list.is_empty()).then(|| json!(list))), window, cx);
+                done
+            }
             "theme.font" => {
                 let font = need(args, "font", cmd)?.trim().to_owned();
                 let value = (font != crate::theme::DEFAULT_FONT && !font.is_empty()).then(|| json!(font));

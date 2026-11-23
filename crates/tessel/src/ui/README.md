@@ -385,6 +385,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `app.workspace` | Show or hide the workspace | ⌥ ⌘ I |  |
 | `app.focus` | Focus on this session | ⇧ ⌘ F |  |
 | `session.new` | New session | ⌘ N | cwd?, prompt?, worktree?: with a prompt it starts at once |
+| `theme.features` | Turn on the font's alternates |  | features: a list of ss01 (single-story a), ss02 (clear I l 1 0), ss03 (open 4 6 9), zero (slashed zero), tnum (even figures) |
 | `theme.font` | Set the interface font |  | font: Allo (the default), system for the Mac's own, or any installed family |
 | `workflow.from_chat` | Make this chat a workflow |  | session?: the open chat if left out |
 | `workflow.new` | New workflow |  |  |
