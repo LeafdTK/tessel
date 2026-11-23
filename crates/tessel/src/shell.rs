@@ -404,6 +404,8 @@ pub struct Shell {
     pub(crate) workflows: Vec<tessel_proto::Workflow>,
     pub(crate) wf_form: Option<workflows::WfForm>,
     pub(crate) wf_last: HashMap<String, std::collections::BTreeMap<String, tessel_proto::Pick>>,
+    pub(crate) doc_view: Option<(String, Option<String>)>,
+    pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
     pub(crate) confirm_purge: Option<SessionId>,
@@ -847,6 +849,8 @@ impl Shell {
             workflows: Vec::new(),
             wf_form: None,
             wf_last: HashMap::new(),
+            doc_view: None,
+            doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
             confirm_purge: None,
@@ -1009,6 +1013,7 @@ impl Shell {
                 }
             }
             UiEvent::Session(summary) => {
+                self.run_updated(&summary);
                 let (goal, reason) = (summary.goal.clone(), summary.attention.as_ref().map(|a| a.reason));
                 let is_open = self.model.open.as_ref().is_some_and(|o| o.id == summary.id);
                 // a turn ending is when its changes are worth another look.
@@ -1149,6 +1154,11 @@ impl Shell {
             UiEvent::Answer { tag: "host.restart", result } => self.host_restart_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("deleted.") => self.deleted_answer(tag, result, cx),
             UiEvent::Answer { tag: tag @ ("workflows" | "workflow.run"), result } => self.workflows_answer(tag, result, cx),
+            UiEvent::Answer { tag: "doc.read", result } => {
+                if let (Ok(tessel_proto::Response::File { file }), Some(view)) = (result, self.doc_view.as_mut()) {
+                    view.1 = Some(file.text.unwrap_or_default());
+                }
+            }
             UiEvent::Choices { workflow, input, result } => self.choices_answer(workflow, input, result, cx),
             UiEvent::Answer { tag: "file.download", result } => self.download_answer(result, cx),
             UiEvent::Answer { tag: "file.promise", result } => self.promise_answer(result),
@@ -2683,6 +2693,10 @@ impl Render for Shell {
         if std::mem::take(&mut self.reveal_browser) && !self.browser_visible() {
             self.show_browser(window, cx);
         }
+        if std::mem::take(&mut self.doc_reveal) {
+            self.show_doc(window, cx);
+        }
+        self.sync_doc();
         if let Some(more) = self.new_append.take() {
             let next = format!("{}{more}", self.new_prompt.read(cx).value().trim_end());
             let last = next.split('\n').count().saturating_sub(1) as u32;

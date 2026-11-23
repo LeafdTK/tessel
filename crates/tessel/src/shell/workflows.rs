@@ -530,6 +530,193 @@ impl Shell {
     }
 }
 
+impl Shell {
+    pub(crate) fn open_run(&self) -> Option<(SessionId, &tessel_proto::Run)> {
+        let s = self.model.open_summary()?;
+        if let Some(r) = &s.run {
+            return Some((s.id, r));
+        }
+        let parent = self.model.summary(s.parent?)?;
+        parent.run.as_ref().map(|r| (parent.id, r))
+    }
+
+    pub(crate) fn run_updated(&mut self, summary: &SessionSummary) {
+        let had = self.model.summary(summary.id).and_then(|s| s.run.as_ref()).and_then(|r| r.doc.clone());
+        let now = summary.run.as_ref().and_then(|r| r.doc.clone());
+        if had.is_none() && now.is_some() {
+            let open = self.model.open_summary();
+            if open.is_some_and(|o| o.id == summary.id || o.parent == Some(summary.id)) {
+                self.doc_reveal = true;
+            }
+        }
+    }
+
+    pub(crate) fn doc_visible(&self) -> bool {
+        self.ui.panes().into_iter().any(|p| p.module == Some(crate::ui::Module::Doc) && self.pane_open(p))
+    }
+
+    pub(crate) fn show_doc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.doc_visible() {
+            return;
+        }
+        let at = {
+            let panes = self.ui.panes();
+            let chat = self.chat_pane.clone();
+            panes.iter().find(|p| Some(&p.id) == chat.as_ref()).or_else(|| panes.iter().find(|p| p.module == Some(crate::ui::Module::Conversation))).map(|p| p.trail.clone())
+        };
+        let Some(trail) = at else { return };
+        let Some(id) = self.split_pane(trail, crate::ui::Axis::Row, window, cx) else { return };
+        if let Some(t) = self.ui.panes().into_iter().find(|p| p.id == id).map(|p| p.trail.clone()) {
+            self.set_pane_module(t, crate::ui::Module::Doc, window, cx);
+        }
+    }
+
+    pub(crate) fn sync_doc(&mut self) {
+        let wanted = self.open_run().and_then(|(head, r)| r.doc.clone().map(|d| (head, d)));
+        let Some((head, path)) = wanted else { return };
+        if self.doc_view.as_ref().is_some_and(|(p, _)| *p == path) || !self.doc_visible() {
+            return;
+        }
+        self.doc_view = Some((path.clone(), None));
+        let cwd = self.model.summary(head).map(|s| s.cwd.clone()).unwrap_or_default();
+        let rel = std::path::Path::new(&path).strip_prefix(&cwd).map(|r| r.to_string_lossy().into_owned()).unwrap_or(path);
+        self.cmd(Cmd::Ask { tag: "doc.read", req: tessel_proto::Request::FsRead { session: head, path: rel } });
+    }
+
+    pub(crate) fn run_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        use tessel_proto::StepState;
+        let (_, run) = self.open_run()?;
+        let p = self.palette.get();
+        let now = now_ms();
+        let secs = |ms: u64| {
+            let s = ms / 1000;
+            if s < 60 { format!("{s}s") } else { format!("{}m {}s", s / 60, s % 60) }
+        };
+        let mut row = h_flex().gap_1().flex_wrap().items_center();
+        for (n, step) in run.steps.iter().enumerate() {
+            if n > 0 {
+                row = row.child(div().w(px(12.)).h(px(1.)).bg(p.separator));
+            }
+            let mark: AnyElement = match step.state {
+                StepState::Working => status_dot(p.blocked, true, &p).into_any_element(),
+                StepState::Asking => Icon::empty().path("icons/circle-question-mark.svg").size(theme::z(13.)).text_color(theme::info(&p)).into_any_element(),
+                StepState::Done => Icon::empty().path("icons/circle-check.svg").size(theme::z(13.)).text_color(p.finished).into_any_element(),
+                StepState::Failed => Icon::empty().path("icons/circle-x.svg").size(theme::z(13.)).text_color(p.failed).into_any_element(),
+                _ => div().size(px(8.)).rounded_full().border_1().border_color(p.tertiary).into_any_element(),
+            };
+            let time = match (step.started_ms, step.finished_ms) {
+                (Some(a), Some(b)) => Some(secs(b.saturating_sub(a))),
+                (Some(a), None) if step.state == StepState::Working => Some(secs(now.saturating_sub(a))),
+                _ => None,
+            };
+            let to = step.session;
+            row = row.child(
+                h_flex()
+                    .id(SharedString::from(format!("run-step-{n}")))
+                    .test_support()
+                    .gap(px(6.))
+                    .px_2()
+                    .h(px(26.))
+                    .rounded(px(theme::R_TILE))
+                    .when(step.state == StepState::Asking, |d| d.bg(theme::info(&p).opacity(0.12)))
+                    .hover(|d| d.bg(p.hover))
+                    .child(div().size(px(14.)).flex().items_center().justify_center().child(mark))
+                    .child(div().set(Type::Callout).text_color(if step.state == StepState::Waiting { p.tertiary } else { p.label }).child(match step.state {
+                        StepState::Asking => format!("{}: waiting for you", step.name),
+                        _ => step.name.clone(),
+                    }))
+                    .children(time.map(|t| div().set(Type::Subheadline).text_color(p.tertiary).child(t)))
+                    .when_some(to, |d, to| d.cursor_pointer().on_click(cx.listener(move |this, _, _, cx| this.open(to, cx)))),
+            );
+        }
+        let cost: f64 = run.steps.iter().map(|s| s.cost_usd).sum();
+        let tail: AnyElement = if let Some(why) = &run.failed {
+            div().set(Type::Callout).text_color(p.failed).child(why.clone()).into_any_element()
+        } else if run.doc.is_some() {
+            theme::button(&p, "run-open-doc", "Open doc", Some("file-text"), theme::ButtonKind::Secondary)
+                .test_support()
+                .on_click(cx.listener(|this, _, window, cx| this.show_doc(window, cx)))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        Some(
+            h_flex()
+                .id("run-strip")
+                .test_support()
+                .flex_shrink_0()
+                .gap_3()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(p.separator)
+                .child(Icon::empty().path(format!("icons/{}.svg", run.icon.as_deref().unwrap_or("workflow"))).size(theme::z(14.)).text_color(p.secondary))
+                .child(div().flex_1().min_w_0().child(row))
+                .when(cost > 0.005, |d| d.child(div().set(Type::Subheadline).text_color(p.tertiary).child(format!("${cost:.2}"))))
+                .child(tail)
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn doc_pane(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let quiet = |t: &str| v_flex().size_full().items_center().justify_center().set(Type::Callout).text_color(p.tertiary).child(t.to_owned()).into_any_element();
+        let Some((_, run)) = self.open_run() else { return quiet("When a workflow finishes, its doc opens here.") };
+        let Some(path) = run.doc.clone() else {
+            return quiet(if run.done() { "This run didn't make a doc." } else { "The doc shows up here when the run gets to it." });
+        };
+        let text = self.doc_view.as_ref().filter(|(p, _)| *p == path).and_then(|(_, t)| t.clone());
+        let Some(text) = text else { return quiet("Opening…") };
+        let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let (copy, save) = (text.clone(), text.clone());
+        let local = !self.on_host();
+        let reveal = path.clone();
+        let header = h_flex()
+            .h(px(40.))
+            .flex_shrink_0()
+            .px_3()
+            .gap_2()
+            .border_b_1()
+            .border_color(p.separator)
+            .child(Icon::empty().path("icons/file-text.svg").size(theme::z(14.)).text_color(p.secondary))
+            .child(div().flex_1().min_w_0().truncate().set(Type::Callout).text_color(p.label).child(format!("{} · {name}", run.name)))
+            .child(Button::new("doc-copy").xsmall().ghost().icon(Icon::empty().path("icons/copy.svg")).label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+            .child(Button::new("doc-save").xsmall().ghost().icon(Icon::empty().path("icons/download.svg")).label("Save as…").on_click(cx.listener(move |this, _, _, cx| this.save_doc(save.clone(), cx))))
+            .when(local, |d| d.child(Button::new("doc-reveal").xsmall().ghost().icon(Icon::empty().path("icons/folder-open.svg")).tooltip("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&reveal)))));
+        v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(self.document_el(text, cx))).into_any_element()
+    }
+
+    fn save_doc(&mut self, text: String, cx: &mut Context<Self>) {
+        let dir = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default().join("Documents");
+        let name = self.open_run().map(|(_, r)| format!("{}.md", crate::shell::workflows::file_slug(&r.name))).unwrap_or_else(|| "doc.md".into());
+        let pick = cx.prompt_for_new_path(&dir, Some(&name));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = pick.await else { return };
+            let result = std::fs::write(&path, text);
+            let _ = this.update(cx, |this, cx| {
+                if let Err(e) = result {
+                    this.error = Some(format!("Couldn't save it: {e}"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+pub(crate) fn file_slug(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_owned();
+    if out.is_empty() { "doc".into() } else { out }
+}
+
 pub(crate) fn plain(v: &Value) -> String {
     match v {
         Value::Null => String::new(),

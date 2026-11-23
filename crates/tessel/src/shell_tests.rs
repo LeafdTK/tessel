@@ -3068,3 +3068,39 @@ fn an_agents_question_is_a_form_answered_in_one_go(cx: &mut TestAppContext) {
         "{asked:?}"
     );
 }
+
+#[gpui_kit::test]
+fn a_runs_steps_show_above_its_chat_and_its_doc_opens_when_it_lands(cx: &mut TestAppContext) {
+    use tessel_proto::{Run, RunStep, StepState};
+    let ui = layout_dir("run-doc").join("ui.json");
+    let mut a = session(1, "Study guide · Midterm", RunState::Working, None);
+    a.cwd = "/runs/guide".into();
+    let step = |name: &str, state: StepState| RunStep { name: name.into(), state, started_ms: Some(1), finished_ms: None, session: Some(sid(1)), cost_usd: 0.0 };
+    a.run = Some(Run { workflow: "study-guide".into(), name: "Study guide".into(), icon: None, steps: vec![step("Gather", StepState::Done), step("Questions", StepState::Asking), step("Write", StepState::Waiting)], at: 1, doc: None, started_ms: 1, finished_ms: None, failed: None, head: Some(sid(1)) });
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(ui), ..Launch::default() });
+    assert!(rig.exists(cx, "run-strip"));
+    for n in 0..3 {
+        assert!(rig.exists(cx, format!("run-step-{n}")), "step {n}");
+    }
+    assert!(!rig.exists(cx, "run-open-doc"));
+
+    let mut done = a.clone();
+    if let Some(r) = done.run.as_mut() {
+        r.steps.iter_mut().for_each(|s| s.state = StepState::Done);
+        r.at = 3;
+        r.finished_ms = Some(9);
+        r.doc = Some("/runs/guide/study-guide.md".into());
+    }
+    rig.asked();
+    rig.feed(cx, vec![UiEvent::Session(done)]);
+    rig.settle(cx);
+    let shown: Vec<_> = rig.shell.read_with(cx, |s, _| s.ui.panes().iter().filter_map(|p| p.module).collect());
+    assert!(shown.contains(&crate::ui::Module::Doc), "the doc comes up by itself: {shown:?}");
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Ask { tag: "doc.read", req: tessel_proto::Request::FsRead { path, .. } } if path == "study-guide.md")), "{asked:?}");
+    let file = tessel_proto::FileContent { path: "study-guide.md".into(), text: Some("# Limits\n\nThe guide.".into()), binary: false, truncated: false, size: 20 };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "doc.read", result: Ok(tessel_proto::Response::File { file }) }]);
+    assert!(rig.exists(cx, "file-document"), "rendered");
+    assert!(rig.exists(cx, "doc-save"));
+    assert!(rig.exists(cx, "run-open-doc"));
+}

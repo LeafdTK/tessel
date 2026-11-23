@@ -712,6 +712,7 @@ impl Shell {
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),
             Module::Files => div().size_full().child(self.files_tab(cx)).into_any_element(),
             Module::Editor => self.editor_pane(cx),
+            Module::Doc => self.doc_pane(cx),
             Module::Checks => div().size_full().child(self.checks_tab(cx)).into_any_element(),
             Module::Artifacts => div().size_full().child(self.artifacts_tab(session.expect("checked above"), cx)).into_any_element(),
             Module::Info => div().size_full().child(self.info_tab(session.expect("checked above"), cx)).into_any_element(),
@@ -847,6 +848,7 @@ impl Shell {
         v_flex()
             .size_full()
             .children(self.workspace_tabs_el(cx))
+            .children(self.run_strip(cx))
             .children(self.error.clone().map(|e| div().px_4().py_2().set(Type::Callout).text_color(p.failed).child(e)))
             .children(self.shipped_el(cx))
             .child(div().flex_1().min_h_0().relative().child(self.transcript_el_for(self.scroller.clone(), session, 0., cx).size_full()).child(self.message_rail(cx)))
