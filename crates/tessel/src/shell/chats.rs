@@ -202,6 +202,10 @@ impl Shell {
                 Change::None => {}
                 Change::Appended(n) => {
                     s.append(n, cx);
+                    let before = len.saturating_sub(n);
+                    if before > 0 {
+                        s.remeasure_items(before - 1..before, cx);
+                    }
                 }
                 Change::Row(i) => {
                     s.remeasure_items(i..i + 1, cx);

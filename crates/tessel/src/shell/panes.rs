@@ -844,7 +844,8 @@ impl Shell {
                 })
         });
         let session = self.model.open.as_ref().map(|o| o.id).or(self.awaiting).unwrap_or(SessionId(uuid::Uuid::nil()));
-        let composer = v_flex().children(working).child(composer).child(hints);
+        let _ = hints;
+        let composer = v_flex().children(working).child(composer).pb(theme::z(8.));
         v_flex()
             .size_full()
             .children(self.workspace_tabs_el(cx))

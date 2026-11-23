@@ -1797,3 +1797,24 @@ async fn visual_mode_shows_the_agents_commands_even_when_it_was_turned_on_mid_tu
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+#[tokio::test]
+async fn a_chat_gets_a_short_name_unless_you_gave_it_one() {
+    let d = Daemon::start_with(&["plain"], |cfg| cfg.titles = true).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), Some("hey can you look at the open prs and tell me if they're good to merge")).await;
+    let named = until(&c, s.id, "named", |s| s.goal != "hey can you look at the open prs and tell me if they're good to merge" && !s.goal.is_empty()).await;
+    assert_eq!(named.goal, "fix: what the replay agent would say");
+    let asked = d.backend.asked.lock().unwrap().clone();
+    assert!(asked.iter().any(|(q, m)| m == "haiku" && q.contains("open prs")), "{asked:?}");
+
+    let Response::Session { summary: mine } = c
+        .request(Request::SessionCreate { cmd_id: Uuid::new_v4(), cwd: d.cwd(), worktree: None, goal: Some("Mine".into()), prompt: Some("do it".into()), model: None, parent: None, attachments: vec![] })
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(list(&c).await.into_iter().find(|x| x.id == mine.id).unwrap().goal, "Mine", "a name you gave stays");
+}

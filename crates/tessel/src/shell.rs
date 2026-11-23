@@ -409,6 +409,7 @@ pub struct Shell {
     pub(crate) down_since: Option<Instant>,
     pub(crate) earlier_for: Option<SessionId>,
     pub(crate) fullscreen: bool,
+    pub(crate) work_open: std::collections::HashSet<ItemId>,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -858,6 +859,7 @@ impl Shell {
             down_since: None,
             earlier_for: None,
             fullscreen: false,
+            work_open: Default::default(),
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -1258,6 +1260,10 @@ impl Shell {
             Change::None => {}
             Change::Appended(n) => {
                 s.append(n, cx);
+                let before = len.saturating_sub(n);
+                if before > 0 {
+                    s.remeasure_items(before - 1..before, cx);
+                }
             }
             Change::Row(i) => {
                 s.remeasure_items(i..i + 1, cx);
@@ -1738,9 +1744,9 @@ impl Shell {
                             .rounded(px(theme::R_TILE))
                             .hover(|d| d.bg(p.hover))
                             .on_click(cx.listener(move |this, _, _, cx| this.open(sid, cx)))
-                            .child(div().w(px(1.)).h_full().flex_shrink_0().bg(p.separator))
-                            .child(gpui_kit::component::Icon::empty().path(if kind == "Subagent" { "icons/bot.svg" } else { "icons/hourglass.svg" }).size(theme::z(13.)).text_color(if running.is_some() { p.secondary } else { p.tertiary }))
-                            .child(div().flex_1().overflow_hidden().set(Type::Callout).text_color(p.secondary).truncate().child(text.clone()))
+                            .child(div().w(px(1.)).h_full().flex_shrink_0().bg(p.separator.opacity(0.7)))
+                            .child(gpui_kit::component::Icon::empty().path(if kind == "Subagent" { "icons/bot.svg" } else { "icons/hourglass.svg" }).size(theme::z(12.)).text_color(p.tertiary))
+                            .child(div().flex_1().overflow_hidden().set(Type::Subheadline).text_color(if running.is_some() { p.secondary } else { p.tertiary }).truncate().child(text.clone()))
                             .test_support()
                             .aria_label(SharedString::from(format!("{kind}: {text}"))),
                     ));
@@ -2116,6 +2122,21 @@ impl Shell {
             return div().into_any_element();
         };
         let p = self.palette.get();
+        let mut lead: Option<AnyElement> = None;
+        if let Some(run) = self.model.open_of(session).and_then(|o| work_run(o, ix)) {
+            let open = self.work_open.contains(&run.key);
+            if ix != run.start && !open {
+                return div().into_any_element();
+            }
+            if ix == run.start {
+                let header = self.work_header(session, &run, open, me);
+                if !open {
+                    let t = self.transcript_opts;
+                    return h_flex().w_full().justify_center().child(div().w_full().max_w(px(t.width)).px(px(t.gutter)).pt(px(4.)).pb(px(4.)).child(header)).into_any_element();
+                }
+                lead = Some(header);
+            }
+        }
         // `None` is an item with nothing to show (a thinking block with no
         // text, say). it gets no row padding either, so it leaves no gap.
         let body: Option<AnyElement> = match &item.body {
@@ -2264,6 +2285,34 @@ impl Shell {
                 let out = output.as_deref().filter(|o| !o.trim().is_empty());
                 let open = out.is_some() && self.tools_open.contains(&item.id);
                 let row = tool_row(tool, input, *status, out, open, ran, &p);
+                let file = matches!(tool.as_str(), "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
+                    .then(|| input.get("file_path").or_else(|| input.get("notebook_path")).and_then(|v| v.as_str()).map(str::to_owned))
+                    .flatten();
+                let row = match file {
+                    None => row.into_any_element(),
+                    Some(path) => {
+                        let me = me.downgrade();
+                        let group = SharedString::from(format!("file-row-{}", item.id));
+                        h_flex()
+                            .group(group.clone())
+                            .gap(px(6.))
+                            .child(div().flex_1().min_w_0().child(row))
+                            .child(
+                                div().flex_shrink_0().invisible().group_hover(group, |s| s.visible()).child(
+                                    Button::new(SharedString::from(format!("open-file-{}", item.id)))
+                                        .xsmall()
+                                        .ghost()
+                                        .icon(gpui_kit::component::Icon::empty().path("icons/eye.svg"))
+                                        .tooltip("Open")
+                                        .on_click(move |_, window, cx| {
+                                            cx.stop_propagation();
+                                            let _ = me.update(cx, |this, cx| this.open_from_chat(session, &path, window, cx));
+                                        }),
+                                ),
+                            )
+                            .into_any_element()
+                    }
+                };
                 Some(match out {
                     None => row.into_any_element(),
                     Some(_) => {
@@ -2336,6 +2385,10 @@ impl Shell {
                     )
                     .into_any_element()
             }
+        };
+        let body = match lead {
+            Some(header) => v_flex().gap(px(4.)).child(header).child(body).into_any_element(),
+            None => body,
         };
         // work done inside a subagent hangs off its call, one step in per level.
         let row = if depth > 0 {
@@ -2761,6 +2814,7 @@ impl Render for Shell {
 
         // panes head for wherever the layout and the room now put them.
         self.fullscreen = window.is_fullscreen();
+        self.load_earlier_near_top(cx);
         self.sync_panes();
         self.prepare_asks(window, cx);
         self.sync_surfaces_dock(cx);
@@ -2982,6 +3036,17 @@ fn row_lines(s: &SessionSummary, in_queue: bool, now: Millis) -> (String, Option
             _ => "Needs you".into(),
         };
         (why, Some(ago(a.map_or(now, |a| a.since_ms), now)))
+    } else if !s.tasks.is_empty() && s.run_state != RunState::Stalled {
+        let agents = s.tasks.iter().filter(|t| !t.background).count();
+        let background = s.tasks.len() - agents;
+        let what = match (agents, background) {
+            (1, 0) => "1 subagent working".to_owned(),
+            (n, 0) => format!("{n} subagents working"),
+            (0, 1) => "1 command in the background".to_owned(),
+            (0, n) => format!("{n} commands in the background"),
+            (a, b) => format!("{a} subagent{} · {b} in the background", if a == 1 { "" } else { "s" }),
+        };
+        (what, s.activity_since_ms.map(|since| ago(since, now)))
     } else {
         match (&s.run_state, &s.activity, s.activity_since_ms) {
             (RunState::Working | RunState::Starting | RunState::Stalled, Some(a), Some(since)) => {
@@ -3299,6 +3364,7 @@ pub(crate) fn one_line(s: &str) -> String {
 
 /// first letter capitalised. activity lines from the daemon are lowercase fragments.
 pub(crate) fn sentence(s: &str) -> String {
+    let s = without_cd(s);
     let mut chars = s.chars();
     match chars.next() {
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
@@ -3374,7 +3440,7 @@ fn tool_parts(tool: &str, input: &serde_json::Value) -> (&'static str, String, S
         "NotebookEdit" => ("pencil", "Edit".into(), s("notebook_path").map(base).unwrap_or_default(), false),
         "Bash" | "BashOutput" => match (s("description"), s("command")) {
             (Some(d), _) => ("square-terminal", "Run".into(), line(d), false),
-            (None, Some(c)) => ("square-terminal", "Run".into(), line(c), true),
+            (None, Some(c)) => ("square-terminal", "Run".into(), line(&without_cd(c)), true),
             _ => ("square-terminal", "Run".into(), String::new(), false),
         },
         "Grep" | "Glob" => ("search", "Search".into(), s("pattern").map(line).unwrap_or_default(), true),
@@ -3746,6 +3812,172 @@ impl Shell {
             }
             Ok(_) => {}
             Err(e) => self.error = Some(e),
+        }
+        cx.notify();
+    }
+}
+
+pub(crate) fn without_cd(s: &str) -> String {
+    let mut out = s.to_owned();
+    while let Some(at) = out.find("cd ") {
+        let rest = &out[at + 3..];
+        let Some(and) = rest.find("&&") else { break };
+        if rest[..and].trim().contains(char::is_whitespace) || (at > 0 && !out[..at].ends_with(char::is_whitespace)) {
+            break;
+        }
+        let tail = rest[and + 2..].trim_start().to_owned();
+        out = format!("{}{tail}", &out[..at]);
+    }
+    out
+}
+
+pub(crate) struct WorkRun {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) key: ItemId,
+}
+
+fn is_work(item: &tessel_proto::Item, depth: u8) -> bool {
+    if depth > 0 {
+        return true;
+    }
+    match &item.body {
+        ItemBody::Thinking { .. } => true,
+        ItemBody::Tool { tool, input, .. } => !(tool == "TodoWrite" || (tool == "ExitPlanMode" && input.get("plan").is_some())),
+        _ => false,
+    }
+}
+
+pub(crate) fn work_run(open: &crate::model::Open, ix: usize) -> Option<WorkRun> {
+    let (item, depth) = open.row(ix)?;
+    if !is_work(item, depth) {
+        return None;
+    }
+    let mut start = ix;
+    while start > 0 && open.row(start - 1).is_some_and(|(i, d)| is_work(i, d)) {
+        start -= 1;
+    }
+    let mut end = ix + 1;
+    while open.row(end).is_some_and(|(i, d)| is_work(i, d)) {
+        end += 1;
+    }
+    let top_level = (start..end).filter(|&r| open.row(r).is_some_and(|(_, d)| d == 0)).count();
+    if top_level < 2 {
+        return None;
+    }
+    let key = open.row(start)?.0.id.clone();
+    Some(WorkRun { start, end, key })
+}
+
+impl Shell {
+    fn work_header(&self, session: SessionId, run: &WorkRun, open: bool, me: &Entity<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let Some(chat) = self.model.open_of(session) else { return div().into_any_element() };
+        let (mut commands, mut edits, mut reads, mut agents, mut thoughts, mut other, mut failed, mut waiting) = (0, 0, 0, 0, 0, 0, 0, 0);
+        let mut last: Option<String> = None;
+        for r in run.start..run.end {
+            let Some((item, depth)) = chat.row(r) else { continue };
+            if depth > 0 {
+                continue;
+            }
+            match &item.body {
+                ItemBody::Thinking { .. } => {
+                    thoughts += 1;
+                    last = Some("Thinking".into());
+                }
+                ItemBody::Tool { tool, input, status, .. } => {
+                    match tool.as_str() {
+                        "Bash" | "BashOutput" => commands += 1,
+                        "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => edits += 1,
+                        "Read" | "Grep" | "Glob" => reads += 1,
+                        "Task" | "Agent" => agents += 1,
+                        _ => other += 1,
+                    }
+                    match status {
+                        ToolStatus::Failed => failed += 1,
+                        ToolStatus::AwaitingPermission => waiting += 1,
+                        _ => {}
+                    }
+                    let (_, kind, detail, _) = tool_parts(tool, input);
+                    last = Some(if detail.is_empty() { kind } else { format!("{kind} {detail}") });
+                }
+                _ => {}
+            }
+        }
+        let n = |k: usize, one: &str, many: &str| (k > 0).then(|| format!("{k} {}", if k == 1 { one } else { many }));
+        let parts: Vec<String> = [n(commands, "command", "commands"), n(edits, "edit", "edits"), n(reads, "read", "reads"), n(agents, "subagent", "subagents"), n(other, "other step", "other steps"), n(thoughts, "thought", "thoughts")].into_iter().flatten().collect();
+        let busy = self.model.summary(session).is_some_and(|s| s.run_state.is_busy());
+        let live = busy && run.end >= chat.len();
+        let (me, key, range) = (me.downgrade(), run.key.clone(), run.start..run.end);
+        h_flex()
+            .id(SharedString::from(format!("work-{}", run.key)))
+            .test_support()
+            .gap(px(8.))
+            .min_h(px(24.))
+            .set(Type::Callout)
+            .cursor_pointer()
+            .child(div().size(px(15.)).flex_shrink_0().flex().items_center().justify_center().child(if live {
+                status_dot(p.blocked, true, &p).into_any_element()
+            } else {
+                gpui_kit::component::Icon::empty().path("icons/list-checks.svg").size(px(14.)).text_color(p.tertiary).into_any_element()
+            }))
+            .child(if live {
+                div().flex_1().min_w_0().truncate().text_color(p.secondary).child(sentence(last.as_deref().unwrap_or("Working"))).into_any_element()
+            } else {
+                div().flex_1().min_w_0().truncate().text_color(p.secondary).child(parts.join(" · ")).into_any_element()
+            })
+            .when(failed > 0, |d| d.child(div().flex_shrink_0().text_color(p.failed).child(format!("{failed} failed"))))
+            .when(waiting > 0, |d| d.child(div().flex_shrink_0().text_color(info_blue(&p)).child("waiting for you")))
+            .when(live, |d| d.child(div().flex_shrink_0().text_color(p.tertiary).font_features(theme::tabular()).child(format!("{} steps", run.end - run.start))))
+            .child(gpui_kit::component::Icon::empty().path(if open { "icons/chevron-down.svg" } else { "icons/chevron-right.svg" }).size(px(12.)).text_color(p.tertiary))
+            .on_click(move |_, _, cx| {
+                let _ = me.update(cx, |this, cx| {
+                    if !this.work_open.remove(&key) {
+                        this.work_open.insert(key.clone());
+                    }
+                    this.remeasure_rows(session, range.clone(), cx);
+                    cx.notify();
+                });
+            })
+            .into_any_element()
+    }
+
+    pub(crate) fn remeasure_rows(&mut self, session: SessionId, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        let focused = self.model.open.as_ref().is_some_and(|o| o.id == session);
+        let scrollers: Vec<_> = self.views.values().filter(|v| v.session == session).map(|v| v.scroller.clone()).chain(focused.then(|| self.scroller.clone())).collect();
+        for s in scrollers {
+            s.update(cx, |s, cx| s.remeasure_items(range.clone(), cx));
+        }
+    }
+
+    pub(crate) fn load_earlier_near_top(&mut self, cx: &mut Context<Self>) {
+        let Some(open) = self.model.open.as_ref().filter(|o| o.has_more) else { return };
+        let session = open.id;
+        if self.earlier_for.is_some() || self.scroller.read(cx).logical_scroll_top().item_ix > 3 {
+            return;
+        }
+        self.load_earlier(session, cx);
+    }
+}
+
+impl Shell {
+    pub(crate) fn open_from_chat(&mut self, session: SessionId, path: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let cwd = self.model.summary(session).map(|s| s.cwd.clone()).unwrap_or_default();
+        let rel = std::path::Path::new(path).strip_prefix(&cwd).map(|r| r.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_owned());
+        let shown = |this: &Shell, m: crate::ui::Module| this.ui.panes().iter().any(|p| p.module == Some(m) && this.pane_open(p));
+        if !shown(self, crate::ui::Module::Files) && !shown(self, crate::ui::Module::Editor) && !shown(self, crate::ui::Module::Workspace) {
+            let chat = self.chat_pane.clone();
+            let at = self.ui.panes().into_iter().find(|p| Some(&p.id) == chat.as_ref()).map(|p| p.trail.clone());
+            if let Some(trail) = at
+                && let Some(id) = self.split_pane(trail, crate::ui::Axis::Row, window, cx)
+                && let Some(t) = self.ui.panes().into_iter().find(|p| p.id == id).map(|p| p.trail.clone())
+            {
+                self.set_pane_module(t, crate::ui::Module::Files, window, cx);
+            }
+        }
+        self.ws_session = Some(session);
+        if let Err(e) = self.exec("files.open", &serde_json::json!({"path": rel}), window, cx) {
+            self.error = Some(e);
         }
         cx.notify();
     }

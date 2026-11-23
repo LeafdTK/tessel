@@ -44,6 +44,7 @@ pub struct Config {
     pub tick: Duration,
     /// `tesselctl`, to give every agent tessel's tools. none: agents get none.
     pub tools_bin: Option<std::path::PathBuf>,
+    pub titles: bool,
     /// sessions whose agents the previous daemon handed over: theirs aren't leftovers to stop.
     pub adopted: HashSet<SessionId>,
     /// the descriptor the instance lock is held by, to hand over with everything else.
@@ -61,6 +62,7 @@ impl Config {
             interrupt_grace: Duration::from_secs(8),
             tick: Duration::from_millis(500),
             tools_bin: None,
+            titles: false,
             adopted: HashSet::new(),
             lock_fd: None,
             handed_over: Default::default(),
@@ -79,6 +81,7 @@ pub enum HubMsg {
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
     WorkKept { session: SessionId, kept: Option<String> },
     RunAdvance { run: SessionId },
+    Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
     Restored { client: ClientId, id: u64, session: SessionId, result: Result<(crate::reducer::Persisted, Vec<tessel_proto::Item>, Option<String>), String> },
@@ -359,6 +362,22 @@ impl Hub {
             }
             hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from: None });
         }
+        if hub.cfg.titles {
+            let unnamed: Vec<(SessionId, String, String)> = hub
+                .sessions
+                .iter()
+                .filter_map(|(id, l)| {
+                    let first = l.state.items().iter().find_map(|i| match &i.body {
+                        tessel_proto::ItemBody::User { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })?;
+                    (crate::activity::truncate(first.trim()) == l.state.meta.goal).then(|| (*id, l.state.meta.goal.clone(), first))
+                })
+                .collect();
+            for (id, was, said) in unnamed {
+                hub.name_session(id, was, said);
+            }
+        }
         for (id, body) in hub.store.load_runs().await? {
             let Ok(rl) = serde_json::from_str::<RunLive>(&body) else { continue };
             if let Some(live) = hub.sessions.get_mut(&id) {
@@ -620,6 +639,11 @@ impl Hub {
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
+            HubMsg::Named { session, was, goal } => {
+                if self.sessions.get(&session).is_some_and(|l| l.state.meta.goal == was) {
+                    let _ = self.apply(session, Input::SetGoal { goal });
+                }
+            }
             HubMsg::RunResume { run } => self.start_step(run),
             HubMsg::Choices { client, id, keep, result } => {
                 if let (Some(key), Ok(c)) = (keep, &result) {
@@ -1928,6 +1952,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
     fn create_session(&mut self, c: Create, cwd: String, wt: Option<WorktreeInfo>) -> Result<Response, RpcError> {
         let now = now_ms();
         let id = SessionId::new();
+        let given = c.goal.as_deref().is_some_and(|g| !g.trim().is_empty());
         let goal = c
             .goal
             .filter(|g| !g.trim().is_empty())
@@ -1955,11 +1980,15 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
             fork_from = Some((f.agent_id, f.at));
         }
+        let named_from = (!given && fork_from.is_none()).then(|| state.meta.goal.clone()).filter(|g| g != "untitled");
         self.store.save(state.persisted(), state.items().to_vec());
         self.sessions.insert(
             id,
             Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from },
         );
+        if let (Some(was), Some(prompt)) = (named_from, c.prompt.as_deref().filter(|p| !p.trim().is_empty())) {
+            self.name_session(id, was, prompt.to_owned());
+        }
         self.publish_summary(id, now);
         let prompt = c.prompt.unwrap_or_default();
         if !prompt.trim().is_empty() || !c.attachments.is_empty() {
@@ -2020,7 +2049,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if self.sessions.get(&session).is_some_and(|l| l.state.meta.goal == "untitled") {
             let goal = crate::activity::truncate(text.trim());
             if !goal.is_empty() {
-                self.apply(session, Input::SetGoal { goal })?;
+                self.apply(session, Input::SetGoal { goal: goal.clone() })?;
+                self.name_session(session, goal, text.clone());
             }
         }
         self.ensure_process(session)?;
@@ -2510,6 +2540,26 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if let Some(p) = problem {
             self.fail_run(run_id, p);
         }
+    }
+
+    fn name_session(&self, session: SessionId, was: String, said: String) {
+        if !self.cfg.titles {
+            return;
+        }
+        let backend = self.backend.clone();
+        let tx = self.tx.clone();
+        let said: String = said.chars().take(2000).collect();
+        tokio::spawn(async move {
+            let ask = format!(
+                "Name this coding task in 2 to 5 words, the way someone would label it in a list: what it's about, sentence case, no quotes, no punctuation at the end, no \"Help with\". Reply with the name only.\n\nThe task:\n{said}"
+            );
+            let Ok(answer) = backend.one_shot(ask, "haiku").await else { return };
+            let goal = answer.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default().trim_matches(|c: char| c == '"' || c == '\'' || c == '.').to_owned();
+            if goal.is_empty() || goal.chars().count() > 60 {
+                return;
+            }
+            let _ = tx.send(HubMsg::Named { session, was, goal });
+        });
     }
 
     fn set_session_model(&mut self, session: SessionId, model: &str) {

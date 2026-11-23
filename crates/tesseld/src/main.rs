@@ -60,6 +60,7 @@ fn main() -> anyhow::Result<()> {
     }
     // agents get tessel's tools from the tesselctl beside us, unless told not to.
     if std::env::var("TESSEL_AGENT_TOOLS").as_deref() != Ok("0") {
+        cfg.titles = std::env::var_os("TESSEL_NO_TITLES").is_none();
         cfg.tools_bin = std::env::current_exe().ok().and_then(|me| me.parent().map(|d| d.join("tesselctl"))).filter(|p| p.is_file());
     }
 

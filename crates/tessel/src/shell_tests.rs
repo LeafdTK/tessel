@@ -3148,3 +3148,28 @@ fn the_interface_is_set_in_allo_unless_you_choose_otherwise(cx: &mut TestAppCont
     let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&ui).unwrap()).unwrap();
     assert!(saved["theme"].get("font").is_none(), "the default isn't written down");
 }
+
+#[test]
+fn a_command_is_shown_without_the_cd_into_its_own_folder() {
+    assert_eq!(crate::shell::without_cd("cd /home/u/ws/orchard && pnpm test"), "pnpm test");
+    assert_eq!(crate::shell::without_cd("Running cd /tmp/x && git status"), "Running git status");
+    assert_eq!(crate::shell::without_cd("cd my dir && ls"), "cd my dir && ls", "a cd it can't read is left alone");
+    assert_eq!(crate::shell::without_cd("echo hi"), "echo hi");
+}
+
+#[gpui_kit::test]
+fn the_agents_work_between_messages_folds_into_one_line(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    let tool = |id: &str, n: u64, cmd: &str| Item { id: ItemId::from(id), parent: None, seq: n, order: n, created_ms: 0, body: ItemBody::Tool { tool: "Bash".into(), input: serde_json::json!({"command": cmd}), status: ToolStatus::Ok, output: Some("ok".into()), started_ms: None, finished_ms: None } };
+    let think = Item { id: ItemId::from("th"), parent: None, seq: 3, order: 3, created_ms: 0, body: ItemBody::Thinking { text: "hm".into(), streaming: false } };
+    let text = Item { id: ItemId::from("tx"), parent: None, seq: 6, order: 6, created_ms: 0, body: ItemBody::Text { text: "done".into(), streaming: false } };
+    let items = vec![tool("t1", 2, "cd /work/api-1 && ls"), think, tool("t2", 4, "pnpm test"), tool("t3", 5, "git status"), text];
+    rig.feed(cx, vec![snapshot_of(a.clone(), items, vec![])]);
+    rig.settle(cx);
+    assert!(rig.exists(cx, "work-t1"), "one line for the run");
+    assert!(!rig.exists(cx, "tool-t2"), "its steps folded away");
+    rig.click(cx, "work-t1");
+    rig.settle(cx);
+    assert!(rig.exists(cx, "tool-t2"), "and there on a click");
+}

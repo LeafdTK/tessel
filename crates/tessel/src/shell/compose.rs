@@ -149,7 +149,7 @@ impl Shell {
             .find(Kind::Transcript)
             .map(|t| t.props.clone())
             .or(conversation)
-            .map(|t| TranscriptOpts { width: t.width.unwrap_or(theme::READING_W), gutter: t.gutter.unwrap_or(16.0), user_left: t.user_left, thoughts: t.thoughts, tools: t.tools })
+            .map(|t| TranscriptOpts { width: t.width.unwrap_or(theme::READING_W), gutter: t.gutter.unwrap_or(24.0), user_left: t.user_left, thoughts: t.thoughts, tools: t.tools })
             .unwrap_or_default();
         let sessions_pane = ui.panes().into_iter().find(|p| p.module == Some(crate::ui::Module::Sessions)).and_then(|p| p.options.trace);
         self.sessions_trace = ui.find(Kind::Sessions).and_then(|n| n.props.trace).or(sessions_pane).unwrap_or(true);
@@ -642,17 +642,8 @@ impl Shell {
             .flex()
             .flex_col()
             .min_h_0()
-            .when(truncated, |d| {
-                let loading = self.earlier_for == Some(session);
-                d.child(
-                    h_flex().justify_center().py_1().child(
-                        Button::new("show-earlier")
-                            .xsmall()
-                            .ghost()
-                            .label(if loading { "Loading earlier messages…" } else { "Show earlier messages" })
-                            .on_click(cx.listener(move |this, _, _, cx| this.load_earlier(session, cx))),
-                    ),
-                )
+            .when(truncated && self.earlier_for == Some(session), |d| {
+                d.child(h_flex().justify_center().py_1().child(gpui_kit::component::spinner::Spinner::new().xsmall().color(p.tertiary)))
             })
             .child(div().flex_1().min_h_0().child(list.size_full()))
     }
