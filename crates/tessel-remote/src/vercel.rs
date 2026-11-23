@@ -537,6 +537,77 @@ pub async fn delete(home: &Path, host: &Host) -> anyhow::Result<()> {
     }
 }
 
+pub fn key_header(format: &str, secret: &str) -> String {
+    use base64::Engine as _;
+    let mut out = format.replace("{key}", secret);
+    while let Some(start) = out.find("{basic:") {
+        let Some(len) = out[start..].find('}') else { break };
+        let user = out[start + 7..start + len].to_owned();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(format!("{user}:{secret}"));
+        out.replace_range(start..start + len + 1, &encoded);
+    }
+    out
+}
+
+pub fn key_policy(keys: &[(tessel_proto::keys::KeyInfo, String)]) -> Value {
+    let mut allow = serde_json::Map::new();
+    for (k, secret) in keys.iter().filter(|(_, s)| !s.is_empty()) {
+        let headers = json!({k.header.to_ascii_lowercase(): key_header(&k.format, secret)});
+        let transform = json!([{"headers": headers}]);
+        let mut rules = Vec::new();
+        let methods = (!k.methods.is_empty()).then(|| k.methods.iter().map(|m| m.to_ascii_uppercase()).collect::<Vec<_>>());
+        let paths: Vec<Option<Value>> = if k.paths.is_empty() {
+            vec![None]
+        } else {
+            k.paths.iter().map(|p| Some(match p.strip_suffix('*') {
+                Some(prefix) => json!({"startsWith": prefix}),
+                None => json!({"exact": p}),
+            })).collect()
+        };
+        for path in paths {
+            let mut m = serde_json::Map::new();
+            if let Some(ms) = &methods {
+                m.insert("method".into(), json!(ms));
+            }
+            if let Some(p) = path {
+                m.insert("path".into(), p);
+            }
+            let mut rule = json!({"transform": transform});
+            if !m.is_empty() {
+                rule["match"] = Value::Object(m);
+            }
+            rules.push(rule);
+        }
+        if methods.is_some() || !k.paths.is_empty() {
+            rules.push(json!({"response": {"statusCode": 403, "contentType": "text/plain", "body": format!("tessel: the {} key isn't allowed to do that", k.name)}}));
+        }
+        for h in &k.hosts {
+            allow.insert(h.clone(), Value::Array(rules.clone()));
+        }
+    }
+    if allow.is_empty() {
+        return json!({"mode": "allow-all"});
+    }
+    allow.insert("*".into(), json!([]));
+    json!({"allow": allow})
+}
+
+/// give the sandbox the network policy that adds these keys' secrets on the
+/// way out, so they never enter it. an empty list takes them back.
+pub async fn share_keys(home: &Path, host: &Host, keys: &[(tessel_proto::keys::KeyInfo, String)]) -> anyhow::Result<()> {
+    let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
+    let acct = Account::load(home, &sb)?;
+    let policy = key_policy(keys);
+    acct.api("PATCH", &format!("/v2/sandboxes/{}?projectId={}", sb.name, acct.project), Some(json!({"networkPolicy": policy}))).await?;
+    let v = acct.api("GET", &format!("/v2/sandboxes/{}?projectId={}", sb.name, acct.project), None).await?;
+    if v["sandbox"]["status"].as_str() == Some("running")
+        && let Some(id) = v["session"]["id"].as_str()
+    {
+        acct.api("POST", &format!("/v2/sandboxes/sessions/{id}/network-policy"), Some(policy)).await?;
+    }
+    Ok(())
+}
+
 /// stop the host's sandbox now (it would by itself, soon after nothing shows it).
 pub async fn stop(home: &Path, host: &Host) -> anyhow::Result<bool> {
     let sb = host.vercel.clone().context("it isn't a vercel sandbox")?;
@@ -656,4 +727,28 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     };
     host.build = Some(c.welcome.build.clone());
     Ok(())
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+    use tessel_proto::keys::KeyInfo;
+
+    #[test]
+    fn keys_become_rules_that_add_the_secret_and_refuse_the_rest() {
+        let gh = KeyInfo { name: "github".into(), hosts: vec!["api.github.com".into()], header: "Authorization".into(), format: "Bearer {key}".into(), methods: vec!["get".into()], paths: vec!["/repos/acme/*".into(), "/user".into()], ..Default::default() };
+        let git = KeyInfo { name: "git".into(), hosts: vec!["github.com".into()], header: "authorization".into(), format: "Basic {basic:x-access-token}".into(), ..Default::default() };
+        let p = key_policy(&[(gh, "ghp_1".into()), (git, "ghp_1".into()), (KeyInfo { name: "unset".into(), hosts: vec!["x.dev".into()], ..Default::default() }, String::new())]);
+        let rules = p["allow"]["api.github.com"].as_array().unwrap();
+        assert_eq!(rules[0]["match"], json!({"method": ["GET"], "path": {"startsWith": "/repos/acme/"}}));
+        assert_eq!(rules[1]["match"]["path"], json!({"exact": "/user"}));
+        assert_eq!(rules[0]["transform"][0]["headers"]["authorization"], "Bearer ghp_1");
+        assert_eq!(rules[2]["response"]["statusCode"], 403, "what the key doesn't cover is refused, not sent bare");
+        let git_rules = p["allow"]["github.com"].as_array().unwrap();
+        assert_eq!(git_rules.len(), 1, "no limits, one rule");
+        assert_eq!(git_rules[0]["transform"][0]["headers"]["authorization"], format!("Basic {}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "x-access-token:ghp_1")));
+        assert_eq!(p["allow"]["*"], json!([]), "everything else goes out as it is");
+        assert!(p["allow"].get("x.dev").is_none(), "a key with no secret adds nothing");
+        assert_eq!(key_policy(&[]), json!({"mode": "allow-all"}));
+    }
 }

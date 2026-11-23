@@ -9038,10 +9038,16 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bytes",
  "globset",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "libc",
+ "rcgen",
  "regex",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "serde_yaml_ng",
@@ -9051,8 +9057,10 @@ dependencies = [
  "tessel-proto",
  "tessel-term",
  "tokio",
+ "tokio-rustls",
  "toml 0.8.23",
  "uuid",
+ "webpki-roots",
 ]
 
 [[package]]

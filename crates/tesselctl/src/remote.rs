@@ -201,6 +201,30 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
             println!("  connecting again: {} ms, {}", t.elapsed().as_millis(), c.link.as_ref().map_or("ssh", |l| l.kind()));
             Ok(())
         }
+        "keys" => {
+            let which = args.next("which host")?;
+            let off = args.flag("--off");
+            let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();
+            let (local, _, _) = tessel_client::connect_or_start(home, "tesselctl").await?;
+            let tessel_proto::Response::Keys { keys, .. } = local.request(tessel_proto::Request::Keys).await? else { anyhow::bail!("unexpected reply") };
+            let with: Vec<(tessel_proto::keys::KeyInfo, String)> = if off { Vec::new() } else { keys.iter().map(|k| (k.clone(), crate::key_secret(&k.name).unwrap_or_default())).filter(|(_, s)| !s.is_empty()).collect() };
+            tessel_remote::vercel::share_keys(home, &host, &with).await?;
+            let there = tessel_remote::connect(home, &host, "tesselctl").await?;
+            let tessel_proto::Response::Keys { keys: theirs, .. } = there.client.request(tessel_proto::Request::Keys).await? else { anyhow::bail!("unexpected reply") };
+            for k in theirs.iter().filter(|k| off || !with.iter().any(|(w, _)| w.name == k.name)) {
+                there.client.request(tessel_proto::Request::KeyRemove { name: k.name.clone() }).await?;
+            }
+            for (k, _) in &with {
+                there.client.request(tessel_proto::Request::KeySet { key: tessel_proto::keys::KeyInfo { stored: false, uses: 0, ..k.clone() }, value: None }).await?;
+            }
+            if off {
+                println!("{} no longer gets your keys", host.name);
+            } else {
+                let names: Vec<&str> = with.iter().map(|(k, _)| k.name.as_str()).collect();
+                println!("{} gets {}: added on the way out by vercel's firewall, so the secrets never enter it", host.name, if names.is_empty() { "no keys".to_owned() } else { names.join(", ") });
+            }
+            Ok(())
+        }
         "stop" => {
             let which = args.next("which host")?;
             let host = hosts.find(&which).with_context(|| format!("no host {which}"))?.clone();

@@ -37,6 +37,7 @@ pub struct SpawnOpts {
     pub tools: Option<AgentTools>,
     /// what it's told about its workspace: `TESSEL_PORT` and the like.
     pub env: Vec<(String, String)>,
+    pub sandbox: Option<String>,
 }
 
 /// how to start tessel's tool server for one agent.

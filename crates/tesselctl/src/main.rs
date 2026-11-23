@@ -50,6 +50,13 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             a task for the board; ready ones are worked on in workspaces of
                                             their own, proved, and wait for you to land them
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
+  tesselctl key add NAME [--preset github|github-git] [--for HOST]… [--env VAR] [--method M]… [--path P]…
+             [--from 'gh auth token']       a key agents use without ever seeing it: kept in the keychain, added
+                                            by tessel on the way out, only for those hosts, methods and paths
+                                            (or pipe the secret in). agents get $VAR set to a placeholder
+  tesselctl key ls|rm NAME|uses             your keys, and what used them
+  tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
+                                            they never enter it
   tesselctl prove SESSION [--json]          check a chat's change: its verify commands, the house rules
                                             (.tessel/rules), and independent reviewers. exits 1 when it fails
   tesselctl rules SESSION [--json]          the rules, knowledge and checks that apply where it works
@@ -590,6 +597,80 @@ async fn run() -> anyhow::Result<()> {
                     println!("{}", line(&t));
                 }
                 other => bail!("task {other}? ls, add, ready, draft, land, change or drop"),
+            }
+        }
+        "key" | "keys" => {
+            use tessel_proto::keys::KeyInfo;
+            let sub = if cmd == "keys" { "ls".to_owned() } else { args.next("ls, add, rm or uses")? };
+            let show = |keys: &[KeyInfo]| {
+                for k in keys {
+                    let limits = match (k.methods.is_empty(), k.paths.is_empty()) {
+                        (true, true) => String::new(),
+                        _ => format!("  only {} {}", if k.methods.is_empty() { "any".into() } else { k.methods.join(",") }, if k.paths.is_empty() { "*".into() } else { k.paths.join(" ") }),
+                    };
+                    let env = k.env.as_deref().map(|e| format!("  ${e}")).unwrap_or_default();
+                    println!("{:<14} {}{env}{limits}  {}{}", k.name, k.hosts.join(", "), if k.stored { "stored" } else { "no secret here" }, if k.uses > 0 { format!(", used {}×", k.uses) } else { String::new() });
+                }
+            };
+            match sub.as_str() {
+                "ls" => {
+                    let Response::Keys { keys, .. } = client.request(Request::Keys).await? else { bail!("unexpected reply") };
+                    if json { println!("{}", serde_json::to_string_pretty(&keys)?) } else { show(&keys) }
+                }
+                "uses" => {
+                    let Response::Keys { uses, .. } = client.request(Request::Keys).await? else { bail!("unexpected reply") };
+                    for u in uses.iter().take(40) {
+                        println!("{} {:<8} {} {} {}{}", if u.allowed { "✓" } else { "✗" }, u.key.as_deref().unwrap_or("-"), u.method, u.host, u.path, u.session.map(|s| format!("  ({})", &s.to_string()[..8])).unwrap_or_default());
+                    }
+                }
+                "rm" => {
+                    let name = args.next("which key")?;
+                    client.request(Request::KeyRemove { name }).await?;
+                }
+                "add" => {
+                    let name = args.next("a name for the key, like github")?;
+                    let preset = args.opt("--preset")?;
+                    let mut key = match preset.as_deref() {
+                        Some("github") => KeyInfo { name: name.clone(), hosts: vec!["api.github.com".into(), "uploads.github.com".into()], header: "authorization".into(), format: "Bearer {key}".into(), env: Some("GH_TOKEN".into()), ..Default::default() },
+                        Some("github-git") => KeyInfo { name: name.clone(), hosts: vec!["github.com".into()], header: "authorization".into(), format: "Basic {basic:x-access-token}".into(), ..Default::default() },
+                        Some(other) => bail!("no preset {other}: github or github-git"),
+                        None => KeyInfo { name: name.clone(), header: "authorization".into(), format: "Bearer {key}".into(), ..Default::default() },
+                    };
+                    while let Some(h) = args.opt("--for")? {
+                        key.hosts.push(h);
+                    }
+                    if let Some(h) = args.opt("--header")? {
+                        key.header = h;
+                    }
+                    if let Some(f) = args.opt("--format")? {
+                        key.format = f;
+                    }
+                    if let Some(e) = args.opt("--env")? {
+                        key.env = Some(e);
+                    }
+                    while let Some(m) = args.opt("--method")? {
+                        key.methods.push(m.to_ascii_uppercase());
+                    }
+                    while let Some(p) = args.opt("--path")? {
+                        key.paths.push(p);
+                    }
+                    let value = match args.opt("--from")? {
+                        Some(cmd) => {
+                            let out = std::process::Command::new("sh").args(["-c", &cmd]).output()?;
+                            anyhow::ensure!(out.status.success(), "{cmd} failed");
+                            Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                        }
+                        None if !std::io::IsTerminal::is_terminal(&std::io::stdin()) => {
+                            let mut v = String::new();
+                            std::io::Read::read_to_string(&mut std::io::stdin(), &mut v)?;
+                            Some(v.trim().to_owned())
+                        }
+                        None => None,
+                    };
+                    let Response::Keys { keys, .. } = client.request(Request::KeySet { key, value }).await? else { bail!("unexpected reply") };
+                    show(&keys.into_iter().filter(|k| k.name == name).collect::<Vec<_>>());
+                }
+                other => bail!("key {other}? ls, add, rm or uses"),
             }
         }
         "prove" => {
@@ -1309,4 +1390,9 @@ mod tests {
         assert_eq!(super::file_spec("/nowhere/notes"), ("/nowhere/notes".into(), None, None));
         assert_eq!(super::file_spec("/nowhere/a:b.rs:3"), ("/nowhere/a:b.rs".into(), Some(3), None), "a colon in the name stays in the name");
     }
+}
+
+pub(crate) fn key_secret(name: &str) -> Option<String> {
+    let out = std::process::Command::new("security").args(["find-generic-password", "-s", "tessel", "-a", &format!("key:{name}"), "-w"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_owned()).filter(|s| !s.is_empty())
 }

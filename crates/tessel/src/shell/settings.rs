@@ -22,7 +22,7 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 9] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 10] = [
     ("appearance", "Appearance", "icons/sun-moon.svg"),
     ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
@@ -31,6 +31,7 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 9] = [
     ("agents", "Agents", "icons/bot.svg"),
     ("scripts", "Scripts", "icons/play.svg"),
     ("hosts", "Hosts", "icons/server.svg"),
+    ("keys", "Keys", "icons/key-round.svg"),
     ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
 
@@ -494,11 +495,15 @@ impl Shell {
             "terminal" => ("Terminal", self.terminal_settings(cx)),
             "scripts" => ("Scripts", self.scripts_settings(cx)),
             "hosts" => ("Hosts", self.hosts_settings(cx)),
+            "keys" => ("Keys", self.keys_settings(cx)),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };
         let mut rail = v_flex().w(px(180.)).flex_shrink_0().p_2().gap(px(2.)).border_r_1().border_color(p.separator);
         for (id, name, icon) in SECTIONS {
+            if id == "keys" && !self.factory_on() {
+                continue;
+            }
             let on = id == current;
             rail = rail.child(
                 h_flex()
@@ -515,6 +520,9 @@ impl Shell {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.settings_section = id;
                         this.confirm_reset = false;
+                        if id == "keys" {
+                            this.cmd(crate::bridge::Cmd::Ask { tag: "keys", req: tessel_proto::Request::Keys });
+                        }
                         cx.notify();
                     }))
                     .child(Icon::empty().path(icon).small())

@@ -243,6 +243,7 @@ pub struct Hub {
     tasks: std::collections::BTreeMap<String, tessel_proto::task::Task>,
     land_queue: std::collections::VecDeque<String>,
     landing: Option<String>,
+    egress: Option<crate::egress::Egress>,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
     choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
@@ -339,6 +340,7 @@ impl Hub {
             tasks: Default::default(),
             land_queue: Default::default(),
             landing: None,
+            egress: None,
             asks: HashMap::new(),
             choices_kept: HashMap::new(),
             next_term: 1,
@@ -351,6 +353,13 @@ impl Hub {
         };
         hub.usage = std::fs::read_to_string(hub.cfg.paths.home.join("usage.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         hub.settings = load_settings(&hub.cfg.paths.settings());
+        hub.egress = match crate::egress::Egress::start(hub.cfg.paths.home.join("egress"), hub.key_secrets()).await {
+            Ok(e) => Some(e),
+            Err(e) => {
+                eprintln!("tesseld: keys won't reach agents: {e}");
+                None
+            }
+        };
         // what's there now isn't a change: only signing in again later restarts the agents.
         hub.sign_ins_at = hub.sign_ins_changed_at();
         for (p, row) in hub.store.load_deleted().await? {
@@ -1494,6 +1503,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::Keys => Ok(self.keys_response()),
+            Request::KeySet { key, value } => self.key_set(key, value),
+            Request::KeyRemove { name } => self.key_remove(&name),
             Request::Rules { session } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 let ws = std::path::PathBuf::from(&live.state.meta.cwd);
@@ -2220,6 +2232,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             self.prefixed.insert(session);
             workspace_env.push(("TESSEL_HOME".into(), self.cfg.paths.home.to_string_lossy().into_owned()));
         }
+        let (cwd0, repo0) = self.sessions.get(&session).map(|l| (l.state.meta.cwd.clone(), l.state.meta.worktree.as_ref().map_or_else(|| l.state.meta.cwd.clone(), |w| w.repo.clone()))).ok_or_else(|| not_found(session))?;
+        let (egress_env, sandbox) = self.egress_for(session, &cwd0, &repo0);
+        workspace_env.extend(egress_env);
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
         let cwd = live.state.meta.cwd.clone();
         if !Path::new(&cwd).is_dir() {
@@ -2252,6 +2267,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             visual: live.state.visual,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             env: workspace_env,
+            sandbox,
             raw_log: Some(self.cfg.paths.raw_log(&session)),
             tools: self.cfg.tools_bin.as_ref().filter(|_| self.settings.agent_tools).map(|bin| tessel_agent::backend::AgentTools {
                 command: bin.clone(),

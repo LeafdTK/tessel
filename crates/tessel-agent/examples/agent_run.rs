@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
         permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![],
         raw_log: None,
         tools: None,
-        env: vec![],
+        env: vec![], sandbox: None,
     })?;
     let started = std::time::Instant::now();
     spawned.agent.send_user(&prompt.join(" "), &[]);

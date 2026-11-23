@@ -374,3 +374,77 @@ impl Hub {
         }
     }
 }
+
+impl Hub {
+    pub(super) fn key_secrets(&self) -> Vec<(tessel_proto::keys::KeyInfo, String)> {
+        let home = &self.cfg.paths.home;
+        crate::keys::load(home).into_iter().map(|k| {
+            let s = crate::keys::secret(home, &k.name).unwrap_or_default();
+            (k, s)
+        }).collect()
+    }
+
+    pub(super) fn keys_response(&self) -> Response {
+        let uses = self.egress.as_ref().map(|e| e.uses()).unwrap_or_default();
+        let keys = self
+            .key_secrets()
+            .into_iter()
+            .map(|(k, s)| {
+                let n = uses.iter().filter(|u| u.allowed && u.key.as_deref() == Some(k.name.as_str())).count() as u32;
+                tessel_proto::keys::KeyInfo { stored: !s.is_empty(), uses: n, ..k }
+            })
+            .collect();
+        let recent = uses.into_iter().rev().take(100).collect();
+        Response::Keys { keys, uses: recent, certificate: self.egress.as_ref().map(|e| e.certificate().to_string_lossy().into_owned()).unwrap_or_default() }
+    }
+
+    pub(super) fn key_set(&mut self, key: tessel_proto::keys::KeyInfo, value: Option<String>) -> Result<Response, RpcError> {
+        crate::keys::check(&key).map_err(|e| RpcError::new(ErrorCode::Invalid, e))?;
+        let home = self.cfg.paths.home.clone();
+        if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
+            crate::keys::store(&home, &key.name, v.trim()).map_err(|e| RpcError::new(ErrorCode::Internal, e))?;
+        }
+        let mut all = crate::keys::load(&home);
+        all.retain(|k| k.name != key.name);
+        all.push(key);
+        crate::keys::save(&home, &all).map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))?;
+        if let Some(e) = &self.egress {
+            e.set_keys(self.key_secrets());
+        }
+        Ok(self.keys_response())
+    }
+
+    pub(super) fn key_remove(&mut self, name: &str) -> Result<Response, RpcError> {
+        let home = self.cfg.paths.home.clone();
+        let mut all = crate::keys::load(&home);
+        let before = all.len();
+        all.retain(|k| k.name != name);
+        if all.len() == before {
+            return Err(RpcError::new(ErrorCode::NotFound, format!("there's no key {name}")));
+        }
+        crate::keys::forget(&home, name);
+        crate::keys::save(&home, &all).map_err(|e| RpcError::new(ErrorCode::Internal, e.to_string()))?;
+        if let Some(e) = &self.egress {
+            e.set_keys(self.key_secrets());
+        }
+        Ok(self.keys_response())
+    }
+
+    pub(super) fn egress_for(&self, session: SessionId, cwd: &str, repo: &str) -> (Vec<(String, String)>, Option<String>) {
+        let Some(eg) = &self.egress else { return (Vec::new(), None) };
+        let sb = crate::sandbox::config(std::path::Path::new(cwd), std::path::Path::new(repo));
+        let keys = crate::keys::load(&self.cfg.paths.home);
+        let brokered = keys.iter().any(|k| crate::keys::secret(&self.cfg.paths.home, &k.name).is_some());
+        if !brokered && !sb.sealed {
+            let placeholders = keys.iter().filter_map(|k| k.env.clone().map(|e| (e, k.placeholder()))).collect();
+            return (placeholders, None);
+        }
+        let token = eg.scope(crate::egress::Scope { session: Some(session), sealed: sb.sealed, allow: sb.allow });
+        let env = eg.env(&token, sb.sealed, &keys);
+        let profile = (sb.sealed && cfg!(target_os = "macos")).then(|| {
+            let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default());
+            crate::sandbox::profile(std::path::Path::new(cwd), std::path::Path::new(repo), &home, &self.cfg.paths.home)
+        });
+        (env, profile)
+    }
+}

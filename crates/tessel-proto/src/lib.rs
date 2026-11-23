@@ -12,6 +12,7 @@ pub mod agent;
 pub mod frame;
 pub mod ids;
 pub mod item;
+pub mod keys;
 pub mod kube;
 pub mod local;
 pub mod procs;

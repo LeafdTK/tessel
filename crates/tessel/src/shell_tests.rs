@@ -3322,3 +3322,38 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     rig.feed(cx, vec![UiEvent::Task(t("t1", TaskState::Landed, &[], Some(a.id)))]);
     assert!(rig.shell.read_with(cx, |s, _| s.tasks.iter().any(|x| x.id == "t1" && x.state == TaskState::Landed)), "live updates land in place");
 }
+
+#[gpui_kit::test]
+fn keys_are_listed_added_with_a_hidden_secret_and_removed(cx: &mut TestAppContext) {
+    use tessel_proto::keys::{KeyInfo, KeyUse};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a, vec![]);
+    rig.layout(cx, r#"{"preset": "default", "factory": true}"#);
+    rig.shell.update(cx, |s, cx| s.open_settings(cx));
+    rig.settle(cx);
+    rig.asked();
+    rig.click(cx, "settings-tab-keys");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "keys", req: tessel_proto::Request::Keys })));
+    let gh = KeyInfo { name: "github".into(), hosts: vec!["api.github.com".into()], env: Some("GH_TOKEN".into()), stored: true, uses: 3, ..Default::default() };
+    let used = KeyUse { at_ms: 1, session: None, key: Some("github".into()), host: "api.github.com".into(), method: "GET".into(), path: "/user".into(), allowed: true };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "keys", result: Ok(Response::Keys { keys: vec![gh], uses: vec![used], certificate: String::new() }) }]);
+    assert!(rig.exists(cx, "keyrow-github"));
+    let set = |rig: &mut Rig, cx: &mut TestAppContext, f: fn(&Shell) -> Entity<gpui_kit::component::input::InputState>, v: &str| {
+        let v = v.to_owned();
+        cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| f(s).update(cx, |i, cx| i.set_value(v, window, cx)))).unwrap();
+    };
+    set(&mut rig, cx, |s| s.key_inputs.name.clone(), "stripe");
+    set(&mut rig, cx, |s| s.key_inputs.host.clone(), "api.stripe.com");
+    set(&mut rig, cx, |s| s.key_inputs.env.clone(), "STRIPE_KEY");
+    set(&mut rig, cx, |s| s.key_inputs.secret.clone(), "sk_live_x");
+    rig.click(cx, "key-add");
+    let added = rig.asked().into_iter().find_map(|c| match c {
+        Cmd::Ask { tag: "keys", req: tessel_proto::Request::KeySet { key, value } } => Some((key, value)),
+        _ => None,
+    });
+    let (key, value) = added.expect("asked to add it");
+    assert_eq!((key.name.as_str(), key.hosts.as_slice(), key.env.as_deref(), value.as_deref()), ("stripe", &["api.stripe.com".to_owned()][..], Some("STRIPE_KEY"), Some("sk_live_x")));
+    assert!(rig.shell.read_with(cx, |s, cx| s.key_inputs.secret.read(cx).value().is_empty()), "the secret doesn't linger in the form");
+    rig.click(cx, "key-rm-github");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "keys", req: tessel_proto::Request::KeyRemove { name } } if name == "github")));
+}

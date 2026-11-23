@@ -1985,3 +1985,31 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
     assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "two\n");
     assert!(task_until(&c, &second.id, "now it starts", |t| t.session.is_some()).await.state != TaskState::Ready);
 }
+
+#[tokio::test]
+async fn agents_get_placeholders_never_secrets_and_a_sealed_repository_seals_them() {
+    let d = Daemon::start(&["plain+"]).await;
+    let (c, _) = d.client().await;
+    let key = tessel_proto::keys::KeyInfo { name: "deploy".into(), hosts: vec!["deploy.example.com".into()], header: "authorization".into(), format: "Bearer {key}".into(), env: Some("DEPLOY_TOKEN".into()), ..Default::default() };
+    c.request(Request::KeySet { key, value: None }).await.unwrap();
+    let open = create(&c, &d.cwd(), Some("hi")).await;
+    until(&c, open.id, "ran", |s| wants(s) == Some(AttentionReason::Finished)).await;
+    let env = d.backend.spawned.lock().unwrap()[0].env.clone();
+    assert!(env.iter().any(|(k, v)| k == "DEPLOY_TOKEN" && v == "tessel-key-deploy"), "{env:?}");
+    assert!(!env.iter().any(|(k, _)| k == "HTTPS_PROXY"), "no secret here, so nothing to add on the way out: no proxy");
+    assert!(d.backend.spawned.lock().unwrap()[0].sandbox.is_none());
+
+    let repo = d.cfg.paths.home.join("sealed");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[sandbox]\nsealed = true\nallow = [\"registry.npmjs.org\"]\n").unwrap();
+    let sealed = create(&c, &repo.to_string_lossy(), Some("hi")).await;
+    until(&c, sealed.id, "ran", |s| wants(s) == Some(AttentionReason::Finished)).await;
+    let spawned = d.backend.spawned.lock().unwrap()[1].clone();
+    let proxy = spawned.env.iter().find(|(k, _)| k == "HTTPS_PROXY").map(|(_, v)| v.clone()).expect("sealed agents go through tessel");
+    assert!(proxy.starts_with("http://tessel:") && proxy.contains("@127.0.0.1:"));
+    assert!(spawned.env.iter().any(|(k, v)| k == "NO_PROXY" && !v.contains("anthropic")), "even its model goes through the allow list");
+    if cfg!(target_os = "macos") {
+        let profile = spawned.sandbox.expect("sealed by macOS");
+        assert!(profile.contains("(deny network*)") && profile.contains(&*std::fs::canonicalize(&repo).unwrap().to_string_lossy()));
+    }
+}

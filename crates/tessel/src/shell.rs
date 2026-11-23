@@ -32,6 +32,7 @@ mod palette;
 mod panel;
 mod proof;
 mod board;
+mod keys;
 mod workflows;
 mod panes;
 mod projects;
@@ -320,6 +321,8 @@ pub struct Shell {
     project_name: Entity<InputState>,
     project_parent: Entity<InputState>,
     pub(crate) task_title: Entity<InputState>,
+    pub(crate) key_inputs: keys::KeyForm,
+    pub(crate) keys: Option<(Vec<tessel_proto::keys::KeyInfo>, Vec<tessel_proto::keys::KeyUse>)>,
     pub(crate) task_change: Entity<InputState>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
@@ -491,6 +494,7 @@ impl Shell {
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
         let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("A task for an agent…"));
+        let key_inputs = keys::KeyForm::new(window, cx);
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
 
         // the `/` and `@` menus get their keys before the message box does:
@@ -831,6 +835,8 @@ impl Shell {
             project_name,
             project_parent,
             task_title,
+            key_inputs,
+            keys: None,
             task_change,
             tasks: Vec::new(),
             changing_task: None,
@@ -1263,6 +1269,7 @@ impl Shell {
             UiEvent::Usage(windows) => self.usage = windows,
             UiEvent::Task(task) => self.task_updated(task),
             UiEvent::Answer { tag: "tasks", result } => self.tasks_answer(result),
+            UiEvent::Answer { tag: "keys", result } => self.keys_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),

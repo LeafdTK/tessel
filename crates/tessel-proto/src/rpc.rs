@@ -274,6 +274,15 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    Keys,
+    KeySet {
+        key: crate::keys::KeyInfo,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+    KeyRemove {
+        name: String,
+    },
     /// put a session's files back as they were before one of its turns (a
     /// `Turn` item); or, with no turn, take back the last time that was done.
     Rewind {
@@ -858,6 +867,12 @@ pub enum Response {
     },
     Tasks {
         tasks: Vec<crate::task::Task>,
+    },
+    Keys {
+        keys: Vec<crate::keys::KeyInfo>,
+        uses: Vec<crate::keys::KeyUse>,
+        #[serde(default)]
+        certificate: String,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {
