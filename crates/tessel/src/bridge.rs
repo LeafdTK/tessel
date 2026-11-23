@@ -77,6 +77,7 @@ pub enum Cmd {
     Host(Option<String>),
     AskAnswer { session: SessionId, surface: String, answers: serde_json::Value },
     ChatImage { session: SessionId, path: String },
+    KeepAwake(String),
     WorkflowOptions { workflow: String, input: String, picked: std::collections::BTreeMap<String, tessel_proto::Pick>, cwd: Option<String>, fresh: bool },
     /// drop the connection and dial the same machine again, at once: the window keeps what it shows.
     Redial,
@@ -419,6 +420,29 @@ fn list_terms(client: &Arc<Client>, ui: &mpsc::UnboundedSender<UiEvent>) {
 /// the disk can take a while, and tokens must keep streaming meanwhile.
 const TAIL: u32 = 120;
 
+fn keep_awake(id: String) {
+    tokio::spawn(async move {
+        let home = tessel_proto::local::home();
+        let hosts = tessel_remote::hosts::Hosts::load(&home);
+        let Some(host) = hosts.get(&id).cloned() else { return };
+        let Ok(held) = tessel_remote::connect(&home, &host, "tessel-keep-awake").await else { return };
+        let started = std::time::Instant::now();
+        let mut quiet = 0;
+        while started.elapsed() < Duration::from_secs(8 * 3600) {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            let busy = match held.client.request(Request::SessionList).await {
+                Ok(Response::Sessions { sessions }) => sessions.iter().any(|s| s.run_state.is_busy() || !s.tasks.is_empty() || s.run.as_ref().is_some_and(|r| !r.done())),
+                _ => break,
+            };
+            quiet = if busy { 0 } else { quiet + 1 };
+            if quiet >= 2 {
+                break;
+            }
+        }
+        drop(held);
+    });
+}
+
 fn stale(e: &tessel_proto::RpcError) -> bool {
     e.code == tessel_proto::ErrorCode::NotFound && e.message.starts_with("no session ")
 }
@@ -525,6 +549,10 @@ async fn session(
                 let Some(cmd) = cmd else { return Ended::UiGone };
                 let result = match cmd {
                     Cmd::Host(h) => return Ended::Switch(h),
+                    Cmd::KeepAwake(host) => {
+                        keep_awake(host);
+                        Ok(())
+                    }
                     Cmd::Redial => return Ended::Redial,
                     Cmd::Open(id) => {
                         // the chat it leaves stays followed until the window says what else it

@@ -75,7 +75,10 @@ impl Shell {
         };
         let place = self.host_label();
         let gone = self.down_since.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+        let sandbox = self.hosts.list.current().is_some_and(|h| h.vercel.is_some());
         let what = match (&why, gone) {
+            (_, _) if sandbox && gone >= 3 => format!("Waking {place}… {gone}s"),
+            (None, _) if sandbox => format!("Waking {place}…"),
             (None, _) => format!("Connecting to {place}…"),
             (Some(_), 0..3) => format!("Reconnecting to {place}…"),
             (Some(_), n) => format!("Reconnecting to {place}… {n}s"),

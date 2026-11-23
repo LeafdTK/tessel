@@ -228,6 +228,11 @@ impl Shell {
         if self.hosts.list.current == to {
             return;
         }
+        if let Some(leaving) = self.hosts.list.current().filter(|h| h.vercel.is_some()).map(|h| h.id.clone())
+            && self.model.sessions.iter().any(|s| s.run_state.is_busy() || !s.tasks.is_empty() || s.run.as_ref().is_some_and(|r| !r.done()))
+        {
+            self.cmd(Cmd::KeepAwake(leaving));
+        }
         self.hosts.list.current = to.clone();
         if let Err(e) = self.hosts.list.save(&self.hosts.home) {
             self.error = Some(format!("Couldn't save which machine to show: {e}"));
