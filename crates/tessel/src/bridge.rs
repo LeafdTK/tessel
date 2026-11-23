@@ -262,6 +262,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                             None => return,
                             Some(Cmd::Host(h)) => {
                                 FORWARDS.clear();
+                                cmds.held.clear();
                                 host = h;
                                 open = Following::default();
                                 backoff = Duration::from_millis(100);
@@ -321,6 +322,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                     Ended::UiGone => return,
                     Ended::Switch(to) => {
                         FORWARDS.clear();
+                        cmds.held.clear();
                         host = to;
                         open = Following::default();
                     }

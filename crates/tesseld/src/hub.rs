@@ -140,6 +140,7 @@ struct Client {
 struct Restart {
     client: ClientId,
     id: u64,
+    also: Vec<(ClientId, u64)>,
     deadline: Millis,
     bin: std::path::PathBuf,
 }
@@ -341,7 +342,9 @@ impl Hub {
             Some(r) => {
                 if let Err((r, e)) = self.hand_off(r).await {
                     // the new daemon never started: nothing was let go of, so carry on as we were.
-                    self.respond(r.client, r.id, Err(RpcError::new(ErrorCode::Internal, format!("couldn't restart: {e}"))));
+                    for (client, id) in std::iter::once((r.client, r.id)).chain(r.also.iter().copied()) {
+                        self.respond(client, id, Err(RpcError::new(ErrorCode::Internal, format!("couldn't restart: {e}"))));
+                    }
                     Box::pin(self.run(rx)).await;
                     return;
                 }
@@ -444,7 +447,9 @@ impl Hub {
             Ok(Err(e)) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
             Err(e) => eprintln!("tesseld: handing over to pid {pid}: {e}"),
         }
-        self.respond(r.client, r.id, Ok(Response::Restarted { pid, terminals, agents, cut_short }));
+        for (client, id) in std::iter::once((r.client, r.id)).chain(r.also.iter().copied()) {
+            self.respond(client, id, Ok(Response::Restarted { pid, terminals, agents, cut_short }));
+        }
         // let the answer reach whoever asked before the socket goes.
         tokio::time::sleep(Duration::from_millis(150)).await;
         Ok(())
@@ -1255,8 +1260,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 return None;
             }
             Request::DaemonRestart { now, wait_secs, bin } => {
-                if self.restart.is_some() {
-                    return Some(Err(RpcError::new(ErrorCode::Conflict, "already restarting")));
+                if let Some(r) = self.restart.as_mut() {
+                    if !now {
+                        return Some(Err(RpcError::new(ErrorCode::Conflict, "already restarting")));
+                    }
+                    r.deadline = now_ms();
+                    r.also.push((client, id));
+                    return None;
                 }
                 let bin = match bin {
                     // only a daemon: this isn't a way to run anything else.
@@ -1273,7 +1283,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     },
                 };
                 let wait = if now { 0 } else { wait_secs.unwrap_or(600) * 1000 };
-                self.restart = Some(Restart { client, id, deadline: now_ms() + wait, bin });
+                self.restart = Some(Restart { client, id, also: Vec::new(), deadline: now_ms() + wait, bin });
                 return None;
             }
             Request::BrowserHost { on } => {

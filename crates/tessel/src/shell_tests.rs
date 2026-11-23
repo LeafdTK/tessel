@@ -2950,3 +2950,15 @@ fn an_open_file_pops_out_into_a_pane_of_its_own_and_the_tree_keeps_its_height(cx
     assert!(!rig.exists(cx, "files-split") && !rig.exists(cx, "file-pop-out"), "and no longer under the tree");
 }
 
+
+#[test]
+fn a_session_whose_subagents_still_run_shows_as_working() {
+    let p = crate::theme::Palette::dark();
+    let mut s = session(1, "Review the prs", RunState::Idle, Some(AttentionReason::Finished));
+    assert!(matches!(crate::shell::state_mark(&s, &p), crate::shell::Mark::Check(_)));
+    s.tasks = vec![tessel_proto::TaskSummary { id: "t1".into(), description: "Diff the tree".into(), background: false, item: None }];
+    assert!(matches!(crate::shell::state_mark(&s, &p), crate::shell::Mark::Working(_)), "its subagents are still at it");
+    s.tasks.clear();
+    s.background_tasks = 1;
+    assert!(matches!(crate::shell::state_mark(&s, &p), crate::shell::Mark::Working(_)), "and so is a command left running");
+}

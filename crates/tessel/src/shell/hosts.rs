@@ -39,6 +39,7 @@ pub(crate) struct HostsView {
     pub(crate) said: Option<String>,
     /// what's being done to the machine shown, or how it went, said under its name in the picker.
     pub(crate) doing: Option<String>,
+    pub(crate) restarting: bool,
     /// how sandboxes are reached (`remote.json`).
     pub(crate) net: tessel_remote::net::Net,
     /// your own relay's address, as typed (made when the page shows, inputs need the window).
@@ -494,12 +495,21 @@ impl Shell {
 
     /// restart tessel on the machine shown: its terminals and agents carry on
     /// under the new daemon (agents mid-turn are waited for).
-    pub(crate) fn host_restart_tessel(&mut self, cx: &mut Context<Self>) {
-        self.host_doing("Restarting tessel… (agents mid-turn finish first)", false, cx);
-        self.cmd(Cmd::Ask { tag: "host.restart", req: tessel_proto::Request::DaemonRestart { now: false, wait_secs: None, bin: None } });
+    pub(crate) fn host_restart_tessel(&mut self, now: bool, cx: &mut Context<Self>) {
+        let busy = self.model.sessions.iter().filter(|s| s.run_state.is_busy() || crate::shell::working_below(s)).count();
+        let what = match busy {
+            _ if now => "Restarting tessel now…".to_owned(),
+            0 => "Restarting tessel…".to_owned(),
+            1 => "Restarting once 1 chat finishes its turn…".to_owned(),
+            n => format!("Restarting once {n} chats finish their turns…"),
+        };
+        self.hosts.restarting = true;
+        self.host_doing(what, false, cx);
+        self.cmd(Cmd::Ask { tag: "host.restart", req: tessel_proto::Request::DaemonRestart { now, wait_secs: None, bin: None } });
     }
 
     pub(crate) fn host_restart_answer(&mut self, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        self.hosts.restarting = false;
         match result {
             Ok(tessel_proto::Response::Restarted { terminals, agents, cut_short, .. }) => {
                 let n = |k: u32, one: &str| if k == 1 { format!("1 {one}") } else { format!("{k} {one}s") };
@@ -735,11 +745,15 @@ impl Shell {
                     list = list
                         .child(theme::float_sep(&p))
                         .child(theme::float_item(&p, "host-redial", Some("refresh-ccw"), "Reconnect", None, false).test_support().on_click(act(Box::new(|this, _, cx| this.host_redial(cx)))))
-                        .child(
+                        .child(if this.hosts.restarting {
+                            theme::float_item(&p, "host-restart-now", Some("rotate-cw"), "Restart now", Some("Turns under way stop; their chats carry on from there"), false)
+                                .test_support()
+                                .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(true, cx))))
+                        } else {
                             theme::float_item(&p, "host-restart", Some("rotate-cw"), "Restart tessel there", Some("Terminals and agents carry on"), false)
                                 .test_support()
-                                .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(cx)))),
-                        );
+                                .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(false, cx))))
+                        });
                     if !busy {
                         let to = id.clone();
                         list = list.child(

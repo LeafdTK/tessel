@@ -2955,7 +2955,7 @@ pub(crate) fn state_word(s: &RunState) -> &'static str {
 
 /// what a session's state looks like at a glance.
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum Mark {
+pub(crate) enum Mark {
     /// blocked on you.
     Diamond(Hsla),
     Check(Hsla),
@@ -2970,16 +2970,21 @@ enum Mark {
 
 /// each state has its own shape, so colour is never the only thing telling
 /// them apart. colour appears only on the three that want you.
-fn state_mark(s: &SessionSummary, p: &Palette) -> Mark {
+pub(crate) fn state_mark(s: &SessionSummary, p: &Palette) -> Mark {
     match (&s.run_state, s.attention.as_ref().map(|a| a.reason)) {
         // orchard's colours: blue waits, amber works, green done, red broken, grey stopped.
         (RunState::NeedsPermission | RunState::NeedsInput, _) => Mark::Diamond(info_blue(p)),
         (RunState::Errored, _) | (_, Some(AttentionReason::Errored)) => Mark::Cross(p.failed),
+        _ if working_below(s) => Mark::Working(p.blocked),
         (_, Some(AttentionReason::Finished)) => Mark::Check(p.finished),
         (RunState::Working | RunState::Starting, _) => Mark::Working(p.blocked),
         (RunState::Stalled | RunState::Limited { .. }, _) => Mark::Dot(p.blocked.opacity(0.5)),
         _ => Mark::Ring(p.tertiary.opacity(0.7)),
     }
+}
+
+pub(crate) fn working_below(s: &SessionSummary) -> bool {
+    s.background_tasks > 0 || !s.tasks.is_empty()
 }
 
 /// how often the beat in `Shell::new` looks for something to set turning.
@@ -3378,7 +3383,7 @@ impl Shell {
                 && (s.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Finished && now_ms().saturating_sub(a.since_ms) < GLOW_FADE_MS)
                     || self.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
         };
-        self.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || fading(s))
+        self.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || working_below(s) || fading(s))
     }
 
     /// keep redrawing on the display's frames while something turns, at most
