@@ -3226,3 +3226,48 @@ fn the_software_factory_stays_out_of_the_way_until_it_is_on_and_a_failed_proof_h
     });
     assert_eq!(forced, Some((tessel_proto::ShipStep::Push, true)), "the same step, past the proof");
 }
+
+#[gpui_kit::test]
+fn house_rules_are_listed_set_up_and_taught_in_small_chats_of_their_own(cx: &mut TestAppContext) {
+    use tessel_proto::proof::{Check, Finding, Knowledge, Proof, Rule, Rulebook, Severity, Verdict};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.layout(cx, r#"{"preset": "default", "factory": true}"#);
+    rig.press(cx, "alt-cmd-i");
+    rig.asked();
+    rig.click(cx, "tab-checks");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "rules", .. })), "the rules are asked for with the checks");
+    let builtin = Rule { id: "no-secrets".into(), title: "No secrets".into(), path: String::new(), paths: vec![], check: Check::Judge, severity: Severity::Block, body: String::new(), builtin: true, holdout: false };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "rules", result: Ok(Response::Rules { rulebook: Rulebook { rules: vec![builtin.clone()], ..Default::default() } }) }]);
+    rig.click(cx, "rules-set-up");
+    let created = |rig: &mut Rig| rig.asked().into_iter().find_map(|c| match c {
+        Cmd::Create { cwd, worktree, prompt, model, .. } => Some((cwd, worktree, prompt, model)),
+        _ => None,
+    });
+    let (cwd, worktree, prompt, model) = created(&mut rig).expect("a chat to set them up");
+    assert_eq!((cwd.as_str(), worktree, model.as_deref()), ("/work/api", false, Some("sonnet")), "in the main checkout, on a smaller model");
+    assert!(prompt.contains("Set up house rules") && prompt.contains("House rules live in"));
+
+    let own = Rule { id: "k8s".into(), title: "Kubernetes through the reconciler".into(), path: ".tessel/rules/k8s.md".into(), builtin: false, ..builtin };
+    let knowledge = Knowledge { id: "tenants".into(), title: "Tenant isolation".into(), path: ".tessel/knowledge/tenants.md".into(), paths: vec![], body: String::new() };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "rules", result: Ok(Response::Rules { rulebook: Rulebook { rules: vec![own], knowledge: vec![knowledge], problems: vec![".tessel/rules/bad.md: check \"dance\" isn't one".into()], ..Default::default() } }) }]);
+    assert!(rig.exists(cx, "rule-k8s") && rig.exists(cx, "knowledge-tenants") && !rig.exists(cx, "rules-set-up"));
+
+    let finding = Finding { lens: "correctness".into(), rule: None, file: Some("src/login.rs".into()), line: Some(9), severity: Severity::Warn, title: "Retries hammer the auth server".into(), why: "no backoff".into(), confirmed: Some(true) };
+    let mut proved = a.clone();
+    proved.proof = Some(Proof { verdict: Verdict::Concerns, findings: vec![finding], ..Default::default() });
+    rig.feed(cx, vec![UiEvent::Session(proved)]);
+    rig.click(cx, "proof-rule-0");
+    let (_, worktree, prompt, _) = created(&mut rig).expect("a chat to make the rule");
+    assert!(!worktree && prompt.contains("Retries hammer the auth server") && prompt.contains("src/login.rs:9"));
+
+    rig.click(cx, "rules-teach");
+    assert!(rig.exists(cx, "teaching-chip"));
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.new_prompt.update(cx, |p, cx| p.set_value("every query is scoped to a tenant", window, cx)))).unwrap();
+    rig.asked();
+    rig.click(cx, "create");
+    let (cwd, worktree, prompt, model) = created(&mut rig).expect("a chat to teach it");
+    assert_eq!((cwd.as_str(), worktree, model.as_deref()), ("/work/api", false, Some("sonnet")));
+    assert!(prompt.contains("every query is scoped to a tenant") && prompt.contains("House rules live in"));
+    assert!(!rig.exists(cx, "teaching-chip"));
+}

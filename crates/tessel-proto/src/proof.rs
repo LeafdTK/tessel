@@ -46,6 +46,8 @@ pub struct Rule {
     pub body: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub builtin: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holdout: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,3 +227,13 @@ impl Proof {
 pub fn has_house_rules(dir: &std::path::Path) -> bool {
     dir.ancestors().take(12).any(|d| d.join(".tessel/rules").is_dir())
 }
+
+pub const RULE_FORMAT: &str = "House rules live in the repository's .tessel/ folder, one markdown file each, committed like code.\n\
+- .tessel/rules/<id>.md: something every change must follow. A header, then the rule in plain words with why, and a short good and bad example:\n\
+  ---\n  paths: [\"services/**/k8s/**\"]   (where it applies; leave out for everywhere)\n  severity: block           (block: must not land; warn: should change; note: worth knowing)\n  ---\n\
+  A rule with only words is judged by a reviewer, who cites the file and line. Two kinds are checked without a model, and are cheaper:\n\
+  run: <command>   (passes when the command exits 0, like a linter)\n\
+  pattern: '<regex>' in single quotes, with within: added | subjects | paths   (added lines and paths must not match; commit subjects must)\n\
+- .tessel/knowledge/<id>.md: how part of the system works and why, what is allowed and what isn't, with examples. paths: in its header says when it's relevant. Reviewers and agents read it when a change touches those paths.\n\
+- .tessel/settings.toml [proof]: verify = [\"fast, reliable commands\"], risk = [\"globs that get every reviewer\"], auto = true to check each turn's change by itself.\n\
+Prefer a run or pattern rule when a command or a regex can check it. Keep each rule to one idea.";

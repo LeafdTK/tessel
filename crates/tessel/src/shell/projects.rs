@@ -274,7 +274,7 @@ impl Shell {
             ("project.make", Ok(tessel_proto::Response::ProjectMade { dir, prompt })) => {
                 self.making = false;
                 self.sheet = None;
-                self.cmd(Cmd::Create { cwd: dir, worktree: false, prompt, attachments: Vec::new() });
+                self.cmd(Cmd::Create { cwd: dir, worktree: false, prompt, attachments: Vec::new(), model: None });
             }
             ("project.make", Ok(_)) => {
                 self.making = false;

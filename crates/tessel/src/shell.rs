@@ -244,6 +244,8 @@ pub struct Shell {
     pub(crate) shipping: bool,
     pub(crate) shipped: Option<Result<(String, Option<String>), String>>,
     pub(crate) last_ship: Option<tessel_proto::ShipStep>,
+    pub(crate) teaching: bool,
+    pub(crate) rulebook: Option<(SessionId, tessel_proto::proof::Rulebook)>,
     /// the files were just put back to before a turn: the result line offers to undo it.
     pub(crate) rewound: bool,
     /// words to add to the message box at the next frame (a pick from the page).
@@ -773,6 +775,8 @@ impl Shell {
             tour_seen: launch.tour_seen.clone(),
             shipped: None,
             last_ship: None,
+            teaching: false,
+            rulebook: None,
             rewound: false,
             desktop_slide: Spring::unit(0.0),
             desk: desktops::DeskDrag::new(),
@@ -1228,6 +1232,7 @@ impl Shell {
             UiEvent::Answer { tag: "scripts", result } => self.scripts_answer(result),
             UiEvent::Answer { tag: "ship", result } => self.ship_answer(result),
             UiEvent::Answer { tag: "proof.run", result } => self.proof_answer(result),
+            UiEvent::Answer { tag: "rules", result } => self.rules_answer(result),
             UiEvent::Answer { tag: "usage", result } => {
                 if let Ok(tessel_proto::Response::Usage { windows }) = result {
                     self.usage = windows;
@@ -1567,11 +1572,13 @@ impl Shell {
         if self.creating.is_some() {
             return;
         }
-        let worktree = !authoring && self.new_worktree && self.folder_is_git(&cwd) != Some(false);
+        let teaching = self.teaching;
+        let worktree = !authoring && !teaching && self.new_worktree && self.folder_is_git(&cwd) != Some(false);
         let prompt = self.authoring_prompt(prompt);
+        let model = teaching.then(|| "sonnet".to_owned());
         // what was written and attached stays until the session exists, so a
         // failure to make it loses nothing.
-        self.cmd(Cmd::Create { cwd, worktree, prompt, attachments: self.attachments.clone() });
+        self.cmd(Cmd::Create { cwd, worktree, prompt, attachments: self.attachments.clone(), model });
         self.creating = Some(Instant::now());
         self.error = None;
         let _ = window;
@@ -2052,7 +2059,7 @@ impl Shell {
         let picker = self.project_picker(cx);
         let chips = self.attachment_chips(cx);
         let workflow_chip = self.workflow_chip(cx);
-        let authoring_chip = self.authoring_chip(cx);
+        let authoring_chip = self.authoring_chip(cx).or_else(|| self.teaching_chip(cx));
         let workflow_cards = self.workflow_cards(cx);
         let paste = cx.entity().downgrade();
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {

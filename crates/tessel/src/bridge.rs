@@ -26,7 +26,7 @@ pub enum Cmd {
     Browser { session: SessionId, act: tessel_proto::BrowserAct },
     /// this window shows pages itself (see `hosts_pages`).
     BrowserHost,
-    Create { cwd: String, worktree: bool, prompt: String, attachments: Vec<tessel_proto::Attachment> },
+    Create { cwd: String, worktree: bool, prompt: String, attachments: Vec<tessel_proto::Attachment>, model: Option<String> },
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
     /// a new session carrying on this one's conversation; `before` a message of
     /// yours: only what came before it, with `draft` in its message box.
@@ -600,14 +600,14 @@ async fn session(
                         open.extra = extra;
                         follow(client, ui, open).await
                     }
-                    Cmd::Create { cwd, worktree, prompt, attachments } => {
+                    Cmd::Create { cwd, worktree, prompt, attachments, model } => {
                         let req = Request::SessionCreate {
                             cmd_id: Uuid::new_v4(),
                             cwd,
                             worktree: worktree.then(WorktreeSpec::default),
                             goal: None,
                             prompt: (!prompt.trim().is_empty()).then_some(prompt),
-                            model: None,
+                            model,
                             parent: None,
                             attachments,
                         };

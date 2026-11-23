@@ -85,6 +85,7 @@ pub enum HubMsg {
     WorkKept { session: SessionId, kept: Option<String> },
     RunAdvance { run: SessionId },
     Proof { session: SessionId, proof: Box<tessel_proto::proof::Proof> },
+    ProofIdle { session: SessionId },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -680,6 +681,9 @@ impl Hub {
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
+            HubMsg::ProofIdle { session } => {
+                self.proving.remove(&session);
+            }
             HubMsg::Proof { session, proof } => {
                 if proof.verdict.done() {
                     self.proving.remove(&session);
@@ -1457,39 +1461,20 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 });
             }
             Request::ProofRun { session, anyway } => {
-                let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
+                if !self.sessions.contains_key(&session) {
+                    return Some(Err(not_found(session)));
+                }
                 if self.proving.contains(&session) {
                     return Some(Err(RpcError::new(ErrorCode::Conflict, "it's being proved already")));
                 }
-                let ws = std::path::PathBuf::from(&live.state.meta.cwd);
-                let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
-                let said: Vec<String> = live
-                    .state
-                    .items()
-                    .iter()
-                    .filter_map(|i| match &i.body {
-                        tessel_proto::ItemBody::User { text, .. } => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                let said = said.into_iter().rev().take(4).rev().collect();
-                let ask = crate::proof::Ask { goal: live.state.meta.goal.clone(), said };
-                self.proving.insert(session);
-                let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, anyway);
-                let (tx, backend) = (self.tx.clone(), self.backend.clone());
-                tokio::spawn(async move {
-                    let tell = move |p: &tessel_proto::proof::Proof| {
-                        let _ = tx.send(HubMsg::Proof { session, proof: Box::new(p.clone()) });
-                    };
-                    crate::proof::prove(backend, ws, root, ask, room, now_ms, tell).await;
-                });
+                self.start_proof(session, anyway, false);
                 Ok(Response::Ack)
             }
             Request::Rules { session } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 let ws = std::path::PathBuf::from(&live.state.meta.cwd);
                 let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
-                Ok(Response::Rules { rulebook: crate::rules::load(&ws, &root) })
+                Ok(Response::Rules { rulebook: crate::rules::load_with(&ws, &root, Some(&crate::rules::holdouts(&self.cfg.paths.home, &root))) })
             }
             Request::Ship { session, step, force } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
@@ -2333,9 +2318,60 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
 
     // ---- state changes -----------------------------------------------------
 
+    fn start_proof(&mut self, session: SessionId, anyway: bool, only_if_changed: bool) {
+        let Some(live) = self.sessions.get(&session) else { return };
+        let ws = std::path::PathBuf::from(&live.state.meta.cwd);
+        let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
+        let said: Vec<String> = live
+            .state
+            .items()
+            .iter()
+            .filter_map(|i| match &i.body {
+                tessel_proto::ItemBody::User { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        let said = said.into_iter().rev().take(4).rev().collect();
+        let ask = crate::proof::Ask { goal: live.state.meta.goal.clone(), said };
+        let last = live.state.proof.as_ref().map(|p| p.fingerprint.clone());
+        self.proving.insert(session);
+        let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, anyway);
+        let holdouts = crate::rules::holdouts(&self.cfg.paths.home, &root);
+        let (tx, backend) = (self.tx.clone(), self.backend.clone());
+        tokio::spawn(async move {
+            if only_if_changed {
+                let same = match crate::proof::change(&ws).await {
+                    Ok(c) => c.diff.trim().is_empty() || last.as_deref() == Some(c.fingerprint().as_str()),
+                    Err(_) => true,
+                };
+                if same {
+                    let _ = tx.send(HubMsg::ProofIdle { session });
+                    return;
+                }
+            }
+            let tell = move |p: &tessel_proto::proof::Proof| {
+                let _ = tx.send(HubMsg::Proof { session, proof: Box::new(p.clone()) });
+            };
+            crate::proof::prove(backend, ws, root, Some(holdouts), ask, room, now_ms, tell).await;
+        });
+    }
+
+    fn maybe_auto_prove(&mut self, session: SessionId) {
+        let Some(live) = self.sessions.get(&session) else { return };
+        if self.proving.contains(&session) || !live.state.pending().is_empty() {
+            return;
+        }
+        let ws = std::path::Path::new(&live.state.meta.cwd);
+        let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.to_path_buf(), |w| std::path::PathBuf::from(&w.repo));
+        if crate::rules::config(ws, &root).auto {
+            self.start_proof(session, false, true);
+        }
+    }
+
     fn apply(&mut self, session: SessionId, input: Input) -> Result<(), RpcError> {
         let now = now_ms();
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
+        let was_open = live.state.turn_open();
         let fx = live.state.apply(input, now);
         let ended = !live.state.turn_open();
         if ended {
@@ -2344,6 +2380,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         self.after(session, fx, now);
         if ended && self.asks.keys().any(|(s, _)| *s == session) {
             self.let_go_of_asks(session, None, "the turn ended before it was answered");
+        }
+        if was_open && ended {
+            self.maybe_auto_prove(session);
         }
         Ok(())
     }

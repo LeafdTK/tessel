@@ -9,6 +9,16 @@ use gpui_kit::*;
 use tessel_proto::proof::{Proof, Severity, Verdict};
 use tessel_proto::{Request, SessionId, ShipStep};
 
+const TEACH: &str = "Teach this repository something to hold every change to, from what I say below. Decide whether it's a rule (something every change must follow) or knowledge (how part of the system works, why, and what's allowed). Ask me with tessel_ask only if something important is unclear. Write the file under .tessel/, then tell me in a line what you added.";
+
+const FROM_FINDING: &str = "A review of a change found the problem below. Make it a house rule for this repository, so every change is checked for it from now on: say it more generally than this one case, and give a short good and bad example. Write it under .tessel/rules/, then tell me in a line what you added.";
+
+const SET_UP: &str = "Set up house rules for this repository, so tessel can prove changes against them. Read what's here first: AGENTS.md, CLAUDE.md, .cursor/rules, the CI config, the build and test scripts, and the last 50 commit subjects. Then work out: verify commands for .tessel/settings.toml that are fast and reliable (a lint, a type check, the quick tests), the 3 to 8 rules that matter most here, and knowledge files for anything a reviewer couldn't guess. Show me the list with tessel_ask (one multiselect, everything ticked) before writing anything. Write what I keep, then tell me in a line what you added.";
+
+pub(crate) fn teach_prompt(typed: &str) -> String {
+    format!("{TEACH}\n\nWhat to remember: {typed}\n\n{}", tessel_proto::proof::RULE_FORMAT)
+}
+
 pub(crate) fn verdict_word(p: &Proof) -> String {
     match p.verdict {
         Verdict::Proving => "Proving…".into(),
@@ -30,6 +40,126 @@ impl Shell {
     pub(crate) fn prove(&mut self, session: SessionId, anyway: bool, cx: &mut Context<Self>) {
         self.cmd(Cmd::Ask { tag: "proof.run", req: Request::ProofRun { session, anyway } });
         cx.notify();
+    }
+
+    pub(crate) fn rules_answer(&mut self, result: Result<tessel_proto::Response, String>) {
+        if let (Ok(tessel_proto::Response::Rules { rulebook }), Some(id)) = (result, self.model.open.as_ref().map(|o| o.id)) {
+            self.rulebook = Some((id, rulebook));
+        }
+    }
+
+    fn repo_root(&self) -> Option<String> {
+        let s = self.model.open_summary()?;
+        Some(s.worktree.as_ref().map_or_else(|| s.cwd.clone(), |w| w.repo.clone()))
+    }
+
+    pub(crate) fn teach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.repo_root() else { return };
+        self.authoring = false;
+        self.teaching = true;
+        self.start_in(root, window, cx);
+    }
+
+    pub(crate) fn set_up_rules(&mut self, cx: &mut Context<Self>) {
+        let Some(cwd) = self.repo_root() else { return };
+        let prompt = format!("{SET_UP}\n\n{}", tessel_proto::proof::RULE_FORMAT);
+        self.cmd(Cmd::Create { cwd, worktree: false, prompt, attachments: Vec::new(), model: Some("sonnet".into()) });
+        cx.notify();
+    }
+
+    pub(crate) fn rule_from(&mut self, finding: &tessel_proto::proof::Finding, cx: &mut Context<Self>) {
+        let Some(cwd) = self.repo_root() else { return };
+        let at = match (&finding.file, finding.line) {
+            (Some(f), Some(l)) => format!(" ({f}:{l})"),
+            (Some(f), None) => format!(" ({f})"),
+            _ => String::new(),
+        };
+        let prompt = format!("{FROM_FINDING}\n\nThe finding{at}: {}\n{}\n\n{}", finding.title, finding.why, tessel_proto::proof::RULE_FORMAT);
+        self.cmd(Cmd::Create { cwd, worktree: false, prompt, attachments: Vec::new(), model: Some("sonnet".into()) });
+        cx.notify();
+    }
+
+    pub(crate) fn teaching_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.teaching {
+            return None;
+        }
+        let p = self.palette.get();
+        Some(
+            h_flex()
+                .id("teaching-chip")
+                .test_support()
+                .gap_2()
+                .px_2()
+                .h(px(28.))
+                .rounded(px(theme::R_TILE))
+                .bg(p.accent.opacity(0.12))
+                .text_color(p.accent)
+                .child(Icon::empty().path("icons/badge-check.svg").size(theme::z(13.)))
+                .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child("Teach this repository: say what every change should follow"))
+                .child(Button::new("teaching-cancel").xsmall().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
+                    this.teaching = false;
+                    cx.notify();
+                })))
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn house_rules_section(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.factory_on() {
+            return None;
+        }
+        let s = self.model.open_summary()?;
+        let p = self.palette.get();
+        let book = self.rulebook.as_ref().filter(|(id, _)| *id == s.id).map(|(_, b)| b);
+        let mut col = v_flex().child(
+            h_flex()
+                .pr_3()
+                .items_end()
+                .child(self.section("House Rules").flex_1())
+                .child(Button::new("rules-teach").xsmall().ghost().label("Teach").on_click(cx.listener(|this, _, window, cx| this.teach(window, cx)))),
+        );
+        let Some(book) = book else { return Some(col) };
+        let own: Vec<_> = book.rules.iter().filter(|r| !r.builtin).collect();
+        if own.is_empty() && book.knowledge.is_empty() {
+            col = col.child(
+                h_flex()
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .child(div().flex_1().set(Type::Subheadline).text_color(p.secondary).child("Only tessel's own checks so far."))
+                    .child(Button::new("rules-set-up").xsmall().outline().label("Set Up").on_click(cx.listener(|this, _, _, cx| this.set_up_rules(cx)))),
+            );
+        }
+        let row = |id: String, title: String, tag: String, path: String, cx: &mut Context<Self>| {
+            h_flex()
+                .id(ElementId::from(SharedString::from(id)))
+                .test_support()
+                .h(px(24.))
+                .mx_1()
+                .px_2()
+                .gap_2()
+                .rounded(px(theme::R_TILE))
+                .hover(|d| d.bg(p.hover))
+                .on_click(cx.listener(move |this, _, _, cx| this.open_file(path.clone(), cx)))
+                .child(div().flex_1().min_w_0().set(Type::Callout).text_color(p.label).truncate().child(title))
+                .child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child(tag))
+        };
+        for r in own {
+            let kind = match &r.check {
+                tessel_proto::proof::Check::Run { .. } => "command",
+                tessel_proto::proof::Check::Match { .. } => "pattern",
+                _ => "reviewed",
+            };
+            let tag = if r.holdout { format!("{kind} · holdout") } else { kind.to_owned() };
+            col = col.child(row(format!("rule-{}", r.id), r.title.clone(), tag, r.path.clone(), cx));
+        }
+        for k in &book.knowledge {
+            col = col.child(row(format!("knowledge-{}", k.id), k.title.clone(), "knowledge".into(), k.path.clone(), cx));
+        }
+        for problem in &book.problems {
+            col = col.child(div().px_3().set(Type::Subheadline).text_color(p.failed).child(problem.clone()));
+        }
+        Some(col)
     }
 
     pub(crate) fn proof_answer(&mut self, result: Result<tessel_proto::Response, String>) {
@@ -174,6 +304,7 @@ impl Shell {
                 _ => None,
             };
             let file = f.file.clone();
+            let teach = (*f).clone();
             col = col.child(
                 v_flex()
                     .id(ElementId::from(SharedString::from(format!("proof-finding-{ix}"))))
@@ -196,7 +327,19 @@ impl Shell {
                             .items_start()
                             .child(div().w(px(12.)).flex_shrink_0().set(Type::Callout).text_color(color).child(glyph))
                             .child(div().flex_1().min_w_0().set(Type::Callout).text_color(p.label).child(f.title.clone()))
-                            .when_some(f.rule.clone(), |d, r| d.child(div().flex_shrink_0().px(px(6.)).rounded(px(8.)).bg(p.fill).set(Type::Subheadline).text_color(p.secondary).child(r))),
+                            .when_some(f.rule.clone(), |d, r| d.child(div().flex_shrink_0().px(px(6.)).rounded(px(8.)).bg(p.fill).set(Type::Subheadline).text_color(p.secondary).child(r)))
+                            .when(f.rule.is_none(), |d| {
+                                d.child(
+                                    Button::new(ElementId::from(SharedString::from(format!("proof-rule-{ix}"))))
+                                        .xsmall()
+                                        .ghost()
+                                        .label("Make a Rule")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.rule_from(&teach, cx);
+                                        })),
+                                )
+                            }),
                     )
                     .when_some(at, |d, at| d.child(div().pl(px(20.)).set(Type::Code).text_color(p.tertiary).truncate().child(at)))
                     .when(!f.why.is_empty(), |d| d.child(div().pl(px(20.)).set(Type::Subheadline).text_color(p.secondary).child(f.why.clone()))),

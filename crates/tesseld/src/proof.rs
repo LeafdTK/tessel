@@ -384,7 +384,7 @@ pub fn model_for(cfg: &str, calls: &[Vec<String>], room: Room) -> &'static str {
     if room.used >= 0.8 && !room.anyway { "haiku" } else { picked }
 }
 
-pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: Ask, room: Room, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
+pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, holdouts: Option<PathBuf>, ask: Ask, room: Room, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
     let mut p = Proof { started_ms: now(), stage: "Reading the change".into(), ..Default::default() };
     tell(&p);
     let change = match change(&ws).await {
@@ -410,7 +410,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
         tell(&p);
         return p;
     }
-    let book: Rulebook = crate::rules::load(&ws, &root);
+    let book: Rulebook = crate::rules::load_with(&ws, &root, holdouts.as_deref());
     let cfg = crate::rules::config(&ws, &root);
     let mut rules: Vec<Rule> = book.rules.into_iter().filter(|r| r.check != Check::Unknown).collect();
     if cfg.starter
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn the_panel_grows_with_the_change_and_its_risk() {
-        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "auto".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true };
+        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "auto".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true, auto: false };
         let change = |changed: usize, paths: &[&str]| Change { changed, paths: paths.iter().map(|p| (*p).to_owned()).collect(), ..Default::default() };
         let small = change(12, &["src/list.rs"]);
         assert_eq!(panel(&cfg(None), &small, false), vec![vec!["correctness".to_owned(), "scope".to_owned()]], "a small change is one reviewer");

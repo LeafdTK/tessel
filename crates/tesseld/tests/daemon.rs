@@ -1905,3 +1905,27 @@ async fn a_failing_check_stops_a_proof_before_any_reviewer_is_paid_for() {
     assert!(p.reviewers.is_empty() && p.cost_usd == 0.0);
     assert!(!d.backend.asked.lock().unwrap().iter().any(|(q, _)| q.contains("reviewing a change")), "no reviewer was asked");
 }
+
+#[tokio::test]
+async fn a_repository_that_opts_in_is_proved_after_each_turn_but_never_twice_for_the_same_code() {
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nauto = true\nlenses = [\"correctness\"]\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    let (c, _) = d.client().await;
+    let s = create(&c, &repo.to_string_lossy(), Some("change it")).await;
+    let first = until(&c, s.id, "proved by itself", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await.proof.unwrap();
+    let reviews = || d.backend.asked.lock().unwrap().iter().filter(|(q, _)| q.contains("reviewing a change")).count();
+    assert_eq!(reviews(), 1);
+
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: s.id, text: "anything else?".into(), attachments: vec![] }).await.unwrap();
+    until(&c, s.id, "the second turn ended", |s| s.run_state == RunState::Idle && s.last_seq > 0).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(reviews(), 1, "nothing changed, so nothing is paid for again");
+    assert_eq!(list(&c).await.iter().find(|x| x.id == s.id).unwrap().proof.as_ref().unwrap().started_ms, first.started_ms);
+}

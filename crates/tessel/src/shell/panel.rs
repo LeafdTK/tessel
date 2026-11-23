@@ -448,6 +448,9 @@ impl Shell {
                 if !std::mem::replace(asked_git, true) {
                     self.cmd(Cmd::Git(session));
                 }
+                if self.factory_on() {
+                    self.cmd(Cmd::Ask { tag: "rules", req: tessel_proto::Request::Rules { session } });
+                }
                 self.ws.pr_loading = true;
                 self.cmd(Cmd::Pr(session));
             }
@@ -1163,6 +1166,7 @@ impl Shell {
         let mut col = v_flex().id("checks").size_full().overflow_y_scroll().pb_4();
 
         col = col.children(self.proof_section(cx));
+        col = col.children(self.house_rules_section(cx));
         col = col.child(self.section("Branch"));
         match &self.ws.git {
             None => col = col.child(dim("Looking…".into())),

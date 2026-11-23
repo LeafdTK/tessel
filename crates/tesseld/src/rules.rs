@@ -17,6 +17,7 @@ pub struct Config {
     pub risk: Vec<String>,
     pub starter: bool,
     pub gate: bool,
+    pub auto: bool,
 }
 
 pub const RISK: [&str; 12] = [
@@ -43,10 +44,19 @@ pub fn config(workspace: &Path, root: &Path) -> Config {
         risk: RISK.iter().map(|s| (*s).to_owned()).chain(list(get("risk")).unwrap_or_default()).collect(),
         starter: get("starter").and_then(toml::Value::as_bool).unwrap_or(true),
         gate: get("gate").and_then(toml::Value::as_bool).unwrap_or(true),
+        auto: get("auto").and_then(toml::Value::as_bool).unwrap_or(false),
     }
 }
 
+pub fn holdouts(home: &Path, root: &Path) -> std::path::PathBuf {
+    home.join("holdouts").join(root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+}
+
 pub fn load(workspace: &Path, root: &Path) -> Rulebook {
+    load_with(workspace, root, None)
+}
+
+pub fn load_with(workspace: &Path, root: &Path, holdouts: Option<&Path>) -> Rulebook {
     let cfg = config(workspace, root);
     let mut book = Rulebook { verify: cfg.verify.clone(), ..Default::default() };
     let mut rules: BTreeMap<String, Rule> = BTreeMap::new();
@@ -72,6 +82,17 @@ pub fn load(workspace: &Path, root: &Path) -> Rulebook {
         for (path, text) in md_files(&dir.join(KNOWLEDGE)) {
             let k = parse_knowledge(&stem(&path), &rel(dir, &path), &text);
             knowledge.insert(k.id.clone(), k);
+        }
+    }
+    if let Some(dir) = holdouts {
+        for (path, text) in md_files(dir) {
+            match parse_rule(&stem(&path), &format!("holdout/{}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), &text) {
+                Ok(mut r) => {
+                    r.holdout = true;
+                    rules.insert(r.id.clone(), r);
+                }
+                Err(e) => book.problems.push(format!("holdout {}: {e}", path.display())),
+            }
         }
     }
     for g in GUIDANCE {
@@ -152,10 +173,11 @@ fn text(v: Option<&Yaml>) -> Option<String> {
 pub fn parse_rule(stem: &str, path: &str, raw: &str) -> Result<Rule, String> {
     let (fm, body) = front(raw);
     let map = match fm {
-        Some(fm) => match serde_yaml_ng::from_str::<Yaml>(fm).map_err(|e| format!("its header isn't valid yaml: {e}"))? {
-            Yaml::Mapping(m) => m,
-            Yaml::Null => Default::default(),
-            _ => return Err("its header should be keys like `paths:` and `check:`".into()),
+        Some(fm) => match serde_yaml_ng::from_str::<Yaml>(fm) {
+            Ok(Yaml::Mapping(m)) => m,
+            Ok(Yaml::Null) => Default::default(),
+            Ok(_) => return Err("its header should be keys like `paths:` and `check:`".into()),
+            Err(e) => plain_header(fm).ok_or_else(|| format!("its header isn't valid yaml: {e}"))?,
         },
         None => Default::default(),
     };
@@ -205,7 +227,22 @@ pub fn parse_rule(stem: &str, path: &str, raw: &str) -> Result<Rule, String> {
         (Some(other), _, _) => return Err(format!("check \"{other}\" isn't one: judge, run or match")),
     };
     let title = text(get("title")).or_else(|| text(get("description"))).unwrap_or_else(|| title_of(&body, &id));
-    Ok(Rule { id, title, path: path.to_owned(), paths, check, severity, body, builtin: false })
+    Ok(Rule { id, title, path: path.to_owned(), paths, check, severity, body, builtin: false, holdout: false })
+}
+
+fn plain_header(fm: &str) -> Option<serde_yaml_ng::Mapping> {
+    let mut map = serde_yaml_ng::Mapping::new();
+    for line in fm.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let (k, v) = line.split_once(':')?;
+        let (k, v) = (k.trim(), v.trim());
+        if k.is_empty() || k.contains(' ') {
+            return None;
+        }
+        let unquoted = v.strip_prefix('\'').and_then(|x| x.strip_suffix('\'')).or_else(|| v.strip_prefix('"').and_then(|x| x.strip_suffix('"'))).unwrap_or(v);
+        let value = if v.starts_with('[') { serde_yaml_ng::from_str::<Yaml>(v).ok()? } else { Yaml::String(unquoted.to_owned()) };
+        map.insert(Yaml::String(k.to_owned()), value);
+    }
+    Some(map)
 }
 
 pub fn parse_knowledge(stem: &str, path: &str, raw: &str) -> Knowledge {
@@ -219,7 +256,7 @@ pub fn parse_knowledge(stem: &str, path: &str, raw: &str) -> Knowledge {
 }
 
 fn builtin(id: &str, title: &str, check: Check, severity: Severity, body: &str) -> Rule {
-    Rule { id: id.into(), title: title.into(), path: String::new(), paths: Vec::new(), check, severity, body: body.into(), builtin: true }
+    Rule { id: id.into(), title: title.into(), path: String::new(), paths: Vec::new(), check, severity, body: body.into(), builtin: true, holdout: false }
 }
 
 pub fn starter() -> Vec<Rule> {
@@ -326,11 +363,33 @@ mod tests {
     }
 
     #[test]
+    fn a_pattern_with_a_colon_in_it_still_reads() {
+        let r = parse_rule("commit-type", "", "---\nseverity: block\npattern: ^(feat|fix|chore)(\\([^)]+\\))?: \\S\nwithin: subjects\npaths: [\"src/**\"]\n---\nTyped subjects.").unwrap();
+        let Check::Match { pattern, within, must } = &r.check else { panic!("{:?}", r.check) };
+        assert_eq!((pattern.as_str(), within, *must), ("^(feat|fix|chore)(\\([^)]+\\))?: \\S", &Within::Subjects, true));
+        assert!(regex::Regex::new(pattern).unwrap().is_match("fix(parser): handle it"));
+        assert_eq!(r.paths, vec!["src/**"]);
+    }
+
+    #[test]
     fn a_broken_rule_says_what_is_wrong() {
         assert!(parse_rule("x", "", "---\npattern: '('\n---\nbad").unwrap_err().contains("doesn't compile"));
         assert!(parse_rule("x", "", "---\nseverity: maybe\n---\nhm").unwrap_err().contains("severity"));
         assert!(parse_rule("x", "", "---\npaths: a\n---\n").unwrap_err().contains("says nothing"));
         assert!(parse_rule("x", "", "---\nscope: x\n---\nbody").unwrap_err().contains("\"scope\""));
+    }
+
+    #[test]
+    fn holdouts_live_outside_the_repository_and_are_marked() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let dir = holdouts(home.path(), repo.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("signup.md"), "---\nseverity: block\n---\nA new account can sign in straight after signing up.").unwrap();
+        let book = load_with(repo.path(), repo.path(), Some(&dir));
+        let h = book.rules.iter().find(|r| r.id == "signup").expect("loaded");
+        assert!(h.holdout && h.path.starts_with("holdout/"));
+        assert!(!load(repo.path(), repo.path()).rules.iter().any(|r| r.id == "signup"), "never from the repository itself");
     }
 
     #[test]
