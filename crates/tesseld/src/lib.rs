@@ -98,6 +98,7 @@ pub async fn start_with(mut cfg: hub::Config, backend: Arc<dyn Backend>, mut tak
     };
     if let Some((m, _)) = &taken {
         cfg.adopted = m.agents.iter().map(|a| a.session).collect();
+        cfg.carried = m.agents.iter().filter(|a| a.state.is_some()).map(|a| a.session).collect();
     }
     cfg.lock_fd = Some(lock._file.as_raw_fd());
     let handed_over = cfg.handed_over.clone();

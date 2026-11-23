@@ -504,9 +504,10 @@ impl Shell {
     }
 
     /// restart tessel on the machine shown: its terminals and agents carry on
-    /// under the new daemon (agents mid-turn are waited for).
+    /// under the new daemon.
     pub(crate) fn host_restart_tessel(&mut self, now: bool, cx: &mut Context<Self>) {
-        let busy = self.model.sessions.iter().filter(|s| s.run_state.is_busy() || crate::shell::working_below(s)).count();
+        let carries = crate::bridge::CARRIES_TURNS.load(std::sync::atomic::Ordering::Relaxed);
+        let busy = if carries { 0 } else { self.model.sessions.iter().filter(|s| s.run_state.is_busy() || crate::shell::working_below(s)).count() };
         let what = match busy {
             _ if now => "Restarting tessel now…".to_owned(),
             0 => "Restarting tessel…".to_owned(),

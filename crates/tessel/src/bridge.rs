@@ -298,7 +298,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                     });
                 }
                 // the daemon on disk is newer than the one running: it takes over,
-                // with every terminal and agent carrying on, once no turn is mid-way.
+                // with every terminal and agent carrying on.
                 // (a host's daemon is brought up to date by setting it up again.)
                 let bin = tessel_client::daemon_binary();
                 let newer = host.is_none()
@@ -314,6 +314,7 @@ async fn run(home: PathBuf, cmds: mpsc::UnboundedReceiver<Cmd>, ui: mpsc::Unboun
                         }
                     });
                 }
+                CARRIES_TURNS.store(welcome.capabilities.iter().any(|c| c == "carry-turns"), std::sync::atomic::Ordering::Relaxed);
                 open.many = welcome.proto_minor >= 13;
                 backoff = Duration::from_millis(100);
                 if ui.send(UiEvent::On { host: host.clone(), via }).is_err() || ui.send(UiEvent::Connected).is_err() {
@@ -805,6 +806,8 @@ async fn session(
 }
 
 /// asked the daemon to hand over to the one on disk, once per run.
+pub(crate) static CARRIES_TURNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 static ASKED_RESTART: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// set once the window shows pages natively: the daemon hears it on each connection.

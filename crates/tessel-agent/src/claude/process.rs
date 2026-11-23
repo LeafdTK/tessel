@@ -53,7 +53,7 @@ impl Releaser {
         let stdin = ask(self.stdin).await?;
         let (stdout, unread) = ask(self.stdout).await?;
         let stderr = ask(self.stderr).await?;
-        Some(Released { pid: self.pid, stdin, stdout, stderr, unread })
+        Some(Released { pid: self.pid, stdin, stdout, stderr, unread, carried: None })
     }
 }
 
@@ -63,6 +63,7 @@ struct ClaudeAgent {
     pid: Option<u32>,
     next_request: AtomicU64,
     releaser: std::sync::Mutex<Option<Releaser>>,
+    drained: std::sync::Mutex<Option<oneshot::Receiver<serde_json::Value>>>,
 }
 
 impl ClaudeAgent {
@@ -116,13 +117,29 @@ impl Agent for ClaudeAgent {
 
     fn release(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Released>> + Send>> {
         let releaser = self.releaser.lock().unwrap().take();
-        Box::pin(async move { releaser?.release().await })
+        let drained = self.drained.lock().unwrap().take();
+        Box::pin(async move {
+            let mut released = releaser?.release().await?;
+            if let Some(rx) = drained {
+                released.carried = tokio::time::timeout(Duration::from_secs(5), rx).await.ok().and_then(Result::ok);
+            }
+            Some(released)
+        })
+    }
+
+    fn can_hand_over(&self) -> bool {
+        self.releaser.lock().unwrap().is_some()
     }
 }
 
 /// speak the claude protocol over a transport.
-pub fn drive(mut transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
+pub fn drive(transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
+    drive_from(transport, raw_log, ClaudeNormalizer::new())
+}
+
+fn drive_from(mut transport: Transport, raw_log: Option<PathBuf>, mut normalizer: ClaudeNormalizer) -> Spawned {
     let (out_tx, out_rx) = mpsc::unbounded_channel();
+    let (drained_tx, drained_rx) = oneshot::channel();
     let stdin = transport.stdin.clone();
     let agent = ClaudeAgent {
         stdin: transport.stdin,
@@ -130,9 +147,9 @@ pub fn drive(mut transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
         pid: transport.pid,
         next_request: AtomicU64::new(1),
         releaser: std::sync::Mutex::new(transport.releaser),
+        drained: std::sync::Mutex::new(Some(drained_rx)),
     };
     tokio::spawn(async move {
-        let mut normalizer = ClaudeNormalizer::new();
         let mut log = raw_log.and_then(|p| {
             if let Some(dir) = p.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -157,9 +174,13 @@ pub fn drive(mut transport: Transport, raw_log: Option<PathBuf>) -> Spawned {
                 break;
             }
         }
-        // let go of rather than ended: the next daemon carries on, and nothing is said.
-        if let Ok(code) = transport.exit.await {
-            let _ = out_tx.send(AgentOutput::Exited { code });
+        match transport.exit.await {
+            Ok(code) => {
+                let _ = out_tx.send(AgentOutput::Exited { code });
+            }
+            Err(_) => {
+                let _ = drained_tx.send(serde_json::to_value(&normalizer).unwrap_or_default());
+            }
         }
     });
     Spawned { agent: Box::new(agent), output: out_rx }
@@ -365,7 +386,8 @@ impl Backend for ClaudeBackend {
         let stdout = tokio::io::AsyncReadExt::chain(std::io::Cursor::new(r.unread), stdout);
         let (releaser, exit_rx, exited, stdout_rx) = pipes(r.pid, stdin, stdout, stderr, stdin_rx, stderr_log, None);
         let kill = killer(Some(r.pid), exited);
-        Ok(drive(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid: Some(r.pid), kill, releaser: Some(releaser) }, raw_log))
+        let normalizer = r.carried.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        Ok(drive_from(Transport { stdin: stdin_tx, stdout: stdout_rx, exit: exit_rx, pid: Some(r.pid), kill, releaser: Some(releaser) }, raw_log, normalizer))
     }
 
     fn spawn(&self, opts: SpawnOpts) -> anyhow::Result<Spawned> {
@@ -479,6 +501,14 @@ where
                     }
                 }
                 Ok(back) = &mut want_in => {
+                    while let Ok(line) = lines_in.try_recv() {
+                        let mut buf = line.into_bytes();
+                        buf.push(b'\n');
+                        if stdin.write_all(&buf).await.is_err() {
+                            break;
+                        }
+                    }
+                    let _ = stdin.flush().await;
                     let _ = back.send(stdin.into_fd());
                     return;
                 }
@@ -624,6 +654,58 @@ mod tests {
                 None => panic!("its end is seen even though it isn't ours to wait on"),
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_block_half_streamed_at_the_handover_carries_on_into_the_same_item() {
+        let dir = std::env::temp_dir().join(format!("tessel-handoff-mid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ev = |e: &str| format!(r#"{{"type":"stream_event","event":{e},"parent_tool_use_id":null,"api_message_id":"msg_1"}}"#);
+        let start = ev(r#"{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-5-5","content":[]}}"#);
+        let block = ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#);
+        let first = ev(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}"#);
+        let second = ev(r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}"#);
+        std::fs::write(dir.join("out-1"), format!("{start}\n{block}\n{first}\n")).unwrap();
+        std::fs::write(dir.join("out-2"), format!("{second}\n")).unwrap();
+        let script = dir.join("scripted-agent");
+        std::fs::write(&script, format!("#!/bin/sh\nn=1\nwhile IFS= read -r l; do cat '{}'/out-$n; n=$((n+1)); done\n", dir.display())).unwrap();
+        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let backend = ClaudeBackend { program: script, env: None, extra_args: vec![] };
+        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![] };
+        let Spawned { agent, mut output } = backend.spawn(opts).unwrap();
+        assert!(agent.can_hand_over());
+        agent.send_user("go", &[]);
+        let mut item = None;
+        while item.is_none() {
+            if let Some(AgentOutput::Events(evs)) = next(&mut output).await {
+                item = evs.into_iter().find_map(|e| match e {
+                    tessel_proto::AgentEvent::Delta { item_id, text } if text == "hel" => Some(item_id),
+                    _ => None,
+                });
+            }
+        }
+
+        let released = agent.release().await.expect("let go of mid-block");
+        assert!(released.carried.is_some(), "what it was reading goes along");
+        drop(agent);
+        let Spawned { agent, mut output } = backend.adopt(released, None).unwrap();
+        agent.send_user("more", &[]);
+        let mut carried_on = None;
+        while carried_on.is_none() {
+            match next(&mut output).await {
+                Some(AgentOutput::Events(evs)) => {
+                    carried_on = evs.into_iter().find_map(|e| match e {
+                        tessel_proto::AgentEvent::Delta { item_id, text } if text == "lo" => Some(item_id),
+                        _ => None,
+                    })
+                }
+                Some(_) => {}
+                None => panic!("nothing came after the handover"),
+            }
+        }
+        assert_eq!(carried_on, item, "the rest of the block lands in the block it began");
+        agent.kill();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

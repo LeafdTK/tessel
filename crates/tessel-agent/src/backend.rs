@@ -77,6 +77,9 @@ pub trait Agent: Send {
     fn release(&self) -> Pin<Box<dyn Future<Output = Option<Released>> + Send>> {
         Box::pin(async { None })
     }
+    fn can_hand_over(&self) -> bool {
+        false
+    }
 }
 
 /// an agent process one daemon lets go of for the next to take over: its
@@ -88,6 +91,7 @@ pub struct Released {
     pub stdout: std::os::fd::OwnedFd,
     pub stderr: std::os::fd::OwnedFd,
     pub unread: Vec<u8>,
+    pub carried: Option<serde_json::Value>,
 }
 
 pub struct Spawned {

@@ -8,10 +8,11 @@
 //! then the old daemon leaves, and the new one carries on, holding the lock
 //! all along and serving on the socket path (the old one leaves it be).
 //!
-//! an agent in the middle of a turn holds state that only exists in the old
-//! daemon's memory (what it's streaming, a question waiting on you), so a
-//! restart waits for turns to end first; one that can't wait cuts them short,
-//! as a crash would, and they pick up again from their conversations.
+//! an agent in the middle of a turn goes across too: the old daemon stops
+//! reading its pipes, finishes what it had already read, and sends what only
+//! its memory held (half-streamed blocks, questions waiting on you, running
+//! subagents) along with them. an agent that can't be handed over is waited
+//! for, and cut short if the wait runs out.
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
@@ -53,6 +54,10 @@ pub struct Agent {
     pub unread: String,
     /// what this process has cost so far: its next report counts from there.
     pub cost_process: f64,
+    #[serde(default)]
+    pub normalizer: Option<serde_json::Value>,
+    #[serde(default)]
+    pub state: Option<serde_json::Value>,
 }
 
 /// how many descriptors go in one message.

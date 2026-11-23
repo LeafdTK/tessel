@@ -66,7 +66,18 @@ pub enum Input {
     Surface(tessel_proto::surface::SurfaceOp),
     /// a running agent was taken over from the previous daemon. `cost_process`:
     /// what this process had cost so far, already in the stored total.
-    Adopted { cost_process: f64 },
+    Adopted { cost_process: f64, carried: Option<Carried> },
+}
+
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct Carried {
+    pending: Vec<PermissionRequest>,
+    denied: Vec<ItemId>,
+    unechoed: Vec<ItemId>,
+    tasks: Vec<Task>,
+    starting: bool,
+    errored: bool,
+    limited: Option<Option<i64>>,
 }
 
 /// what changed, for the daemon to persist and broadcast.
@@ -102,7 +113,7 @@ pub struct Meta {
     pub linked_dirs: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct Task {
     id: String,
     tool_item: Option<ItemId>,
@@ -323,6 +334,22 @@ impl SessionState {
         !self.open.is_empty()
     }
 
+    pub fn open_items(&self) -> Vec<Item> {
+        self.open.iter().filter_map(|id| self.item(id)).cloned().collect()
+    }
+
+    pub fn carry(&self) -> Carried {
+        Carried {
+            pending: self.pending.clone(),
+            denied: self.denied.iter().cloned().collect(),
+            unechoed: self.unechoed.iter().cloned().collect(),
+            tasks: self.tasks.clone(),
+            starting: self.starting,
+            errored: self.errored,
+            limited: self.limited,
+        }
+    }
+
     /// a tool still running long past what its kind takes: stuck, most likely.
     fn overdue_tool(&self, now: Millis) -> bool {
         self.open.iter().filter_map(|id| self.item(id)).any(|i| match &i.body {
@@ -505,9 +532,19 @@ impl SessionState {
         let mut fx = Effects::default();
         let before = (self.seq, self.attention.clone());
         match input {
-            Input::Adopted { cost_process } => {
+            Input::Adopted { cost_process, carried } => {
                 self.alive = true;
                 self.starting = false;
+                if let Some(c) = carried {
+                    self.pending = c.pending;
+                    self.denied = c.denied.into_iter().collect();
+                    self.unechoed = c.unechoed.into_iter().collect();
+                    self.tasks = c.tasks;
+                    self.starting = c.starting;
+                    self.errored = c.errored;
+                    self.limited = c.limited;
+                    fx.pending_changed = !self.pending.is_empty();
+                }
                 self.cost_base = (self.cost_base - cost_process).max(0.0);
                 self.cost_process = cost_process;
                 self.last_output_ms = now;

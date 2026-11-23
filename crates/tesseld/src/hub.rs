@@ -47,6 +47,7 @@ pub struct Config {
     pub titles: bool,
     /// sessions whose agents the previous daemon handed over: theirs aren't leftovers to stop.
     pub adopted: HashSet<SessionId>,
+    pub carried: HashSet<SessionId>,
     /// the descriptor the instance lock is held by, to hand over with everything else.
     pub lock_fd: Option<i32>,
     /// set once everything has been handed over: the socket path is the new daemon's now.
@@ -64,6 +65,7 @@ impl Config {
             tools_bin: None,
             titles: false,
             adopted: HashSet::new(),
+            carried: HashSet::new(),
             lock_fd: None,
             handed_over: Default::default(),
         }
@@ -75,6 +77,7 @@ pub enum HubMsg {
     Request { client: ClientId, id: u64, req: Request },
     Disconnected { client: ClientId },
     Agent { session: SessionId, generation: u64, output: AgentOutput },
+    AgentDrained { session: SessionId, generation: u64 },
     /// the answer to a request that needed work off the main loop (git, files, the network).
     Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
     /// a worktree finished being made (or failed) for a pending create.
@@ -356,9 +359,11 @@ impl Hub {
                 eprintln!("tesseld: stopped agent {pid} left over from a previous daemon (session {id})");
             }
             let mut state = SessionState::restore(p, items);
-            let fx = state.apply(Input::Recovered, now);
-            if !fx.upserts.is_empty() || fx.pending_changed || fx.summary_changed {
-                hub.store.save(state.persisted(), fx.upserts);
+            if !hub.cfg.carried.contains(&id) {
+                let fx = state.apply(Input::Recovered, now);
+                if !fx.upserts.is_empty() || fx.pending_changed || fx.summary_changed {
+                    hub.store.save(state.persisted(), fx.upserts);
+                }
             }
             hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from: None });
         }
@@ -379,11 +384,15 @@ impl Hub {
             }
         }
         for (id, body) in hub.store.load_runs().await? {
-            let Ok(rl) = serde_json::from_str::<RunLive>(&body) else { continue };
+            let Ok(mut rl) = serde_json::from_str::<RunLive>(&body) else { continue };
             if let Some(live) = hub.sessions.get_mut(&id) {
                 live.state.run = Some(rl.run.clone());
             }
-            let resume = !rl.run.done() && rl.term.is_none() && rl.run.steps.get(rl.run.at).is_some_and(|s| s.state == tessel_proto::StepState::Working);
+            let carried = rl.run.steps.get(rl.run.at).and_then(|s| s.session).is_some_and(|s| hub.cfg.carried.contains(&s));
+            if carried {
+                rl.busy_seen = true;
+            }
+            let resume = !carried && !rl.run.done() && rl.term.is_none() && rl.run.steps.get(rl.run.at).is_some_and(|s| s.state == tessel_proto::StepState::Working);
             hub.runs.insert(id, rl);
             if resume {
                 let _ = hub.tx.send(HubMsg::RunResume { run: id });
@@ -414,7 +423,7 @@ impl Hub {
         let due = self.restart_due();
         match self.restart.take().filter(|_| due) {
             Some(r) => {
-                if let Err((r, e)) = self.hand_off(r).await {
+                if let Err((r, e)) = self.hand_off(r, &mut rx).await {
                     // the new daemon never started: nothing was let go of, so carry on as we were.
                     for (client, id) in std::iter::once((r.client, r.id)).chain(r.also.iter().copied()) {
                         self.respond(client, id, Err(RpcError::new(ErrorCode::Internal, format!("couldn't restart: {e}"))));
@@ -427,16 +436,15 @@ impl Hub {
         }
     }
 
-    /// asked to restart, and nothing is mid-turn any more (or the wait is over).
     fn restart_due(&self) -> bool {
         let Some(r) = &self.restart else { return false };
-        now_ms() >= r.deadline || !self.sessions.values().any(|l| l.agent.is_some() && l.state.mid_turn())
+        now_ms() >= r.deadline || !self.sessions.values().any(|l| l.agent.as_ref().is_some_and(|a| !a.can_hand_over()) && l.state.mid_turn())
     }
 
     /// start the new daemon, then give it every terminal and every idle agent,
     /// still running. agents mid-turn (only when the wait ran out) are cut
     /// short, as a crash would; their conversations pick up again.
-    async fn hand_off(&mut self, r: Restart) -> Result<(), (Restart, String)> {
+    async fn hand_off(&mut self, r: Restart, rx: &mut mpsc::UnboundedReceiver<HubMsg>) -> Result<(), (Restart, String)> {
         use std::os::fd::{AsRawFd, OwnedFd};
         use std::os::unix::process::CommandExt;
         let (ours, theirs) = match std::os::unix::net::UnixStream::pair() {
@@ -481,26 +489,42 @@ impl Hub {
             drop(handle);
         }
         let mut cut_short = 0;
+        let mut released = Vec::new();
         let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         for s in ids {
             let Some(live) = self.sessions.get_mut(&s) else { continue };
             let Some(agent) = live.agent.take() else { continue };
-            if live.state.mid_turn() {
+            if live.state.mid_turn() && !agent.can_hand_over() {
                 agent.kill();
                 cut_short += 1;
                 continue;
             }
-            let cost_process = live.state.cost_process();
+            let generation = live.generation;
             match agent.release().await {
-                Some(a) => {
-                    manifest.agents.push(crate::handoff::Agent { session: s, pid: a.pid, unread: b64(&a.unread), cost_process });
-                    fds.extend([a.stdin, a.stdout, a.stderr]);
-                }
+                Some(a) => released.push((s, generation, a)),
                 None => agent.kill(),
             }
         }
+        let mut waiting: HashSet<(SessionId, u64)> = released.iter().map(|(s, g, _)| (*s, *g)).collect();
+        let until = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !waiting.is_empty() {
+            match tokio::time::timeout_at(until, rx.recv()).await {
+                Ok(Some(HubMsg::Agent { session, generation, output })) => self.agent_output(session, generation, output),
+                Ok(Some(HubMsg::AgentDrained { session, generation })) => {
+                    waiting.remove(&(session, generation));
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        for (s, _, a) in released {
+            let Some(live) = self.sessions.get(&s) else { continue };
+            let state = serde_json::to_value(live.state.carry()).ok();
+            manifest.agents.push(crate::handoff::Agent { session: s, pid: a.pid, unread: b64(&a.unread), cost_process: live.state.cost_process(), normalizer: a.carried, state });
+            fds.extend([a.stdin, a.stdout, a.stderr]);
+        }
         for live in self.sessions.values() {
-            self.store.save(live.state.persisted(), Vec::new());
+            self.store.save(live.state.persisted(), live.state.open_items());
         }
         self.store.flush().await;
         // the lock, last: the new daemon holds it before this one lets go.
@@ -551,14 +575,16 @@ impl Hub {
         }
         for a in m.agents {
             let (Some(stdin), Some(stdout), Some(stderr)) = (fds.next(), fds.next(), fds.next()) else { break };
-            let released = tessel_agent::backend::Released { pid: a.pid, stdin, stdout, stderr, unread: unb64(&a.unread) };
+            let released = tessel_agent::backend::Released { pid: a.pid, stdin, stdout, stderr, unread: unb64(&a.unread), carried: a.normalizer };
+            let carried = a.state.and_then(|v| serde_json::from_value::<crate::reducer::Carried>(v).ok());
             match self.backend.adopt(released, Some(self.cfg.paths.raw_log(&a.session))) {
                 Ok(spawned) if self.sessions.contains_key(&a.session) => {
                     self.wire_agent(a.session, spawned);
                     if self.sessions.get(&a.session).is_some_and(|l| l.state.visual) {
                         self.prefixed.insert(a.session);
                     }
-                    let _ = self.apply(a.session, Input::Adopted { cost_process: a.cost_process });
+                    let _ = self.apply(a.session, Input::Adopted { cost_process: a.cost_process, carried });
+                    self.watch_runs(a.session);
                 }
                 Ok(spawned) => spawned.agent.kill(),
                 Err(e) => {
@@ -629,6 +655,7 @@ impl Hub {
                 return stop && self.clients.get(&client).is_some_and(|c| c.ready);
             }
             HubMsg::Agent { session, generation, output } => self.agent_output(session, generation, output),
+            HubMsg::AgentDrained { .. } => {}
             HubMsg::RecheckMcp { session, generation } => {
                 if let Some(live) = self.sessions.get(&session).filter(|l| l.generation == generation)
                     && let Some(agent) = &live.agent
@@ -795,7 +822,7 @@ impl Hub {
                         proto_minor: PROTO_MINOR,
                         build: self.cfg.build.clone(),
                         daemon_pid: std::process::id(),
-                        capabilities: vec!["worktrees".into(), "replay-user".into(), "handoff".into()],
+                        capabilities: vec!["worktrees".into(), "replay-user".into(), "handoff".into(), "carry-turns".into()],
                     })
                 }
             }
@@ -2171,9 +2198,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         tokio::spawn(async move {
             while let Some(out) = output.recv().await {
                 if tx.send(HubMsg::Agent { session, generation, output: out }).is_err() {
-                    break;
+                    return;
                 }
             }
+            let _ = tx.send(HubMsg::AgentDrained { session, generation });
         });
     }
 

@@ -210,6 +210,37 @@ fn a_daemon_restart_at_any_point_always_settles() {
     }
 }
 
+#[test]
+fn a_handover_at_any_point_carries_on_as_if_nothing_happened() {
+    for name in FIXTURES {
+        let all = inputs(&load(name));
+        let mut whole = SessionState::new(meta());
+        whole.apply(Input::Spawning, T0);
+        for (t, input) in &all {
+            whole.apply(input.clone(), *t);
+        }
+        for cut in 0..=all.len() {
+            let mut s = SessionState::new(whole.meta.clone());
+            s.apply(Input::Spawning, T0);
+            for (t, input) in &all[..cut] {
+                s.apply(input.clone(), *t);
+            }
+            let mut back = SessionState::restore(s.persisted(), s.items().to_vec());
+            back.apply(Input::Adopted { cost_process: s.cost_process(), carried: Some(s.carry()) }, all.get(cut).map_or(T0, |(t, _)| *t));
+            for (t, input) in &all[cut..] {
+                back.apply(input.clone(), *t);
+            }
+            let at = format!("{name} handed over at {cut}");
+            assert_eq!(back.items(), whole.items(), "{at}");
+            assert_eq!(back.pending(), whole.pending(), "{at}");
+            assert_eq!(back.attention, whole.attention, "{at}");
+            assert_eq!(back.turn_open(), whole.turn_open(), "{at}");
+            assert_eq!(back.tasks_running(), whole.tasks_running(), "{at}");
+            assert!((back.cost_usd() - whole.cost_usd()).abs() < 1e-9, "{at}");
+        }
+    }
+}
+
 // ---- derived run state ---------------------------------------------------
 
 /// while anything is waiting on the user the session says so, whatever else

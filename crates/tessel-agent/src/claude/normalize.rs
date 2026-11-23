@@ -14,7 +14,7 @@ use tessel_proto::{
 use serde_json::Value;
 use std::collections::HashMap;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct ClaudeNormalizer {
     /// blocks currently streaming, keyed by (api message id, block index).
     open: Vec<OpenBlock>,
@@ -28,6 +28,7 @@ pub struct ClaudeNormalizer {
     context: Option<u64>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct OpenBlock {
     message: String,
     index: u64,
@@ -35,7 +36,7 @@ struct OpenBlock {
     item: ItemId,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 enum Kind {
     Text,
     Thinking,

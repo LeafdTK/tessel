@@ -243,8 +243,9 @@ async fn run() -> anyhow::Result<()> {
                 if !w.capabilities.iter().any(|c| c == "handoff") {
                     bail!("this daemon (pid {}) can't hand over to a new one; `tesselctl daemon stop` stops it, and what it runs with it", w.daemon_pid);
                 }
-                // agents mid-turn are waited for: say so, so a wait isn't a mystery.
+                // a daemon that can't carry a turn across waits for it: say so, so a wait isn't a mystery.
                 if !now
+                    && !w.capabilities.iter().any(|c| c == "carry-turns")
                     && let Ok(Response::Sessions { sessions }) = c.request(Request::SessionList).await
                 {
                     let busy = sessions.iter().filter(|s| matches!(s.run_state, tessel_proto::RunState::Working | tessel_proto::RunState::Starting) || s.attention.as_ref().is_some_and(|a| matches!(a.reason, tessel_proto::AttentionReason::NeedsPermission | tessel_proto::AttentionReason::NeedsInput))).count();
