@@ -3039,3 +3039,32 @@ fn typing_what_a_workflow_does_offers_it_and_its_form_runs_it(cx: &mut TestAppCo
     assert!(!rig.exists(cx, "workflow-sheet"), "the form goes");
     assert!(rig.opened().iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == sid(9))), "and the run opens");
 }
+
+#[gpui_kit::test]
+fn an_agents_question_is_a_form_answered_in_one_go(cx: &mut TestAppContext) {
+    let a = session(1, "Plan the trip", RunState::Working, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    let form = serde_json::json!({"k": "form", "id": "form", "p": {"title": "Where to?", "submit": "Go", "fields": [
+        {"id": "city", "label": "City", "type": "select", "options": ["Lisbon", "Kyoto"]},
+        {"id": "extras", "label": "Extras", "type": "multiselect", "options": ["food", "art"], "optional": true},
+        {"id": "note", "label": "Anything else", "type": "text", "optional": true}
+    ]}});
+    let item = Item { id: ItemId::from("surface/ask-1"), parent: None, seq: 2, order: 2, created_ms: 0, body: ItemBody::Surface { surface: "ask-1".into(), node: form, region: "inline".into() } };
+    rig.feed(cx, vec![UiEvent::Item { session: a.id, item }]);
+    rig.settle(cx);
+    assert!(rig.exists(cx, "surface-ask-1-city-1"));
+    assert!(rig.exists(cx, "surface-ask-1-note"), "a text field to type in");
+    rig.asked();
+    rig.click(cx, "surface-ask-1-submit");
+    assert!(rig.asked().is_empty(), "the city is still needed");
+    rig.click(cx, "surface-ask-1-city-1");
+    rig.click(cx, "surface-ask-1-extras-0");
+    rig.click(cx, "surface-ask-1-extras-1");
+    rig.click(cx, "surface-ask-1-extras-0");
+    rig.click(cx, "surface-ask-1-submit");
+    let asked = rig.asked();
+    assert!(
+        matches!(asked.as_slice(), [Cmd::AskAnswer { surface, answers, .. }] if surface == "ask-1" && *answers == serde_json::json!({"city": "Kyoto", "extras": ["art"]})),
+        "{asked:?}"
+    );
+}

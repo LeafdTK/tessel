@@ -404,6 +404,8 @@ pub struct Shell {
     pub(crate) workflows: Vec<tessel_proto::Workflow>,
     pub(crate) wf_form: Option<workflows::WfForm>,
     pub(crate) wf_last: HashMap<String, std::collections::BTreeMap<String, tessel_proto::Pick>>,
+    pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
+    pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
     pub(crate) confirm_purge: Option<SessionId>,
     /// answers picked so far for a question that has several parts.
     answers: HashMap<RequestId, serde_json::Map<String, serde_json::Value>>,
@@ -845,6 +847,8 @@ impl Shell {
             workflows: Vec::new(),
             wf_form: None,
             wf_last: HashMap::new(),
+            ask_drafts: Default::default(),
+            ask_inputs: Default::default(),
             confirm_purge: None,
             answers: HashMap::new(),
             open_on_launch: launch.open,
@@ -2715,6 +2719,7 @@ impl Render for Shell {
 
         // panes head for wherever the layout and the room now put them.
         self.sync_panes();
+        self.prepare_asks(window, cx);
         self.sync_surfaces_dock(cx);
         self.sync_terminals(window, cx);
         self.step_bench_term(window, cx);

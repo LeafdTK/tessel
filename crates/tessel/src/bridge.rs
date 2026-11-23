@@ -75,6 +75,7 @@ pub enum Cmd {
     Ask { tag: &'static str, req: Request },
     /// show another machine's daemon (a host's id), or this mac's (none).
     Host(Option<String>),
+    AskAnswer { session: SessionId, surface: String, answers: serde_json::Value },
     WorkflowOptions { workflow: String, input: String, picked: std::collections::BTreeMap<String, tessel_proto::Pick>, cwd: Option<String>, fresh: bool },
     /// drop the connection and dial the same machine again, at once: the window keeps what it shows.
     Redial,
@@ -660,6 +661,7 @@ async fn session(
                         });
                         Ok(())
                     }
+                    Cmd::AskAnswer { session, surface, answers } => client.request(Request::AskAnswer { session, surface, answers }).await.map(drop),
                     Cmd::SurfaceEvent { session, surface, element, act, value } => {
                         client.request(Request::SurfaceEvent { session, surface, element, act, value }).await.map(drop)
                     }

@@ -153,6 +153,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
+    Ask {
+        session: SessionId,
+        form: serde_json::Value,
+    },
+    AskAnswer {
+        session: SessionId,
+        surface: String,
+        answers: serde_json::Value,
+    },
     WorkflowOptions {
         workflow: String,
         input: String,
@@ -788,6 +797,9 @@ pub enum Response {
     },
     Choices {
         choices: Vec<crate::Choice>,
+    },
+    Answered {
+        answers: serde_json::Value,
     },
     WorkflowSaved {
         workflow: crate::Workflow,

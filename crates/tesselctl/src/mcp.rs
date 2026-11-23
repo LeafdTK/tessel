@@ -114,6 +114,23 @@ key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
             }, "required": ["op"]}
         },
         {
+            "name": "tessel_ask",
+            "description": "Ask the person something and wait for the answer, as a small form in the chat. Use it whenever you need details, a choice or a preference before going on, instead of asking in text and ending your turn: their answers come back as this tool's result and you carry on. Keep it short: a few fields, the likely answer first. Field types: text (a line), long (a paragraph), select (one of options), multiselect (any of options), toggle (yes or no). The result is a JSON object of field id to answer; a field left empty is missing from it.",
+            "inputSchema": {"type": "object", "properties": {
+                "title": {"type": "string", "description": "the question, as a short heading"},
+                "note": {"type": "string", "description": "a line of context, if it helps"},
+                "fields": {"type": "array", "items": {"type": "object", "properties": {
+                    "id": {"type": "string"},
+                    "label": {"type": "string"},
+                    "type": {"type": "string", "enum": ["text", "long", "select", "multiselect", "toggle"]},
+                    "options": {"type": "array", "items": {"type": "string"}},
+                    "optional": {"type": "boolean"},
+                    "placeholder": {"type": "string"}
+                }, "required": ["id", "label"]}},
+                "submit": {"type": "string", "description": "the button's label (default Continue)"}
+            }, "required": ["fields"]}
+        },
+        {
             "name": "tessel_surface",
             "description": surface,
             "inputSchema": {"type": "object", "properties": {
@@ -311,6 +328,13 @@ impl Server {
                 self.ask(Request::SurfaceOp { session, op }).await?;
                 "done: it's on screen".to_owned()
             }
+            "tessel_ask" => {
+                let session = self.session.ok_or_else(|| anyhow::anyhow!("asking belongs to a session, and this agent wasn't started by tessel"))?;
+                match self.ask(Request::Ask { session, form: args.clone() }).await? {
+                    Response::Answered { answers } => serde_json::to_string(&answers)?,
+                    other => anyhow::bail!("unexpected reply: {other:?}"),
+                }
+            }
             "tessel_terminal" => self.terminal(args).await?,
             "tessel_browser" => self.browser(args).await?,
             other => anyhow::bail!("there's no tool {other}"),
@@ -344,7 +368,7 @@ pub async fn serve() -> anyhow::Result<()> {
                 // a backstop: one call never holds up every call after it (they're answered in turn).
                 // waiting on a terminal may take as long as it was asked to.
                 let asked = args.get("timeout").and_then(Value::as_f64).unwrap_or(0.0).clamp(0.0, 3600.0);
-                let limit = Duration::from_secs_f64(150f64.max(asked + 30.0));
+                let limit = if name == "tessel_ask" { Duration::from_secs(24 * 3600) } else { Duration::from_secs_f64(150f64.max(asked + 30.0)) };
                 let done = match tokio::time::timeout(limit, server.call(&name, &args)).await {
                     Ok(done) => done,
                     Err(_) => {

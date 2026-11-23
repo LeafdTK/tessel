@@ -1729,3 +1729,45 @@ async fn an_ask_step_waits_for_your_answer_before_going_on() {
     let run = run_of(&c, head.id, "the run to finish", |r| r.done()).await;
     assert!(run.steps.iter().all(|s| s.state == tessel_proto::StepState::Done), "{:?}", run.steps);
 }
+
+#[tokio::test]
+async fn an_agent_can_ask_with_a_form_and_wait_for_the_answer() {
+    let d = Daemon::start(&["plain"]).await;
+    let (agent, _) = d.client().await;
+    let (window, _) = d.client().await;
+    let s = create(&agent, &d.cwd(), None).await;
+    let bad = agent.request(Request::Ask { session: s.id, form: serde_json::json!({"fields": [{"id": "x", "label": "X", "type": "select"}]}) }).await;
+    assert!(matches!(bad, Err(tessel_client::ClientError::Rpc(e)) if e.message.contains("needs options")));
+
+    let form = serde_json::json!({"title": "Which one?", "fields": [{"id": "pick", "label": "Pick", "type": "select", "options": ["a", "b"]}, {"id": "why", "label": "Why", "type": "long", "optional": true}]});
+    let agent = std::sync::Arc::new(agent);
+    let asking = tokio::spawn({
+        let agent = agent.clone();
+        let id = s.id;
+        async move { agent.request(Request::Ask { session: id, form }).await }
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let surface = loop {
+        let snap = snapshot(&window, s.id).await;
+        if let Some(name) = snap.items.iter().find_map(|i| match &i.body {
+            ItemBody::Surface { surface, node, .. } if node["k"] == "form" => Some(surface.clone()),
+            _ => None,
+        }) {
+            break name;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the form never showed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(!asking.is_finished(), "the agent waits");
+    window.request(Request::AskAnswer { session: s.id, surface: surface.clone(), answers: serde_json::json!({"pick": "b"}) }).await.unwrap();
+    let Ok(Ok(Response::Answered { answers })) = asking.await else { panic!("the agent hears the answer") };
+    assert_eq!(answers, serde_json::json!({"pick": "b"}));
+    let snap = snapshot(&window, s.id).await;
+    let answered = snap.items.iter().find_map(|i| match &i.body {
+        ItemBody::Surface { surface: n, node, .. } if *n == surface => Some(node.clone()),
+        _ => None,
+    });
+    assert_eq!(answered.unwrap()["p"]["answered"], true, "the form shows it was answered");
+    let again = window.request(Request::AskAnswer { session: s.id, surface, answers: serde_json::json!({}) }).await;
+    assert!(matches!(again, Err(tessel_client::ClientError::Rpc(e)) if e.message.contains("isn't waiting")));
+}

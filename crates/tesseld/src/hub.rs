@@ -227,6 +227,7 @@ pub struct Hub {
     deleted: HashMap<SessionId, Deleted>,
     deleted_swept: Option<std::time::Instant>,
     runs: HashMap<SessionId, RunLive>,
+    asks: HashMap<(SessionId, String), (ClientId, u64)>,
     choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
@@ -316,6 +317,7 @@ impl Hub {
             deleted: HashMap::new(),
             deleted_swept: None,
             runs: HashMap::new(),
+            asks: HashMap::new(),
             choices_kept: HashMap::new(),
             next_term: 1,
             restart: None,
@@ -560,6 +562,10 @@ impl Hub {
                 self.clients.insert(client, Client { tx, ready: false, summary: false, detail: Vec::new(), lagged: false, dead: false, window: None, ui_kinds: None, hosts_pages: false });
             }
             HubMsg::Disconnected { client } => {
+                let mine: Vec<SessionId> = self.asks.iter().filter(|(_, (c, _))| *c == client).map(|((s, _), _)| *s).collect();
+                for s in mine {
+                    self.let_go_of_asks(s, Some(client), "the agent went away before it was answered");
+                }
                 let gone = self.clients.remove(&client);
                 // pages nobody watches any more stop sending frames.
                 let unwatched: Vec<SessionId> = self
@@ -986,6 +992,8 @@ impl Hub {
                 });
                 return None;
             }
+            Request::Ask { session, form } => return self.ask_person(client, id, session, form),
+            Request::AskAnswer { session, surface, answers } => self.ask_answered(session, surface, answers),
             Request::Workflows { cwd } => Ok(Response::Workflows { workflows: crate::workflow::load_all(&self.cfg.paths.home, cwd.as_deref().map(Path::new)) }),
             Request::WorkflowSave { name, yaml, .. } => crate::workflow::save(&self.cfg.paths.home, &name, &yaml)
                 .map(|workflow| Response::WorkflowSaved { workflow })
@@ -2114,10 +2122,14 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let now = now_ms();
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
         let fx = live.state.apply(input, now);
-        if !live.state.turn_open() {
+        let ended = !live.state.turn_open();
+        if ended {
             live.interrupt_deadline = None;
         }
         self.after(session, fx, now);
+        if ended && self.asks.keys().any(|(s, _)| *s == session) {
+            self.let_go_of_asks(session, None, "the turn ended before it was answered");
+        }
         Ok(())
     }
 
@@ -2168,6 +2180,83 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             .collect();
         for client in targets {
             self.send(client, Envelope::Ev { ev: ev.clone() });
+        }
+    }
+
+    fn ask_person(&mut self, client: ClientId, id: u64, session: SessionId, form: serde_json::Value) -> Option<Result<Response, RpcError>> {
+        const TYPES: [&str; 5] = ["text", "long", "select", "multiselect", "toggle"];
+        if !self.sessions.contains_key(&session) {
+            return Some(Err(not_found(session)));
+        }
+        let Some(fields) = form.get("fields").and_then(serde_json::Value::as_array).filter(|f| !f.is_empty()) else {
+            return Some(Err(RpcError::new(ErrorCode::Invalid, "an ask needs fields: [{id, label, type?, options?}]")));
+        };
+        let mut seen = HashSet::new();
+        for f in fields {
+            let fid = f.get("id").and_then(serde_json::Value::as_str).unwrap_or("");
+            let kind = f.get("type").and_then(serde_json::Value::as_str).unwrap_or("text");
+            if fid.is_empty() || f.get("label").and_then(serde_json::Value::as_str).is_none_or(str::is_empty) {
+                return Some(Err(RpcError::new(ErrorCode::Invalid, "every field needs an id and a label")));
+            }
+            if !seen.insert(fid.to_owned()) {
+                return Some(Err(RpcError::new(ErrorCode::Invalid, format!("two fields are called {fid}"))));
+            }
+            if !TYPES.contains(&kind) {
+                return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{fid}: \"{kind}\" isn't a field type. types: {}", TYPES.join(", ")))));
+            }
+            if matches!(kind, "select" | "multiselect") && f.get("options").and_then(serde_json::Value::as_array).is_none_or(Vec::is_empty) {
+                return Some(Err(RpcError::new(ErrorCode::Invalid, format!("{fid} is a {kind}, so it needs options"))));
+            }
+        }
+        let surface = format!("ask-{}", now_ms());
+        let node = serde_json::json!({"k": "form", "id": "form", "p": {
+            "title": form.get("title").cloned().unwrap_or(serde_json::Value::Null),
+            "note": form.get("note").cloned().unwrap_or(serde_json::Value::Null),
+            "submit": form.get("submit").and_then(serde_json::Value::as_str).unwrap_or("Continue"),
+            "fields": fields,
+        }});
+        if let Err(e) = self.apply(session, Input::Surface(tessel_proto::surface::SurfaceOp::Put { surface: surface.clone(), node, region: "inline".into() })) {
+            return Some(Err(e));
+        }
+        self.asks.insert((session, surface), (client, id));
+        self.mark_asking(session, true);
+        None
+    }
+
+    fn ask_answered(&mut self, session: SessionId, surface: String, answers: serde_json::Value) -> Result<Response, RpcError> {
+        let Some((client, id)) = self.asks.remove(&(session, surface.clone())) else {
+            return Err(RpcError::new(ErrorCode::Conflict, "that question isn't waiting any more"));
+        };
+        let props = serde_json::json!({"answered": true, "answers": answers});
+        let _ = self.apply(session, Input::Surface(tessel_proto::surface::SurfaceOp::Set { surface, element: String::new(), props }));
+        self.respond(client, id, Ok(Response::Answered { answers }));
+        self.mark_asking(session, false);
+        Ok(Response::Ack)
+    }
+
+    fn let_go_of_asks(&mut self, session: SessionId, client: Option<ClientId>, why: &str) {
+        let gone: Vec<(SessionId, String)> = self.asks.iter().filter(|((s, _), (c, _))| *s == session || client == Some(*c)).map(|(k, _)| k.clone()).collect();
+        for key in gone {
+            if let Some((c, i)) = self.asks.remove(&key) {
+                self.respond(c, i, Err(RpcError::new(ErrorCode::Conflict, why)));
+            }
+            let _ = self.apply(key.0, Input::Surface(tessel_proto::surface::SurfaceOp::Set { surface: key.1, element: String::new(), props: serde_json::json!({"closed": true}) }));
+        }
+    }
+
+    fn mark_asking(&mut self, session: SessionId, asking: bool) {
+        use tessel_proto::StepState;
+        let ids: Vec<SessionId> = self
+            .runs
+            .iter()
+            .filter(|(_, r)| !r.run.done() && r.run.steps.get(r.run.at).is_some_and(|s| s.session == Some(session) && matches!(s.state, StepState::Working | StepState::Asking)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            if let Some(rl) = self.runs.get_mut(&id) {
+                rl.run.steps[rl.run.at].state = if asking { StepState::Asking } else { StepState::Working };
+            }
+            self.sync_run(id);
         }
     }
 
