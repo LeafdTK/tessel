@@ -517,7 +517,7 @@ impl Shell {
             .track_focus(&self.settings_focus)
             .key_context("Settings")
             .on_action(cx.listener(|this, _: &crate::CloseSettings, _, cx| this.close_settings(cx)))
-            .bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 }))
+            .when(!self.ui.theme.glass.unwrap_or(false), |d| d.bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 })))
             .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
             .flex()
             .items_center()
@@ -847,32 +847,52 @@ impl Shell {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };
                 let p = shell.read(cx).palette.get();
-                let mut names: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|n| !n.starts_with('.')).collect();
-                names.sort_by_key(|n| n.to_lowercase());
-                names.dedup();
-                let mut first: Vec<(String, String)> = if interface {
+                let names = installed_fonts(cx);
+                let mut choices: Vec<(String, String)> = if interface {
                     vec![(crate::theme::DEFAULT_FONT.to_owned(), "Allo".to_owned()), ("system".to_owned(), "System".to_owned())]
                 } else {
                     vec![(crate::theme::MONO.to_owned(), crate::theme::MONO.to_owned())]
                 };
-                first.extend(names.into_iter().filter(|n| n != crate::theme::DEFAULT_FONT && n != crate::theme::MONO).map(|n| (n.clone(), n)));
-                let mut list = theme::float_list(&p).id(SharedString::from(format!("{id}-list"))).w(px(240.)).max_h(px(360.)).overflow_y_scroll();
-                for (n, (value, label)) in first.into_iter().enumerate() {
-                    let on = label == current || (value == "system" && current == "System");
-                    let (me, popover) = (me.clone(), popover.clone());
-                    list = list.child(theme::float_item(&p, SharedString::from(format!("{id}-{n}")), None, label, None, on).on_click(move |_, window, cx| {
-                        popover.update(cx, |st, cx| st.dismiss(window, cx));
-                        let _ = me.update(cx, |this, cx| {
-                            if interface {
-                                let _ = this.exec("theme.font", &json!({"font": value}), window, cx);
-                            } else {
-                                let v = (value != crate::theme::MONO).then(|| json!(value));
-                                this.edit_ui(|f| Self::set_in(f, "theme", "mono", v), window, cx);
-                            }
-                        });
-                    }));
-                }
-                list.into_any_element()
+                choices.extend(names.iter().filter(|n| *n != crate::theme::DEFAULT_FONT && *n != crate::theme::MONO).map(|n| (n.clone(), n.clone())));
+                let choices = std::rc::Rc::new(choices);
+                let current = current.clone();
+                let me = me.clone();
+                let rows = uniform_list(SharedString::from(format!("{id}-list")), choices.len(), move |range, _, _| {
+                    range
+                        .map(|n| {
+                            let (value, label) = choices[n].clone();
+                            let on = label == current || (value == "system" && current == "System");
+                            let (me, popover) = (me.clone(), popover.clone());
+                            theme::float_item(&p, SharedString::from(format!("{id}-{n}")), None, label, None, on)
+                                .on_click(move |_, window, cx| {
+                                    popover.update(cx, |st, cx| st.dismiss(window, cx));
+                                    let _ = me.update(cx, |this, cx| {
+                                        if interface {
+                                            let _ = this.exec("theme.font", &json!({"font": value}), window, cx);
+                                        } else {
+                                            let v = (value != crate::theme::MONO).then(|| json!(value));
+                                            this.edit_ui(|f| Self::set_in(f, "theme", "mono", v), window, cx);
+                                        }
+                                    });
+                                })
+                                .into_any_element()
+                        })
+                        .collect()
+                })
+                .h(px(360.));
+                theme::float_list(&p).w(px(240.)).child(rows).into_any_element()
             })
     }
+}
+
+fn installed_fonts(cx: &App) -> std::sync::Arc<Vec<String>> {
+    static NAMES: std::sync::OnceLock<std::sync::Arc<Vec<String>>> = std::sync::OnceLock::new();
+    NAMES
+        .get_or_init(|| {
+            let mut names: Vec<String> = cx.text_system().all_font_names().into_iter().filter(|n| !n.starts_with('.')).collect();
+            names.sort_by_key(|n| n.to_lowercase());
+            names.dedup();
+            std::sync::Arc::new(names)
+        })
+        .clone()
 }

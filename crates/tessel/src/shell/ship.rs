@@ -136,23 +136,23 @@ impl Shell {
                     Some(pr) => {
                         list = list
                             .child(div().px(px(10.)).pb(px(4.)).set(Type::Subheadline).text_color(p.secondary).child(format!("#{} {}", pr.number, pr.title)))
-                            .child(theme::float_item(&p, "ship-squash", Some("git-merge"), "Squash and merge", Some("One commit on main"), false).test_support().on_click(step(ShipStep::MergePullRequest { squash: true })))
-                            .child(theme::float_item(&p, "ship-rebase", Some("git-branch"), "Rebase and merge", Some("Every commit, on top of main"), false).test_support().on_click(step(ShipStep::MergePullRequest { squash: false })));
+                            .child(theme::float_item(&p, "ship-squash", Some("git-merge"), "Squash and merge", None, false).test_support().on_click(step(ShipStep::MergePullRequest { squash: true })))
+                            .child(theme::float_item(&p, "ship-rebase", Some("git-branch"), "Rebase and merge", None, false).test_support().on_click(step(ShipStep::MergePullRequest { squash: false })));
                     }
                     None => {
                         list = list
-                            .child(theme::float_item(&p, "ship-pr", Some("git-pull-request"), "Create pull request", Some("Push, then open one into main"), false).test_support().on_click(step(ShipStep::PullRequest { title: goal.clone(), body: String::new(), draft: false })))
+                            .child(theme::float_item(&p, "ship-pr", Some("git-pull-request"), "Create pull request", None, false).test_support().on_click(step(ShipStep::PullRequest { title: goal.clone(), body: String::new(), draft: false })))
                             .child(theme::float_item(&p, "ship-draft", Some("git-pull-request-draft"), "Create draft pull request", None, false).test_support().on_click(step(ShipStep::PullRequest { title: goal.clone(), body: String::new(), draft: true })));
                     }
                 }
                 list = list
-                    .child(theme::float_item(&p, "ship-update", Some("refresh-cw"), "Update from main", Some("Replay this branch on main as it is now"), false).test_support().on_click(step(ShipStep::Update)))
+                    .child(theme::float_item(&p, "ship-update", Some("refresh-cw"), "Update from main", None, false).test_support().on_click(step(ShipStep::Update)))
                     .child(theme::float_item(&p, "ship-push", Some("upload"), "Push", None, false).test_support().on_click(step(ShipStep::Push)))
                     .child(theme::float_sep(&p))
                     .child(theme::float_label(&p, "Straight into main"))
-                    .child(theme::float_item(&p, "ship-main", Some("git-commit-horizontal"), "Squash into main", Some("One commit, on main here"), false).test_support().on_click(step(ShipStep::MergeIntoMain { squash: true, message: goal.clone(), push: false })))
+                    .child(theme::float_item(&p, "ship-main", Some("git-commit-horizontal"), "Squash into main", None, false).test_support().on_click(step(ShipStep::MergeIntoMain { squash: true, message: goal.clone(), push: false })))
                     .child(theme::float_item(&p, "ship-main-push", Some("upload"), "Squash into main and push", None, false).test_support().on_click(step(ShipStep::MergeIntoMain { squash: true, message: goal.clone(), push: true })))
-                    .child(theme::float_item(&p, "ship-main-rebase", Some("git-branch"), "Rebase into main", Some("Every commit, on top of main"), false).test_support().on_click(step(ShipStep::MergeIntoMain { squash: false, message: String::new(), push: false })));
+                    .child(theme::float_item(&p, "ship-main-rebase", Some("git-branch"), "Rebase into main", None, false).test_support().on_click(step(ShipStep::MergeIntoMain { squash: false, message: String::new(), push: false })));
                 list.into_any_element()
             });
         // opening the menu asks after the pull request, so it offers the right things.

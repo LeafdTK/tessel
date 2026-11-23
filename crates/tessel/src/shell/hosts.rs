@@ -656,6 +656,7 @@ impl Shell {
             about.join(" · ")
         };
         let icon = machine_icon(self.hosts.list.current());
+        let width = (self.drawer("sidebar").map_or(280., |d| d.w.value()) - 16.).max(220.);
         let picker = Popover::new("host-picker-popover")
             .p_0()
             .anchor(Anchor::TopLeft)
@@ -669,7 +670,6 @@ impl Shell {
                     .when(!crate::glass::liquid(), |b| b.bg(p.fill.opacity(0.6)))
                     .border_1()
                     .border_color(p.separator)
-                    .tooltip("Which machine the window shows")
                     .child(
                         h_flex()
                             .w_full()
@@ -719,7 +719,7 @@ impl Shell {
                                 .when(!note.is_empty(), |d| d.child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(note))),
                         )
                 };
-                let mut list = v_flex().w(px(280.)).p(px(6.)).gap(px(2.)).child(
+                let mut list = v_flex().w(px(width)).p(px(6.)).gap(px(2.)).child(
                     machine("host-mac".into(), "laptop", this_machine().to_owned(), String::new(), current.is_none()).on_click(go(None)),
                 );
                 for h in &this.hosts.list.hosts {
@@ -751,7 +751,7 @@ impl Shell {
                         .child(theme::float_sep(&p))
                         .child(theme::float_item(&p, "host-redial", Some("refresh-ccw"), "Reconnect", None, false).test_support().on_click(act(Box::new(|this, _, cx| this.host_redial(cx)))))
                         .child(if this.hosts.restarting {
-                            theme::float_item(&p, "host-restart-now", Some("rotate-cw"), "Restart now", Some("Turns under way stop; their chats carry on from there"), false)
+                            theme::float_item(&p, "host-restart-now", Some("rotate-cw"), "Restart now", None, false)
                                 .test_support()
                                 .on_click(act(Box::new(|this, _, cx| this.host_restart_tessel(true, cx))))
                         } else {
@@ -771,7 +771,7 @@ impl Shell {
                         let (again, stop) = (id.clone(), id.clone());
                         list = list
                             .child(
-                                theme::float_item(&p, "host-reboot", Some("power"), "Restart the sandbox", Some("Its disk is kept; what's running stops"), false)
+                                theme::float_item(&p, "host-reboot", Some("power"), "Restart the sandbox", None, false)
                                     .test_support()
                                     .on_click(act(Box::new(move |this, w, cx| this.host_reboot(&again, w, cx)))),
                             )
@@ -973,13 +973,13 @@ impl Shell {
                                 i("remove"),
                                 Some("trash"),
                                 if armed { "Click again to delete" } else { "Delete the sandbox" },
-                                Some(if armed { "Gone from Vercel too, with its disk. This can't be undone" } else { "From tessel and from Vercel, its disk with it" }),
+                                armed.then_some("Gone from Vercel too, with its disk. This can't be undone"),
                             )
                             .test_support()
                             .on_click(act(Box::new(move |this, w, cx| this.host_remove(&to, true, w, cx)), armed)),
                         )
                         .child(
-                            theme::float_item(&p, i("forget"), Some("x"), if armed_here { "Click again to remove" } else { "Remove from tessel only" }, Some("The sandbox stays in Vercel"), false)
+                            theme::float_item(&p, i("forget"), Some("x"), if armed_here { "Click again to remove" } else { "Remove from tessel only" }, None, false)
                                 .test_support()
                                 .on_click(act(Box::new(move |this, w, cx| this.host_remove(&keep, false, w, cx)), armed_here)),
                         )

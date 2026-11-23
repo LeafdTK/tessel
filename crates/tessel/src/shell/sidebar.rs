@@ -169,7 +169,7 @@ impl Shell {
                                 .child(theme::float_item(&p, "project-menu-fold", Some(if folded { "eye" } else { "eye-off" }), if folded { "Show its sessions" } else { "Hide its sessions" }, None, false).on_click(act(Box::new(move |this, _, cx| this.toggle_project(&n, cx)))))
                                 .when(empty, |d| {
                                     d.child(theme::float_sep(&p)).child(
-                                        theme::float_item(&p, "project-menu-forget", Some("x"), "Remove from the sidebar", Some("The folder stays where it is"), false)
+                                        theme::float_item(&p, "project-menu-forget", Some("x"), "Remove from the sidebar", None, false)
                                             .on_click(act(Box::new(move |this, _, cx| this.forget_project(&f5, cx)))),
                                     )
                                 })

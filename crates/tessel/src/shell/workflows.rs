@@ -366,7 +366,7 @@ impl Shell {
             .absolute()
             .inset_0()
             .occlude()
-            .bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 }))
+            .when(!self.ui.theme.glass.unwrap_or(false), |d| d.bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 })))
             .on_click(cx.listener(|this, _, _, cx| this.close_workflow(cx)))
             .flex()
             .items_center()

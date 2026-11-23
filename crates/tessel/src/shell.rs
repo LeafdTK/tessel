@@ -2489,10 +2489,10 @@ impl Shell {
                 };
                 theme::float_list(&p)
                     .w(px(240.))
-                    .child(theme::float_item(&p, "turn-fork-tab", Some("message-square-plus"), "Fork to new tab", Some("Same workspace, the conversation so far"), false).test_support().on_click(fork(false)))
-                    .child(theme::float_item(&p, "turn-fork-workspace", Some("git-fork"), "Fork to new workspace", Some("A new branch from here, the conversation so far"), false).test_support().on_click(fork(true)))
+                    .child(theme::float_item(&p, "turn-fork-tab", Some("message-square-plus"), "Fork to new tab", None, false).test_support().on_click(fork(false)))
+                    .child(theme::float_item(&p, "turn-fork-workspace", Some("git-fork"), "Fork to new workspace", None, false).test_support().on_click(fork(true)))
                     .child(theme::float_sep(&p))
-                    .child(theme::float_item(&p, "turn-rewind", Some("undo-2"), "Go back to before this turn", Some("The files as they were; the chat stays"), false).test_support().on_click({
+                    .child(theme::float_item(&p, "turn-rewind", Some("undo-2"), "Go back to before this turn", None, false).test_support().on_click({
                         let (me, popover, turn) = (me.clone(), popover.clone(), turn.clone());
                         move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                             popover.update(cx, |st, cx| st.dismiss(window, cx));

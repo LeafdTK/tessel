@@ -528,7 +528,7 @@ impl Shell {
             .key_context("Sheet")
             .on_action(cx.listener(|this, _: &crate::CloseSheet, _, cx| this.close_sheet(cx)))
             .on_action(cx.listener(|this, _: &crate::ConfirmSheet, _, cx| this.make(cx)))
-            .bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 }))
+            .when(!self.ui.theme.glass.unwrap_or(false), |d| d.bg(gpui_kit::black().opacity(if p.dark { 0.45 } else { 0.18 })))
             .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)))
             .flex()
             .items_center()

@@ -544,7 +544,7 @@ impl Shell {
                         let planning = this.model.open_summary().and_then(|s| s.permission_mode.as_deref()) == Some("plan");
                         this.set_mode(if planning { "default" } else { "plan" }.to_owned(), cx);
                     })))
-                    .child(theme::float_item(&p, "plus-link", Some("folder-input"), "Link a folder", Some("Let the agent work there too"), false).on_click(pick(|this, _, cx| this.link_folder(cx))))
+                    .child(theme::float_item(&p, "plus-link", Some("folder-input"), "Link a folder", None, false).on_click(pick(|this, _, cx| this.link_folder(cx))))
                     .into_any_element()
             })
     }
