@@ -218,6 +218,8 @@ pub struct Hub {
     next_term: TermId,
     /// each visual session's terminal, where its agent's Bash commands show.
     mirrors: HashMap<SessionId, TermId>,
+    prefixed: HashSet<SessionId>,
+    mirrored: HashMap<SessionId, HashMap<tessel_proto::ItemId, bool>>,
     /// every process seen under an agent, so it's still known once the agent has gone.
     procs_seen: Arc<std::sync::Mutex<HashMap<i32, (SessionId, u64)>>>,
     /// when what's under the agents was last looked at.
@@ -311,6 +313,8 @@ impl Hub {
             settings: tessel_proto::DaemonSettings::default(),
             terms: Default::default(),
             mirrors: HashMap::new(),
+            prefixed: HashSet::new(),
+            mirrored: HashMap::new(),
             procs_seen: Default::default(),
             procs_looked: std::time::Instant::now(),
             sign_ins_at: None,
@@ -532,6 +536,9 @@ impl Hub {
             match self.backend.adopt(released, Some(self.cfg.paths.raw_log(&a.session))) {
                 Ok(spawned) if self.sessions.contains_key(&a.session) => {
                     self.wire_agent(a.session, spawned);
+                    if self.sessions.get(&a.session).is_some_and(|l| l.state.visual) {
+                        self.prefixed.insert(a.session);
+                    }
                     let _ = self.apply(a.session, Input::Adopted { cost_process: a.cost_process });
                 }
                 Ok(spawned) => spawned.agent.kill(),
@@ -1781,6 +1788,57 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         Ok(t.info.clone())
     }
 
+    fn mirror_from_events(&mut self, session: SessionId, upserts: &[tessel_proto::Item]) {
+        let visual = self.sessions.get(&session).is_some_and(|l| l.state.visual && l.agent.is_some());
+        if !visual || self.prefixed.contains(&session) {
+            return;
+        }
+        for item in upserts {
+            let tessel_proto::ItemBody::Tool { tool, input, status, output, .. } = &item.body else { continue };
+            if tool != "Bash" {
+                continue;
+            }
+            let command = input["command"].as_str().unwrap_or_default().to_owned();
+            let description = input["description"].as_str().map(str::to_owned);
+            let seen = self.mirrored.entry(session).or_default().get(&item.id).copied();
+            if seen.is_none() {
+                self.mirrored.entry(session).or_default().insert(item.id.clone(), false);
+                self.mirror_write(session, |cols, first| mirror_header(description.as_deref(), &command, cols, first));
+            }
+            if !status.is_open() && seen != Some(true) {
+                self.mirrored.entry(session).or_default().insert(item.id.clone(), true);
+                let text = output.clone().unwrap_or_default();
+                let mut body = text.trim_end().replace('\n', "\r\n");
+                if !body.is_empty() {
+                    body.push_str("\r\n");
+                }
+                self.mirror_write(session, move |_, _| body);
+            }
+        }
+    }
+
+    fn mirror_write(&mut self, session: SessionId, text: impl FnOnce(u16, bool) -> String) {
+        let Some(cwd) = self.sessions.get(&session).map(|l| l.state.meta.cwd.clone()) else { return };
+        let existing = self.mirrors.get(&session).copied().filter(|t| self.terms.contains_key(t));
+        let (id, first) = match existing {
+            Some(id) => (id, false),
+            None => {
+                let id = self.next_term;
+                self.next_term += 1;
+                let info = tessel_proto::term::TermInfo { id, title: String::new(), cwd, cols: 120, rows: 32, session: Some(session), command: vec![], exited: None, keep_open: true, agent: true };
+                let Ok(handle) = crate::term::mirror(info.clone(), self.tx.clone()) else { return };
+                self.terms.insert(id, handle);
+                self.mirrors.insert(session, id);
+                self.tell_everyone(Event::TermUpdated { info });
+                (id, true)
+            }
+        };
+        if let Some(t) = self.terms.get_mut(&id) {
+            let bytes = text(t.info.cols, first).into_bytes();
+            t.send(crate::term::Cmd::Input(bytes));
+        }
+    }
+
     /// what finding agents' processes needs: each chat's folder, and the pids of the agents running now.
     fn known_procs(&self) -> crate::procs::Known {
         crate::procs::Known {
@@ -1986,6 +2044,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         // leaves running can be found and stopped (see `procs`).
         let mut workspace_env = self.workspace_env(session);
         workspace_env.push(("TESSEL_SESSION".into(), session.to_string()));
+        self.prefixed.remove(&session);
         // visual mode: every shell the agent starts goes through `tessel-shell`,
         // which shows its own Bash commands in a terminal as they run.
         if self.sessions.get(&session).is_some_and(|l| l.state.visual)
@@ -1995,6 +2054,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 workspace_env.push(("TESSEL_SHELL_PREFIX_NEXT".into(), theirs.to_string_lossy().into_owned()));
             }
             workspace_env.push(("CLAUDE_CODE_SHELL_PREFIX".into(), prefix.to_string_lossy().into_owned()));
+            self.prefixed.insert(session);
             workspace_env.push(("TESSEL_HOME".into(), self.cfg.paths.home.to_string_lossy().into_owned()));
         }
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
@@ -2157,6 +2217,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if persist {
             self.publish_summary(session, now);
         }
+        self.mirror_from_events(session, &fx.upserts);
         self.watch_runs(session);
     }
 

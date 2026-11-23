@@ -1771,3 +1771,29 @@ async fn an_agent_can_ask_with_a_form_and_wait_for_the_answer() {
     let again = window.request(Request::AskAnswer { session: s.id, surface, answers: serde_json::json!({}) }).await;
     assert!(matches!(again, Err(tessel_client::ClientError::Rpc(e)) if e.message.contains("isn't waiting")));
 }
+
+#[tokio::test]
+async fn visual_mode_shows_the_agents_commands_even_when_it_was_turned_on_mid_turn() {
+    let d = Daemon::start(&["perm_allow"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), Some("please write the file")).await;
+    until(&c, s.id, "needs permission", |s| s.run_state == RunState::NeedsPermission).await;
+    c.request(Request::SessionSetVisual { session: s.id, visual: true }).await.unwrap();
+    let snap = snapshot(&c, s.id).await;
+    let answer = Request::PermissionRespond { cmd_id: Uuid::new_v4(), session: s.id, request_id: snap.pending[0].request_id.clone(), decision: PermissionDecision::Allow { updated_input: None } };
+    c.request(answer).await.unwrap();
+    until(&c, s.id, "finished", |s| wants(s) == Some(AttentionReason::Finished)).await;
+
+    let Response::Terms { terms } = c.request(Request::TermList).await.unwrap() else { panic!() };
+    let mirror = terms.iter().find(|t| t.agent && t.session == Some(s.id)).expect("a terminal showing its commands");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let Response::TermText { text } = c.request(Request::TermCapture { term: mirror.id, history: true, format: None }).await.unwrap() else { panic!() };
+        if text.contains("echo tessel-fixture > out.txt") {
+            assert!(text.contains("Write tessel-fixture text into out.txt"), "headed by what it's for: {text}");
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the command never showed: {text:?}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}

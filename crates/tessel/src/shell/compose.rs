@@ -471,7 +471,7 @@ impl Shell {
             d = d.size_full();
         }
         d = self.styled(d, &n.style);
-        if let Some(inset) = &n.style.inset {
+        if let Some(inset) = n.style.inset.as_ref().filter(|_| !self.fullscreen) {
             let shut = match inset {
                 Inset::Always => 1.0,
                 Inset::Drawer(id) => self.drawer_shut(id),
@@ -481,6 +481,9 @@ impl Shell {
         }
         if n.style.drag {
             d = d.on_double_click(|_, window, _| window.titlebar_double_click()).on_mouse_move(self.moves_window(cx));
+            if self.fullscreen && n.style.h.is_some() {
+                d = d.h(px(36.));
+            }
         }
         if n.style.scroll {
             d = d.overflow_y_scroll();

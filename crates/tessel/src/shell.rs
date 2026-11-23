@@ -408,6 +408,7 @@ pub struct Shell {
     pub(crate) authoring: bool,
     pub(crate) down_since: Option<Instant>,
     pub(crate) earlier_for: Option<SessionId>,
+    pub(crate) fullscreen: bool,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -856,6 +857,7 @@ impl Shell {
             authoring: false,
             down_since: None,
             earlier_for: None,
+            fullscreen: false,
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -2758,6 +2760,7 @@ impl Render for Shell {
         self.window_active = active;
 
         // panes head for wherever the layout and the room now put them.
+        self.fullscreen = window.is_fullscreen();
         self.sync_panes();
         self.prepare_asks(window, cx);
         self.sync_surfaces_dock(cx);
