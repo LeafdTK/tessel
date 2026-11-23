@@ -384,6 +384,8 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `app.workspace` | Show or hide the workspace | ⌥ ⌘ I |  |
 | `app.focus` | Focus on this session | ⇧ ⌘ F |  |
 | `session.new` | New session | ⌘ N | cwd?, prompt?, worktree?: with a prompt it starts at once |
+| `workflow.run` | Run a workflow |  | workflow: its id or name; picked?: {input: {value, label}} runs it at once, else its form opens |
+| `workflow.list` | The workflows on this machine |  |  |
 | `session.next` | Next session that needs you | ⌘ J |  |
 | `session.stop` | Stop the agent | ⌘ . | session? |
 | `session.allow` | Allow | ⌘ ↩ | session? |

@@ -172,7 +172,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list" | "workflows", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -2989,4 +2989,53 @@ fn a_deleted_chat_waits_in_recently_deleted_to_be_brought_back_or_deleted_for_go
     rig.feed(cx, vec![UiEvent::Answer { tag: "deleted.restore", result: Ok(tessel_proto::Response::Session { summary: back }) }]);
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == sid(2))), "and it opens, back where it was");
     assert!(rig.exists(cx, sid(2).0));
+}
+
+#[gpui_kit::test]
+fn typing_what_a_workflow_does_offers_it_and_its_form_runs_it(cx: &mut TestAppContext) {
+    let mut rig = Rig::new(cx);
+    let w = tessel_proto::Workflow {
+        id: "study-guide".into(),
+        name: "Study guide".into(),
+        say: vec!["study guide".into()],
+        inputs: vec![
+            tessel_proto::Input { id: "course".into(), label: "Class".into(), kind: tessel_proto::InputKind::Select, optional: false, options: Some(tessel_proto::Options::Tool { server: "canvas".into(), tool: "list_courses".into(), args: serde_json::Value::Null, label: None, value: None, keep_secs: None }), placeholder: None, default: None },
+            tessel_proto::Input { id: "exam".into(), label: "Exam".into(), kind: tessel_proto::InputKind::Select, optional: false, options: Some(tessel_proto::Options::Tool { server: "canvas".into(), tool: "list_assignments".into(), args: serde_json::json!({"course_id": "{{course}}"}), label: None, value: None, keep_secs: None }), placeholder: None, default: None },
+            tessel_proto::Input { id: "focus".into(), label: "Focus".into(), kind: tessel_proto::InputKind::Text, optional: true, options: None, placeholder: None, default: None },
+        ],
+        steps: vec![tessel_proto::Step { id: "step1".into(), name: "Write it".into(), does: tessel_proto::StepDoes::Prompt("Write it".into()), fresh: false, doc: true, model: None, effort: None }],
+        ..Default::default()
+    };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "workflows", result: Ok(tessel_proto::Response::Workflows { workflows: vec![w] }) }]);
+    assert!(rig.exists(cx, "workflow-card-study-guide"), "it's offered on the new-session screen");
+    assert!(!rig.exists(cx, "workflow-chip"));
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.new_prompt.update(cx, |p, cx| p.set_value("create me a study guide", window, cx)))).unwrap();
+    rig.settle(cx);
+    assert!(rig.exists(cx, "workflow-chip"), "what you typed is a workflow");
+    rig.asked();
+    rig.click(cx, "workflow-chip");
+    assert!(rig.exists(cx, "workflow-sheet"));
+    let asked = rig.asked();
+    assert!(matches!(asked.as_slice(), [Cmd::WorkflowOptions { input, .. }] if input == "course"), "only the class loads; the exam waits for it: {asked:?}");
+    assert!(rig.exists(cx, "wf-loading-course"));
+
+    let choice = |v: &str, l: &str| tessel_proto::Choice { value: v.into(), label: l.into(), note: None };
+    rig.feed(cx, vec![UiEvent::Choices { workflow: "study-guide".into(), input: "course".into(), result: Ok(vec![choice("42", "Calc II"), choice("7", "Physics")]) }]);
+    rig.click(cx, "wf-choice-course-0");
+    let asked = rig.asked();
+    assert!(matches!(asked.as_slice(), [Cmd::WorkflowOptions { input, picked, .. }] if input == "exam" && picked["course"].label == "Calc II"), "{asked:?}");
+    rig.feed(cx, vec![UiEvent::Choices { workflow: "study-guide".into(), input: "exam".into(), result: Ok(vec![choice("9", "Midterm 2")]) }]);
+    rig.click(cx, "workflow-run");
+    assert!(rig.asked().is_empty(), "the exam is still needed");
+    rig.click(cx, "wf-choice-exam-0");
+    rig.click(cx, "workflow-run");
+    let asked = rig.asked();
+    assert!(
+        matches!(asked.as_slice(), [Cmd::Ask { req: tessel_proto::Request::WorkflowRun { workflow, picked, .. }, .. }] if workflow == "study-guide" && picked["exam"].label == "Midterm 2" && picked["course"].value == serde_json::json!("42") && !picked.contains_key("focus")),
+        "{asked:?}"
+    );
+    let run = session(9, "Study guide · Midterm 2", RunState::Working, None);
+    rig.feed(cx, vec![UiEvent::Answer { tag: "workflow.run", result: Ok(tessel_proto::Response::Session { summary: run }) }]);
+    assert!(!rig.exists(cx, "workflow-sheet"), "the form goes");
+    assert!(rig.opened().iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == sid(9))), "and the run opens");
 }

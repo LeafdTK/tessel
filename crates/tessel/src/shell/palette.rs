@@ -108,6 +108,17 @@ impl Shell {
                 scope: Scope::Look,
             });
         }
+        for w in self.workflows.iter().filter(|w| w.problems.is_empty()) {
+            items.push(Item {
+                title: format!("Run {}", w.name).into(),
+                note: w.description.clone(),
+                icon: "workflow",
+                keys: None,
+                cmd: "workflow.run",
+                args: json!({"workflow": w.id}),
+                scope: Scope::Commands,
+            });
+        }
         // the open session first, then the ones that need you, then the rest.
         let open = self.model.open_summary().map(|s| s.id);
         let mut sessions: Vec<&SessionSummary> = self.model.sessions.iter().collect();

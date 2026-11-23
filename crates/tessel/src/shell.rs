@@ -30,6 +30,7 @@ mod avatar;
 mod setup_flow;
 mod palette;
 mod panel;
+mod workflows;
 mod panes;
 mod projects;
 mod settings;
@@ -127,7 +128,7 @@ pub struct Shell {
     /// the project a new session starts in, when one was picked; otherwise
     /// the latest (see `new_folder`).
     pub(crate) new_project: Option<String>,
-    new_prompt: Entity<InputState>,
+    pub(crate) new_prompt: Entity<InputState>,
     pub(crate) new_worktree: bool,
     /// Start was pressed: the session is being made (a worktree can take a while).
     pub(crate) creating: Option<Instant>,
@@ -400,6 +401,9 @@ pub struct Shell {
     /// the session whose delete button has been pressed once. deleting takes two presses.
     pub(crate) confirm_delete: Option<SessionId>,
     pub(crate) deleted: Vec<tessel_proto::DeletedSession>,
+    pub(crate) workflows: Vec<tessel_proto::Workflow>,
+    pub(crate) wf_form: Option<workflows::WfForm>,
+    pub(crate) wf_last: HashMap<String, std::collections::BTreeMap<String, tessel_proto::Pick>>,
     pub(crate) confirm_purge: Option<SessionId>,
     /// answers picked so far for a question that has several parts.
     answers: HashMap<RequestId, serde_json::Map<String, serde_json::Value>>,
@@ -512,8 +516,16 @@ impl Shell {
                 }
             }),
             cx.subscribe_in(&new_prompt, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { shift: false, .. } = ev {
-                    this.create(window, cx);
+                if let InputEvent::PressEnter { shift: false, secondary } = ev {
+                    let text = this.new_prompt.read(cx).value().to_string();
+                    match this.workflow_for(&text).map(|w| w.id.clone()).filter(|_| !*secondary) {
+                        Some(id) => {
+                            if let Err(e) = this.open_workflow(&id, window, cx) {
+                                this.error = Some(e);
+                            }
+                        }
+                        None => this.create(window, cx),
+                    }
                 }
             }),
             // the palette: typing searches, return runs.
@@ -830,6 +842,9 @@ impl Shell {
             error: None,
             confirm_delete: None,
             deleted: Vec::new(),
+            workflows: Vec::new(),
+            wf_form: None,
+            wf_last: HashMap::new(),
             confirm_purge: None,
             answers: HashMap::new(),
             open_on_launch: launch.open,
@@ -953,6 +968,7 @@ impl Shell {
                 self.model.connection = Connection::Connected;
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
                 self.ask_deleted();
+                self.ask_workflows();
                 if self.models.is_empty() {
                     self.cmd(Cmd::Models);
                 }
@@ -1128,6 +1144,8 @@ impl Shell {
             UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
             UiEvent::Answer { tag: "host.restart", result } => self.host_restart_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("deleted.") => self.deleted_answer(tag, result, cx),
+            UiEvent::Answer { tag: tag @ ("workflows" | "workflow.run"), result } => self.workflows_answer(tag, result, cx),
+            UiEvent::Choices { workflow, input, result } => self.choices_answer(workflow, input, result, cx),
             UiEvent::Answer { tag: "file.download", result } => self.download_answer(result, cx),
             UiEvent::Answer { tag: "file.promise", result } => self.promise_answer(result),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
@@ -1429,6 +1447,7 @@ impl Shell {
     }
 
     pub fn show_new_session(&mut self, cx: &mut Context<Self>) {
+        self.ask_workflows();
         self.show_new = true;
         cx.notify();
     }
@@ -1973,6 +1992,8 @@ impl Shell {
         let worktree = self.new_worktree && !plain;
         let picker = self.project_picker(cx);
         let chips = self.attachment_chips(cx);
+        let workflow_chip = self.workflow_chip(cx);
+        let workflow_cards = self.workflow_cards(cx);
         let paste = cx.entity().downgrade();
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
             let disabled = set && plain;
@@ -1999,6 +2020,7 @@ impl Shell {
             .when(crate::glass::liquid(), |d| d.child(glass_spot(theme::R_CARD)))
             .children(chips)
             .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false).on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)))
+            .children(workflow_chip)
             .child(
                 h_flex()
                     .flex_wrap()
@@ -2037,12 +2059,14 @@ impl Shell {
                 .w_full()
                 .max_w(px(640.))
                 // what the choice means, inside the card: it stays readable over the backdrop.
+                .gap_5()
                 .child(card.child(div().px_1().set(Type::Subheadline).text_color(p.secondary).child(match (&folder, worktree) {
                     (None, _) => "Pick a project, or open a new one, for it to work in.".to_owned(),
                     (Some(f), false) if plain => format!("Works directly in {}. It isn't a git repository, so it can't have a workspace of its own.", projects::tilde(f)),
                     (Some(_), true) => "A workspace of its own: a new branch and folder. Your checkout is untouched.".to_owned(),
                     (Some(f), false) => format!("Works directly in {}.", projects::tilde(f)),
-                }))),
+                })))
+                .children(workflow_cards),
         )
     }
 
@@ -2865,6 +2889,7 @@ impl Render for Shell {
             .when_some(self.sheet, |d, sheet| d.child(self.sheet_layer(sheet, cx)))
             .when(self.settings_open, |d| d.child(self.settings_layer(cx)))
             .when(self.flow_open(), |d| d.child(self.setup_flow_layer(cx)))
+            .when(self.wf_form.is_some(), |d| d.child(self.workflow_layer(cx)))
             // painted last: the liquid glass under the surfaces painted this frame.
             .child(canvas(|_, _, _| {}, |_, _, window, _| crate::glass::sync(view_of(window).unwrap_or(0))).absolute().size_0())
             // TESSEL_FRAME_LOG: painted last, so it sees the whole frame's cost.

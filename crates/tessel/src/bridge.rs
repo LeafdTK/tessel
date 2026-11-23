@@ -75,6 +75,7 @@ pub enum Cmd {
     Ask { tag: &'static str, req: Request },
     /// show another machine's daemon (a host's id), or this mac's (none).
     Host(Option<String>),
+    WorkflowOptions { workflow: String, input: String, picked: std::collections::BTreeMap<String, tessel_proto::Pick>, cwd: Option<String>, fresh: bool },
     /// drop the connection and dial the same machine again, at once: the window keeps what it shows.
     Redial,
 }
@@ -128,6 +129,7 @@ pub enum UiEvent {
     /// the account's usage limits.
     Usage(Vec<tessel_proto::UsageWindow>),
     Answer { tag: &'static str, result: Result<Response, String> },
+    Choices { workflow: String, input: String, result: Result<Vec<tessel_proto::Choice>, String> },
     /// something the user did failed. shown, not fatal.
     Error(String),
 }
@@ -609,6 +611,20 @@ async fn session(
                         ask(client, ui, Request::TermOpen { session, cwd, command, cols, rows, agent: false }, move |r| match r {
                             Response::Term { info } => Some(UiEvent::TermOpened { pane, session, info }),
                             _ => None,
+                        });
+                        Ok(())
+                    }
+                    Cmd::WorkflowOptions { workflow, input, picked, cwd, fresh } => {
+                        let (client, ui) = (client.clone(), ui.clone());
+                        tokio::spawn(async move {
+                            let req = Request::WorkflowOptions { workflow: workflow.clone(), input: input.clone(), picked, cwd, fresh };
+                            let result = match client.request(req).await {
+                                Ok(Response::Choices { choices }) => Ok(choices),
+                                Ok(_) => Err("this machine's tessel is too old for workflows: update it".to_owned()),
+                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(e) => Err(e.to_string()),
+                            };
+                            let _ = ui.send(UiEvent::Choices { workflow, input, result });
                         });
                         Ok(())
                     }

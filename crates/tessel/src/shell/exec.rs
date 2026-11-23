@@ -174,6 +174,21 @@ impl Shell {
                 done
             }
 
+            "workflow.list" => Ok(serde_json::to_value(&self.workflows).unwrap_or_default()),
+            "workflow.run" => {
+                let name = need(args, "workflow", cmd)?;
+                let id = self.workflows.iter().find(|w| w.id == name || w.name.eq_ignore_ascii_case(name)).map(|w| w.id.clone()).ok_or_else(|| format!("there's no workflow {name}"))?;
+                match args.get("picked").and_then(|p| serde_json::from_value::<std::collections::BTreeMap<String, tessel_proto::Pick>>(p.clone()).ok()) {
+                    Some(picked) => {
+                        self.cmd(Cmd::Ask { tag: "workflow.run", req: tessel_proto::Request::WorkflowRun { workflow: id.clone(), picked, cwd: self.new_folder() } });
+                        Ok(json!({"running": id}))
+                    }
+                    None => {
+                        self.open_workflow(&id, window, cx)?;
+                        Ok(json!({"form": id}))
+                    }
+                }
+            }
             "session.new" => match arg(args, "prompt") {
                 Some(prompt) => {
                     let cwd = arg(args, "cwd").map(str::to_owned).or_else(|| self.new_folder()).ok_or("no project to start in: give cwd")?;
