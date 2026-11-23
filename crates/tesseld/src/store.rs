@@ -16,15 +16,26 @@ use std::path::Path;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 enum Job {
     Save { session: Box<Persisted>, items: Vec<Item> },
     Delete { id: SessionId },
+    MarkDeleted { id: SessionId, row: DeletedRow },
+    Undelete { id: SessionId },
+    LoadDeleted { reply: oneshot::Sender<anyhow::Result<Vec<(Persisted, DeletedRow)>>> },
+    LoadSession { id: SessionId, reply: oneshot::Sender<anyhow::Result<Option<Persisted>>> },
     LoadSessions { reply: oneshot::Sender<anyhow::Result<Vec<Persisted>>> },
     LoadItems { id: SessionId, reply: oneshot::Sender<anyhow::Result<Vec<Item>>> },
     /// resolves once everything queued before it is on disk.
     Flush { reply: oneshot::Sender<()> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeletedRow {
+    pub deleted_ms: u64,
+    pub workspace_removed: bool,
+    pub kept: Option<String>,
 }
 
 #[derive(Clone)]
@@ -51,6 +62,26 @@ impl Store {
 
     pub fn delete(&self, id: SessionId) {
         let _ = self.tx.send(Job::Delete { id });
+    }
+
+    pub fn mark_deleted(&self, id: SessionId, row: DeletedRow) {
+        let _ = self.tx.send(Job::MarkDeleted { id, row });
+    }
+
+    pub fn undelete(&self, id: SessionId) {
+        let _ = self.tx.send(Job::Undelete { id });
+    }
+
+    pub async fn load_deleted(&self) -> anyhow::Result<Vec<(Persisted, DeletedRow)>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::LoadDeleted { reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
+    }
+
+    pub async fn load_session(&self, id: SessionId) -> anyhow::Result<Option<Persisted>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::LoadSession { id, reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
     }
 
     pub async fn load_sessions(&self) -> anyhow::Result<Vec<Persisted>> {
@@ -151,6 +182,19 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 6 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE deleted (
+                 id                TEXT PRIMARY KEY,
+                 deleted_ms        INTEGER NOT NULL,
+                 workspace_removed INTEGER NOT NULL DEFAULT 0,
+                 kept              TEXT
+             );
+             PRAGMA user_version = 6;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -166,10 +210,32 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
                 let id = id.to_string();
                 let r = conn
                     .execute("DELETE FROM items WHERE session = ?1", params![id])
-                    .and_then(|_| conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]));
+                    .and_then(|_| conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]))
+                    .and_then(|_| conn.execute("DELETE FROM deleted WHERE id = ?1", params![id]));
                 if let Err(e) = r {
                     eprintln!("tesseld: store: deleting session {id}: {e:#}");
                 }
+            }
+            Job::MarkDeleted { id, row } => {
+                let r = conn.execute(
+                    "INSERT INTO deleted (id, deleted_ms, workspace_removed, kept) VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(id) DO UPDATE SET deleted_ms = excluded.deleted_ms, workspace_removed = excluded.workspace_removed, kept = excluded.kept",
+                    params![id.to_string(), row.deleted_ms as i64, row.workspace_removed, row.kept],
+                );
+                if let Err(e) = r {
+                    eprintln!("tesseld: store: marking {id} deleted: {e:#}");
+                }
+            }
+            Job::Undelete { id } => {
+                if let Err(e) = conn.execute("DELETE FROM deleted WHERE id = ?1", params![id.to_string()]) {
+                    eprintln!("tesseld: store: bringing {id} back: {e:#}");
+                }
+            }
+            Job::LoadDeleted { reply } => {
+                let _ = reply.send(load_deleted(&conn));
+            }
+            Job::LoadSession { id, reply } => {
+                let _ = reply.send(load_rows(&conn, &format!("WHERE id = '{id}'")).map(|mut v| v.pop()));
             }
             Job::LoadSessions { reply } => {
                 let _ = reply.send(load_sessions(&conn));
@@ -243,12 +309,25 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
 }
 
 fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
-    let mut stmt = conn.prepare(
+    load_rows(conn, "WHERE id NOT IN (SELECT id FROM deleted)")
+}
+
+fn load_deleted(conn: &Connection) -> anyhow::Result<Vec<(Persisted, DeletedRow)>> {
+    let mut stmt = conn.prepare("SELECT id, deleted_ms, workspace_removed, kept FROM deleted")?;
+    let rows: Vec<(String, i64, bool, Option<String>)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+    let mut by_id: std::collections::HashMap<String, DeletedRow> =
+        rows.into_iter().map(|(id, deleted_ms, workspace_removed, kept)| (id, DeletedRow { deleted_ms: deleted_ms as u64, workspace_removed, kept })).collect();
+    let sessions = load_rows(conn, "WHERE id IN (SELECT id FROM deleted)")?;
+    Ok(sessions.into_iter().filter_map(|p| by_id.remove(&p.meta.id.to_string()).map(|d| (p, d))).collect())
+}
+
+fn load_rows(conn: &Connection, filter: &str) -> anyhow::Result<Vec<Persisted>> {
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, goal, cwd, worktree_repo, worktree_branch, parent, created_ms, updated_ms, seq,
                 attention_reason, attention_since, attention_seq, model, agent_session_id, cost_usd, turn_open,
                 permission_mode, context_used, context_window, linked_dirs, effort, fast, mcp, visual
-         FROM sessions ORDER BY created_ms",
-    )?;
+         FROM sessions {filter} ORDER BY created_ms"
+    ))?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,

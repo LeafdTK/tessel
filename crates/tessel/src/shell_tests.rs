@@ -171,7 +171,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -2961,4 +2961,31 @@ fn a_session_whose_subagents_still_run_shows_as_working() {
     s.tasks.clear();
     s.background_tasks = 1;
     assert!(matches!(crate::shell::state_mark(&s, &p), crate::shell::Mark::Working(_)), "and so is a command left running");
+}
+
+#[gpui_kit::test]
+fn a_deleted_chat_waits_in_recently_deleted_to_be_brought_back_or_deleted_for_good(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    assert!(!rig.exists(cx, "nav-deleted"), "nothing deleted, nothing shown");
+    let gone = |n: u128, goal: &str| tessel_proto::DeletedSession {
+        id: sid(n), goal: goal.into(), cwd: format!("/work/api-{n}"), worktree: None, created_ms: 1, deleted_ms: 1, workspace_removed: false, kept_work: n == 2,
+    };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "deleted.list", result: Ok(tessel_proto::Response::Deleted { sessions: vec![gone(2, "Old idea"), gone(3, "Scratch")] }) }]);
+    assert!(rig.exists(cx, "nav-deleted"));
+    rig.click(cx, "nav-deleted-open");
+    assert!(rig.exists(cx, eid(format!("deleted-{}", sid(2)))));
+
+    rig.asked();
+    rig.click(cx, eid(format!("deleted-{}-purge", sid(3))));
+    assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::SessionPurge { .. }, .. })), "one click isn't enough to lose it");
+    rig.click(cx, eid(format!("deleted-{}-purge", sid(3))));
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::SessionPurge { session }, .. } if *session == sid(3))));
+
+    rig.click(cx, eid(format!("deleted-{}-restore", sid(2))));
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { req: tessel_proto::Request::SessionRestore { session }, .. } if *session == sid(2))));
+    let back = session(2, "Old idea", RunState::Idle, None);
+    rig.feed(cx, vec![UiEvent::Answer { tag: "deleted.restore", result: Ok(tessel_proto::Response::Session { summary: back }) }]);
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Open(Some(id)) if *id == sid(2))), "and it opens, back where it was");
+    assert!(rig.exists(cx, sid(2).0));
 }

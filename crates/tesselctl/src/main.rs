@@ -46,7 +46,11 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
   tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
                                             vercel makes dev boxes in vercel sandboxes
-  tesselctl rm SESSION [--worktree]         delete (optionally with its worktree)
+  tesselctl rm SESSION [--worktree]         delete (optionally with its worktree): kept 30 days in recently deleted,
+                                            with the worktree's uncommitted work
+  tesselctl deleted [--json]                what's in recently deleted
+  tesselctl restore SESSION                 bring a deleted chat back (and its worktree, with its work)
+  tesselctl purge SESSION                   delete a deleted chat for good
   tesselctl open PATH[:LINE[:COL]]... [--wait]   show files in the window, the caret at LINE;
                                             --wait returns once each is closed (0 saved or
                                             clean, 1 edits thrown away), so EDITOR='tesselctl open --wait'
@@ -677,6 +681,38 @@ async fn run() -> anyhow::Result<()> {
             let remove_worktree = args.flag("--worktree");
             let session = resolve(&client, &args.next("a session")?).await?;
             client.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session, remove_worktree }).await?;
+        }
+        "deleted" => {
+            let Response::Deleted { sessions } = client.request(Request::DeletedSessions).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string(&sessions)?);
+            } else if sessions.is_empty() {
+                println!("nothing deleted");
+            } else {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as u64;
+                for d in &sessions {
+                    let days = now.saturating_sub(d.deleted_ms) / 86_400_000;
+                    let kept = if d.kept_work { ", its changes kept" } else { "" };
+                    println!("{}  {}  ({} day(s) ago{kept})", &d.id.to_string()[..8], d.goal, days);
+                }
+            }
+        }
+        "restore" | "purge" => {
+            let Response::Deleted { sessions } = client.request(Request::DeletedSessions).await? else { bail!("unexpected reply") };
+            let prefix = args.next("a deleted session")?;
+            let hits: Vec<_> = sessions.iter().filter(|d| d.id.to_string().starts_with(&prefix)).collect();
+            let session = match hits.as_slice() {
+                [one] => one.id,
+                [] => bail!("nothing deleted starts with {prefix} (tesselctl deleted)"),
+                _ => bail!("{prefix} names more than one deleted session"),
+            };
+            if cmd == "restore" {
+                let Response::Session { summary } = client.request(Request::SessionRestore { session }).await? else { bail!("unexpected reply") };
+                println!("back: {}  {}", &summary.id.to_string()[..8], summary.goal);
+            } else {
+                client.request(Request::SessionPurge { session }).await?;
+                println!("deleted for good");
+            }
         }
         other => bail!("unknown command {other} (see tesselctl --help)"),
     }

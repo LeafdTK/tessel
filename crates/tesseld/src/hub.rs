@@ -77,6 +77,8 @@ pub enum HubMsg {
     Reply { client: ClientId, id: u64, result: Result<Response, RpcError> },
     /// a worktree finished being made (or failed) for a pending create.
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
+    WorkKept { session: SessionId, kept: Option<String> },
+    Restored { client: ClientId, id: u64, session: SessionId, result: Result<(crate::reducer::Persisted, Vec<tessel_proto::Item>, Option<String>), String> },
     /// keys for a terminal: a binary frame from a client.
     TermInput { client: ClientId, payload: Vec<u8> },
     /// from a terminal's thread.
@@ -137,6 +139,12 @@ struct Client {
 
 /// a restart that was asked for: who to answer, until when to wait for
 /// turns to end, and the daemon to hand over to.
+#[derive(Clone)]
+struct Deleted {
+    meta: Meta,
+    row: crate::store::DeletedRow,
+}
+
 struct Restart {
     client: ClientId,
     id: u64,
@@ -197,6 +205,8 @@ pub struct Hub {
     procs_looked: std::time::Instant,
     /// when the sign-in files last changed, as last seen.
     sign_ins_at: Option<std::time::SystemTime>,
+    deleted: HashMap<SessionId, Deleted>,
+    deleted_swept: Option<std::time::Instant>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
@@ -282,6 +292,8 @@ impl Hub {
             procs_seen: Default::default(),
             procs_looked: std::time::Instant::now(),
             sign_ins_at: None,
+            deleted: HashMap::new(),
+            deleted_swept: None,
             next_term: 1,
             restart: None,
             git_undo: Default::default(),
@@ -294,6 +306,9 @@ impl Hub {
         hub.settings = load_settings(&hub.cfg.paths.settings());
         // what's there now isn't a change: only signing in again later restarts the agents.
         hub.sign_ins_at = hub.sign_ins_changed_at();
+        for (p, row) in hub.store.load_deleted().await? {
+            hub.deleted.insert(p.meta.id, Deleted { meta: p.meta, row });
+        }
         let now = now_ms();
         for p in hub.store.load_sessions().await? {
             let id = p.meta.id;
@@ -557,6 +572,39 @@ impl Hub {
                 }
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
+            HubMsg::WorkKept { session, kept } => {
+                if let Some(d) = self.deleted.get_mut(&session) {
+                    d.row.kept = kept;
+                    self.store.mark_deleted(session, d.row.clone());
+                }
+            }
+            HubMsg::Restored { client, id, session, result } => {
+                let result = result.map_err(|e| RpcError::new(ErrorCode::Conflict, format!("couldn't bring it back: {e}"))).map(|(p, items, setup)| {
+                    let now = now_ms();
+                    if let Some(d) = self.deleted.remove(&session)
+                        && let (Some(wt), Some(_)) = (d.meta.worktree, d.row.kept)
+                    {
+                        let sid = session.to_string();
+                        tokio::spawn(async move { worktree::forget_work(&wt.repo, &sid).await });
+                    }
+                    self.store.undelete(session);
+                    let mut state = SessionState::restore(p, items);
+                    let fx = state.apply(Input::Recovered, now);
+                    if !fx.upserts.is_empty() || fx.summary_changed {
+                        self.store.save(state.persisted(), fx.upserts);
+                    }
+                    let cwd = state.meta.cwd.clone();
+                    self.sessions.insert(session, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from: None });
+                    self.publish_summary(session, now);
+                    if let Some(cmd) = setup
+                        && let Err(e) = self.open_term(Some(session), cwd, vec![cmd], 120, 32, false)
+                    {
+                        eprintln!("tesseld: couldn't start the setup script: {}", e.message);
+                    }
+                    Response::Session { summary: self.sessions[&session].state.summary(now) }
+                });
+                self.respond(client, id, result);
+            }
             HubMsg::WorktreeReady { client, id, create, result, setup } => {
                 let result = result.and_then(|made| {
                     // a fork's worktree is of the parent's repository, whichever folder it was made from.
@@ -803,31 +851,29 @@ impl Hub {
                 self.apply(session, Input::SetGoal { goal }).map(|_| Response::Ack)
             }
             Request::SessionDelete { session, remove_worktree, .. } => match self.sessions.remove(&session) {
-                // deleting something already gone is fine: that's what a resend looks like.
                 None => Ok(Response::Ack),
                 Some(live) => {
                     if let Some(agent) = &live.agent {
                         agent.kill();
                     }
-                    self.store.delete(session);
                     self.browser_watch.remove(&session);
-                    {
-                        let cwd = live.state.meta.cwd.clone();
-                        tokio::spawn(async move { crate::checkpoint::forget(Path::new(&cwd), session).await });
-                    }
                     let b = self.browser.clone();
                     tokio::spawn(async move { b.close(session).await });
-                    let dir = self.cfg.paths.session_dir(&session);
                     let wt = live.state.meta.worktree.clone().filter(|_| remove_worktree);
                     let path = live.state.meta.cwd.clone();
-                    // a workspace removed runs its archive script first, then gives its ports back.
                     let archive_env = wt.as_ref().map(|w| crate::setup::env(&path, &w.repo, self.ports.of(&path)));
                     if wt.is_some() {
                         self.ports.release(&path);
                     }
+                    let row = crate::store::DeletedRow { deleted_ms: now_ms(), workspace_removed: wt.is_some(), kept: None };
+                    self.store.save(live.state.persisted(), Vec::new());
+                    self.store.mark_deleted(session, row.clone());
+                    self.deleted.insert(session, Deleted { meta: live.state.meta.clone(), row });
+                    let tx = self.tx.clone();
                     tokio::spawn(async move {
-                        let _ = tokio::fs::remove_dir_all(dir).await;
                         if let (Some(wt), Some(env)) = (&wt, &archive_env) {
+                            let kept = worktree::keep_work(&path, &session.to_string()).await;
+                            let _ = tx.send(HubMsg::WorkKept { session, kept });
                             let (ws, repo) = (std::path::PathBuf::from(&path), std::path::PathBuf::from(&wt.repo));
                             let scripts = {
                                 let (ws, repo) = (ws.clone(), repo.clone());
@@ -836,11 +882,9 @@ impl Hub {
                             if let Some(cmd) = scripts.archive {
                                 crate::setup::archive(&cmd, &ws, env).await;
                             }
-                        }
-                        if let Some(wt) = wt
-                            && let Err(e) = worktree::remove(&wt.repo, &path).await
-                        {
-                            eprintln!("tesseld: removing worktree {path}: {e}");
+                            if let Err(e) = worktree::remove(&wt.repo, &path).await {
+                                eprintln!("tesseld: removing worktree {path}: {e}");
+                            }
                         }
                     });
                     self.broadcast_summary_event(Event::SessionRemoved { session }, Some(session));
@@ -850,6 +894,59 @@ impl Hub {
                     Ok(Response::Ack)
                 }
             },
+            Request::DeletedSessions => {
+                let mut sessions: Vec<tessel_proto::DeletedSession> = self
+                    .deleted
+                    .values()
+                    .map(|d| tessel_proto::DeletedSession {
+                        id: d.meta.id,
+                        goal: d.meta.goal.clone(),
+                        cwd: d.meta.cwd.clone(),
+                        worktree: d.meta.worktree.clone(),
+                        created_ms: d.meta.created_ms,
+                        deleted_ms: d.row.deleted_ms,
+                        workspace_removed: d.row.workspace_removed,
+                        kept_work: d.row.kept.is_some(),
+                    })
+                    .collect();
+                sessions.sort_by(|a, b| b.deleted_ms.cmp(&a.deleted_ms));
+                Ok(Response::Deleted { sessions })
+            }
+            Request::SessionRestore { session } => {
+                let Some(mut d) = self.deleted.get(&session).cloned() else { return Some(Err(not_found(session))) };
+                if d.meta.worktree.is_some() && !Path::new(&d.meta.cwd).exists() {
+                    let kept = self.deleted.values().filter(|o| o.meta.cwd == d.meta.cwd && o.row.workspace_removed).find_map(|o| o.row.kept.clone());
+                    d.row.workspace_removed = true;
+                    d.row.kept = d.row.kept.or(kept);
+                }
+                let store = self.store.clone();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let mut setup = None;
+                        if let (true, Some(wt)) = (d.row.workspace_removed, &d.meta.worktree) {
+                            worktree::bring_back(&wt.repo, &d.meta.cwd, &wt.branch, d.row.kept.as_deref()).await?;
+                            let (ws, repo) = (std::path::PathBuf::from(&d.meta.cwd), std::path::PathBuf::from(&wt.repo));
+                            let scripts = {
+                                let (ws, repo) = (ws.clone(), repo.clone());
+                                tokio::task::spawn_blocking(move || crate::setup::load(&ws, &repo)).await.unwrap_or_default()
+                            };
+                            crate::setup::copy_files(&repo, &ws, &scripts.copy).await;
+                            setup = scripts.setup;
+                        }
+                        let p = store.load_session(session).await.map_err(|e| e.to_string())?.ok_or("its record is gone")?;
+                        let items = store.load_items(session).await.map_err(|e| e.to_string())?;
+                        Ok::<_, String>((p, items, setup))
+                    }
+                    .await;
+                    let _ = tx.send(HubMsg::Restored { client, id, session, result });
+                });
+                return None;
+            }
+            Request::SessionPurge { session } => {
+                self.purge(session);
+                Ok(Response::Ack)
+            }
             Request::PermissionRespond { session, request_id, decision, .. } => match self.sessions.get(&session) {
                 None => Err(not_found(session)),
                 Some(live) => match (live.state.pending_request(&request_id).cloned(), &live.agent) {
@@ -2024,6 +2121,31 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         }
     }
 
+    fn purge(&mut self, session: SessionId) {
+        let Some(d) = self.deleted.remove(&session) else { return };
+        self.store.delete(session);
+        let dir = self.cfg.paths.session_dir(&session);
+        tokio::spawn(async move {
+            let _ = tokio::fs::remove_dir_all(dir).await;
+            let at = d.meta.worktree.as_ref().map_or(d.meta.cwd.clone(), |w| w.repo.clone());
+            crate::checkpoint::forget(Path::new(&at), session).await;
+            if let (Some(wt), Some(_)) = (&d.meta.worktree, &d.row.kept) {
+                worktree::forget_work(&wt.repo, &session.to_string()).await;
+            }
+        });
+    }
+
+    fn sweep_deleted(&mut self, now: Millis) {
+        if self.deleted_swept.is_some_and(|t| t.elapsed() < Duration::from_secs(3600)) {
+            return;
+        }
+        self.deleted_swept = Some(std::time::Instant::now());
+        let old: Vec<SessionId> = self.deleted.values().filter(|d| now.saturating_sub(d.row.deleted_ms) > tessel_proto::KEEP_DELETED_MS).map(|d| d.meta.id).collect();
+        for s in old {
+            self.purge(s);
+        }
+    }
+
     fn summaries(&self) -> Vec<SessionSummary> {
         let now = now_ms();
         let mut all: Vec<_> = self.sessions.values().map(|l| l.state.summary(now)).collect();
@@ -2057,6 +2179,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 live.restart_when_idle = true;
             }
         }
+        self.sweep_deleted(now);
         let reap_after = self.cfg.idle_reap.as_millis() as Millis;
         let ids: Vec<SessionId> = self.sessions.keys().copied().collect();
         for id in ids {

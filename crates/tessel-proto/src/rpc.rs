@@ -142,6 +142,13 @@ pub enum Request {
         #[serde(default)]
         remove_worktree: bool,
     },
+    DeletedSessions,
+    SessionRestore {
+        session: SessionId,
+    },
+    SessionPurge {
+        session: SessionId,
+    },
     PermissionRespond {
         cmd_id: Uuid,
         session: SessionId,
@@ -564,6 +571,23 @@ pub enum Request {
     Unknown,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DeletedSession {
+    pub id: SessionId,
+    pub goal: String,
+    pub cwd: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::WorktreeInfo>,
+    pub created_ms: crate::Millis,
+    pub deleted_ms: crate::Millis,
+    #[serde(default)]
+    pub workspace_removed: bool,
+    #[serde(default)]
+    pub kept_work: bool,
+}
+
+pub const KEEP_DELETED_MS: crate::Millis = 30 * 24 * 60 * 60 * 1000;
+
 /// what the daemon is set to. kept with the daemon (not the window) so a
 /// remote daemon is set the same way as a local one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -728,6 +752,9 @@ pub enum Response {
         command: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+    },
+    Deleted {
+        sessions: Vec<DeletedSession>,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {

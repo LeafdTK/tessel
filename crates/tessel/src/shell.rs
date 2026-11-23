@@ -399,6 +399,8 @@ pub struct Shell {
     error: Option<String>,
     /// the session whose delete button has been pressed once. deleting takes two presses.
     pub(crate) confirm_delete: Option<SessionId>,
+    pub(crate) deleted: Vec<tessel_proto::DeletedSession>,
+    pub(crate) confirm_purge: Option<SessionId>,
     /// answers picked so far for a question that has several parts.
     answers: HashMap<RequestId, serde_json::Map<String, serde_json::Value>>,
     open_on_launch: Option<String>,
@@ -827,6 +829,8 @@ impl Shell {
             window_active: true,
             error: None,
             confirm_delete: None,
+            deleted: Vec::new(),
+            confirm_purge: None,
             answers: HashMap::new(),
             open_on_launch: launch.open,
             panel_on_launch: launch.panel,
@@ -948,6 +952,7 @@ impl Shell {
             UiEvent::Connected => {
                 self.model.connection = Connection::Connected;
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
+                self.ask_deleted();
                 if self.models.is_empty() {
                     self.cmd(Cmd::Models);
                 }
@@ -1012,6 +1017,7 @@ impl Shell {
                 }
             }
             UiEvent::Removed(id) => {
+                self.ask_deleted();
                 let was_open = self.model.open.as_ref().is_some_and(|o| o.id == id);
                 // closing the open tab moves to the one beside it, as a browser does:
                 // the next to its right, else its left.
@@ -1121,6 +1127,7 @@ impl Shell {
             UiEvent::Answer { tag: "voice.tidy", result } => self.voice_answer(result, cx),
             UiEvent::Answer { tag, result } if tag.starts_with("procs.") => self.procs_answer(tag, result, cx),
             UiEvent::Answer { tag: "host.restart", result } => self.host_restart_answer(result, cx),
+            UiEvent::Answer { tag, result } if tag.starts_with("deleted.") => self.deleted_answer(tag, result, cx),
             UiEvent::Answer { tag: "file.download", result } => self.download_answer(result, cx),
             UiEvent::Answer { tag: "file.promise", result } => self.promise_answer(result),
             UiEvent::Answer { tag, result } if tag.starts_with("file.") => self.file_answer(tag, result, cx),
@@ -1450,8 +1457,6 @@ impl Shell {
         cx.notify();
     }
 
-    /// first press arms it, second press deletes. history is not recoverable,
-    /// so one stray click must not be enough.
     pub(crate) fn delete(&mut self, id: SessionId, cx: &mut Context<Self>) {
         if self.confirm_delete == Some(id) {
             self.confirm_delete = None;
@@ -1716,6 +1721,7 @@ impl Shell {
                 )
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_overview(cx))),
             );
+        let list = list.children(self.deleted_row(cx));
         v_flex().id("sidebar-sessions").flex_1().min_h_0().child(nav).child(list)
     }
 

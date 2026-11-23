@@ -18,8 +18,12 @@ pub struct Created {
 }
 
 async fn git(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    git_with(dir, args, &[], timeout).await
+}
+
+async fn git_with(dir: &Path, args: &[&str], env: &[(&str, &str)], timeout: Duration) -> Result<String, String> {
     let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.arg("-C").arg(dir).args(args).env("GIT_TERMINAL_PROMPT", "0").envs(env.iter().copied()).stdin(std::process::Stdio::null()).kill_on_drop(true);
     match tokio::time::timeout(timeout, cmd.output()).await {
         Err(_) => Err(format!("git {} timed out", args.join(" "))),
         Ok(Err(e)) => Err(format!("could not run git: {e}")),
@@ -120,6 +124,65 @@ pub fn slug(s: &str) -> String {
     out.trim_matches('-').to_owned()
 }
 
+pub fn kept_ref(session: &str) -> String {
+    format!("refs/tessel/archive/{session}")
+}
+
+const AS_TESSEL: [(&str, &str); 4] = [("GIT_AUTHOR_NAME", "tessel"), ("GIT_AUTHOR_EMAIL", "tessel@localhost"), ("GIT_COMMITTER_NAME", "tessel"), ("GIT_COMMITTER_EMAIL", "tessel@localhost")];
+
+pub async fn keep_work(path: &str, session: &str) -> Option<String> {
+    let dir = Path::new(path);
+    let head = git(dir, &["rev-parse", "HEAD"], QUICK).await.ok()?;
+    let index = std::env::temp_dir().join(format!("tessel-keep-{session}"));
+    let index_path = index.to_string_lossy().into_owned();
+    let apart = [("GIT_INDEX_FILE", index_path.as_str())];
+    let kept = async {
+        git_with(dir, &["read-tree", "HEAD"], &apart, QUICK).await?;
+        git_with(dir, &["add", "-A"], &apart, Duration::from_secs(120)).await?;
+        let tree = git_with(dir, &["write-tree"], &apart, QUICK).await?;
+        if tree == git(dir, &["rev-parse", "HEAD^{tree}"], QUICK).await? {
+            return Ok(None);
+        }
+        let commit = git_with(dir, &["commit-tree", &tree, "-p", &head, "-m", "tessel: work kept when its chat was deleted"], &AS_TESSEL, QUICK).await?;
+        git(dir, &["update-ref", &kept_ref(session), &commit], QUICK).await?;
+        Ok::<_, String>(Some(commit))
+    }
+    .await;
+    let _ = std::fs::remove_file(&index);
+    match kept {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("tesseld: keeping the work in {path}: {e}");
+            None
+        }
+    }
+}
+
+pub async fn bring_back(repo: &str, path: &str, branch: &str, kept: Option<&str>) -> Result<(), String> {
+    let repo_dir = Path::new(repo);
+    if Path::new(path).exists() {
+        return Ok(());
+    }
+    {
+        let _ = git(repo_dir, &["worktree", "prune"], QUICK).await;
+        if let Some(parent) = Path::new(path).parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        if let Err(e) = git(repo_dir, &["worktree", "add", path, branch], Duration::from_secs(120)).await {
+            let start = kept.map(|k| format!("{k}^")).ok_or(e)?;
+            git(repo_dir, &["worktree", "add", "-b", branch, path, &start], Duration::from_secs(120)).await?;
+        }
+    }
+    if let Some(k) = kept {
+        git(Path::new(path), &["restore", "--source", k, "--worktree", "--", "."], Duration::from_secs(120)).await?;
+    }
+    Ok(())
+}
+
+pub async fn forget_work(repo: &str, session: &str) {
+    let _ = git(Path::new(repo), &["update-ref", "-d", &kept_ref(session)], QUICK).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +271,39 @@ mod tests {
 
         let bad_name = WorktreeSpec { base: None, name: Some("!!!".into()) };
         assert_eq!(create(src.to_str().unwrap(), &bad_name, &tmp.path().join("ws"), "x").await.unwrap_err().code, ErrorCode::Invalid);
+    }
+
+    #[tokio::test]
+    async fn work_kept_when_a_workspace_goes_comes_back_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("r");
+        std::fs::create_dir_all(&src).unwrap();
+        repo(&src).await;
+        std::fs::write(src.join("a.txt"), "one\n").unwrap();
+        git(&src, &["add", "a.txt"], QUICK).await.unwrap();
+        git(&src, &["commit", "-q", "-m", "a"], QUICK).await.unwrap();
+        let made = create(src.to_str().unwrap(), &WorktreeSpec::default(), &tmp.path().join("ws"), "keep").await.unwrap();
+        let ws = Path::new(&made.path);
+
+        assert_eq!(keep_work(&made.path, "s1").await, None, "nothing changed, nothing to keep");
+
+        std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+        std::fs::write(ws.join("new.txt"), "fresh\n").unwrap();
+        git(ws, &["add", "a.txt"], QUICK).await.unwrap();
+        let staged_before = git(ws, &["diff", "--cached", "--name-only"], QUICK).await.unwrap();
+        let kept = keep_work(&made.path, "s1").await.expect("the work is kept");
+        assert_eq!(git(ws, &["diff", "--cached", "--name-only"], QUICK).await.unwrap(), staged_before, "the real index is left alone");
+        assert_eq!(git(&src, &["stash", "list"], QUICK).await.unwrap(), "", "and so is the stash");
+
+        remove(&made.repo, &made.path).await.unwrap();
+        assert!(!ws.exists());
+
+        bring_back(&made.repo, &made.path, &made.branch, Some(&kept)).await.unwrap();
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "two\n");
+        assert_eq!(std::fs::read_to_string(ws.join("new.txt")).unwrap(), "fresh\n");
+        assert_eq!(git(ws, &["rev-parse", "--abbrev-ref", "HEAD"], QUICK).await.unwrap(), made.branch);
+
+        forget_work(&made.repo, "s1").await;
+        assert!(git(&src, &["show-ref", "--verify", "--quiet", &kept_ref("s1")], QUICK).await.is_err());
     }
 }

@@ -566,8 +566,62 @@ async fn a_session_can_be_given_its_own_worktree_and_is_otherwise_the_same_thing
         assert!(tokio::time::Instant::now() < deadline, "worktree was not removed");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(!d.cfg.paths.session_dir(&s.id).exists(), "its raw log goes with it");
     assert!(repo.exists());
+}
+
+async fn deleted(c: &Client) -> Vec<tessel_proto::DeletedSession> {
+    let Response::Deleted { sessions } = c.request(Request::DeletedSessions).await.unwrap() else { panic!() };
+    sessions
+}
+
+#[tokio::test]
+async fn a_deleted_workspace_comes_back_with_its_work_until_it_is_deleted_for_good() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["commit", "-q", "--allow-empty", "-m", "init"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    let made = Request::SessionCreate {
+        cmd_id: Uuid::new_v4(), cwd: repo.to_string_lossy().into_owned(), worktree: Some(WorktreeSpec { base: None, name: Some("keep-me".into()) }),
+        goal: Some("half done".into()), prompt: None, model: None, parent: None, attachments: vec![],
+    };
+    let Response::Session { summary: s } = c.request(made).await.unwrap() else { panic!() };
+    let ws = PathBuf::from(&s.cwd);
+    std::fs::write(ws.join("notes.md"), "not committed yet\n").unwrap();
+
+    c.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session: s.id, remove_worktree: true }).await.unwrap();
+    assert!(list(&c).await.is_empty(), "gone from the list");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while ws.exists() || !deleted(&c).await.first().is_some_and(|x| x.kept_work) {
+        assert!(tokio::time::Instant::now() < deadline, "the work wasn't kept and the worktree removed");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let gone = deleted(&c).await;
+    assert_eq!((gone.len(), gone[0].id, gone[0].goal.as_str(), gone[0].workspace_removed), (1, s.id, "half done", true));
+
+    d.stop().await;
+    d.boot(&["plain"]).await;
+    let (c, _) = d.client().await;
+    assert!(list(&c).await.is_empty(), "a restart doesn't bring it back by itself");
+    assert_eq!(deleted(&c).await.len(), 1, "nor forget it");
+
+    let Response::Session { summary: back } = c.request(Request::SessionRestore { session: s.id }).await.unwrap() else { panic!() };
+    assert_eq!((back.id, back.cwd.as_str()), (s.id, s.cwd.as_str()));
+    assert_eq!(std::fs::read_to_string(ws.join("notes.md")).unwrap(), "not committed yet\n", "with the work it had");
+    assert_eq!(git(&ws, &["rev-parse", "--abbrev-ref", "HEAD"]), "tessel/keep-me");
+    assert_eq!(list(&c).await.len(), 1);
+    assert!(deleted(&c).await.is_empty());
+    assert!(git(&repo, &["for-each-ref", "refs/tessel/archive"]).is_empty(), "what was kept is let go once it's back");
+
+    c.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session: s.id, remove_worktree: false }).await.unwrap();
+    c.request(Request::SessionPurge { session: s.id }).await.unwrap();
+    assert!(deleted(&c).await.is_empty());
+    d.stop().await;
+    d.boot(&["plain"]).await;
+    let (c, _) = d.client().await;
+    assert!(list(&c).await.is_empty() && deleted(&c).await.is_empty(), "deleted for good");
 }
 
 // ---- slow clients ---------------------------------------------------------------------
@@ -1569,4 +1623,26 @@ async fn signing_in_again_moves_the_agents_onto_the_new_sign_in() {
     assert_eq!(spawned.len(), 2);
     assert!(spawned[1].resume, "the conversation carries on");
     assert!(spawned[1].env.iter().any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat01-another-account"), "on the new sign-in");
+}
+
+#[tokio::test]
+async fn deleted_chats_are_kept_thirty_days() {
+    let mut d = Daemon::start(&["plain"]).await;
+    let (c, _) = d.client().await;
+    let s = create(&c, &d.cwd(), None).await;
+    let t = create(&c, &d.cwd(), None).await;
+    for id in [s.id, t.id] {
+        c.request(Request::SessionDelete { cmd_id: Uuid::new_v4(), session: id, remove_worktree: false }).await.unwrap();
+    }
+    d.stop().await;
+    let old = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - tessel_proto::KEEP_DELETED_MS - 60_000) as i64;
+    rusqlite::Connection::open(d.cfg.paths.db()).unwrap().execute("UPDATE deleted SET deleted_ms = ?1 WHERE id = ?2", rusqlite::params![old, s.id.to_string()]).unwrap();
+    d.boot(&["plain"]).await;
+    let (c, _) = d.client().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while deleted(&c).await.len() != 1 {
+        assert!(tokio::time::Instant::now() < deadline, "a month-old one wasn't let go");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(deleted(&c).await[0].id, t.id, "the recent one stays");
 }

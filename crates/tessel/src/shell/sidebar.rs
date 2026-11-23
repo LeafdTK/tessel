@@ -250,7 +250,7 @@ impl Shell {
                         .child(theme::float_item(&p, "session-menu-copy", Some("copy"), "Copy session id", None, false).on_click(act(Box::new(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sid.to_string()))), true)))
                         .child(theme::float_sep(&p))
                         .child(
-                            theme::float_danger(&p, SharedString::from(format!("session-{sid}-delete")), Some("trash"), if armed { "Click again to delete" } else { "Delete session" }, armed.then_some("Its history can't be brought back"))
+                            theme::float_danger(&p, SharedString::from(format!("session-{sid}-delete")), Some("trash"), if armed { "Click again to delete" } else { "Delete session" }, armed.then_some("It stays in Recently Deleted for 30 days"))
                                 .on_click(act(Box::new(move |this, _, cx| this.delete(sid, cx)), armed)),
                         )
                         .into_any_element()
@@ -287,4 +287,147 @@ fn reveal(path: &str) {
     let _ = std::process::Command::new("open").arg(path).spawn();
     #[cfg(not(target_os = "macos"))]
     let _ = path;
+
+}
+
+impl Shell {
+    pub(crate) fn ask_deleted(&mut self) {
+        self.cmd(Cmd::Ask { tag: "deleted.list", req: tessel_proto::Request::DeletedSessions });
+    }
+
+    pub(crate) fn restore_deleted(&mut self, session: SessionId) {
+        self.cmd(Cmd::Ask { tag: "deleted.restore", req: tessel_proto::Request::SessionRestore { session } });
+    }
+
+    pub(crate) fn purge_deleted(&mut self, session: SessionId, cx: &mut Context<Self>) {
+        if self.confirm_purge != Some(session) {
+            self.confirm_purge = Some(session);
+            cx.notify();
+            return;
+        }
+        self.confirm_purge = None;
+        self.deleted.retain(|d| d.id != session);
+        self.cmd(Cmd::Ask { tag: "deleted.purge", req: tessel_proto::Request::SessionPurge { session } });
+        cx.notify();
+    }
+
+    pub(crate) fn deleted_answer(&mut self, tag: &str, result: Result<tessel_proto::Response, String>, cx: &mut Context<Self>) {
+        match (tag, result) {
+            ("deleted.list", Ok(tessel_proto::Response::Deleted { sessions })) => self.deleted = sessions,
+            ("deleted.list", _) => self.deleted.clear(),
+            ("deleted.restore", Ok(tessel_proto::Response::Session { summary })) => {
+                self.model.update_session(summary.clone());
+                self.reflow_sidebar();
+                self.ask_deleted();
+                self.open(summary.id, cx);
+            }
+            ("deleted.restore", Err(e)) => self.error = Some(e),
+            (_, Err(e)) => self.error = Some(e),
+            _ => self.ask_deleted(),
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn deleted_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if self.deleted.is_empty() {
+            return None;
+        }
+        let p = self.palette.get();
+        let me = cx.entity().downgrade();
+        let n = self.deleted.len();
+        let trigger = h_flex()
+            .id("nav-deleted")
+            .test_support()
+            .h(px(30.))
+            .mx_2()
+            .px(px(8.))
+            .gap(px(8.))
+            .rounded(px(theme::R_TILE))
+            .hover(|d| d.bg(p.hover))
+            .child(Icon::empty().path("icons/trash.svg").size(theme::z(14.)).text_color(p.tertiary))
+            .child(div().flex_1().set(Type::Callout).text_color(p.secondary).child("Recently Deleted"))
+            .child(theme::count_pill(&p, n.to_string(), false));
+        let popover = Popover::new("deleted-popover")
+            .p_0()
+            .anchor(Anchor::BottomLeft)
+            .trigger(Button::new("nav-deleted-open").ghost().w_full().h_auto().p_0().child(trigger))
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let act = |f: Box<dyn Fn(&mut Shell, &mut Window, &mut Context<Shell>)>, close: bool| {
+                    let (me, popover) = (me.clone(), popover.clone());
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        if close {
+                            popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        }
+                        let _ = me.update(cx, |this, cx| f(this, window, cx));
+                    }
+                };
+                let mut list = v_flex().id("deleted-list").max_h(px(420.)).overflow_y_scroll().gap(px(2.));
+                for d in &this.deleted {
+                    let id = d.id;
+                    let project = crate::model::folder_name(d.worktree.as_ref().map_or(d.cwd.as_str(), |w| w.repo.as_str()));
+                    let mut about = vec![project, format!("deleted {}", deleted_ago(d.deleted_ms))];
+                    if d.kept_work {
+                        about.push("its changes kept".into());
+                    }
+                    let armed = this.confirm_purge == Some(id);
+                    list = list.child(
+                        h_flex()
+                            .id(SharedString::from(format!("deleted-{id}")))
+                            .test_support()
+                            .px(px(8.))
+                            .py(px(6.))
+                            .gap(px(8.))
+                            .rounded(px(theme::R_TILE))
+                            .hover(|d| d.bg(p.hover))
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().truncate().set(Type::Body).text_color(p.label).child(d.goal.clone()))
+                                    .child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(about.join(" · "))),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("deleted-{id}-restore")))
+                                    .xsmall()
+                                    .outline()
+                                    .label("Restore")
+                                    .on_click(act(Box::new(move |this, _, _| this.restore_deleted(id)), true)),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("deleted-{id}-purge")))
+                                    .xsmall()
+                                    .ghost()
+                                    .when(armed, |b| b.danger())
+                                    .label(if armed { "Delete forever?" } else { "Delete" })
+                                    .tooltip("Delete it for good")
+                                    .on_click(act(Box::new(move |this, _, cx| this.purge_deleted(id, cx)), false)),
+                            ),
+                    );
+                }
+                v_flex()
+                    .w(px(380.))
+                    .p(px(6.))
+                    .gap(px(4.))
+                    .child(div().px(px(8.)).pt(px(4.)).set(Type::Subheadline).text_color(p.tertiary).child("Kept for 30 days, then deleted for good."))
+                    .child(list)
+                    .into_any_element()
+            });
+        Some(div().pt(px(8.)).child(popover).into_any_element())
+    }
+}
+
+fn deleted_ago(ms: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let s = now.saturating_sub(ms) / 1000;
+    match s {
+        0..60 => "just now".into(),
+        60..3600 => format!("{}m ago", s / 60),
+        3600..86_400 => format!("{}h ago", s / 3600),
+        86_400..172_800 => "yesterday".into(),
+        _ => format!("{} days ago", s / 86_400),
+    }
 }
