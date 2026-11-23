@@ -1278,7 +1278,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                         p
                     }
                     None => match std::env::current_exe() {
-                        Ok(p) => p,
+                        Ok(p) => on_disk(p),
                         Err(e) => return Some(Err(RpcError::new(ErrorCode::Internal, e.to_string()))),
                     },
                 };
@@ -2218,6 +2218,13 @@ fn no_term(term: TermId) -> RpcError {
     RpcError::new(ErrorCode::NotFound, format!("no terminal {term}"))
 }
 
+fn on_disk(exe: std::path::PathBuf) -> std::path::PathBuf {
+    match exe.to_str().and_then(|p| p.strip_suffix(" (deleted)")) {
+        Some(p) => std::path::PathBuf::from(p),
+        None => exe,
+    }
+}
+
 fn not_found(session: SessionId) -> RpcError {
     RpcError::new(ErrorCode::NotFound, format!("no session {session}"))
 }
@@ -2347,5 +2354,14 @@ mod fork_tests {
     fn a_folder_s_conversations_are_kept_under_its_resolved_path_with_dashes() {
         let d = super::conversations_dir("/no/such/place.v2");
         assert!(d.ends_with("projects/-no-such-place-v2"), "{d:?}");
+    }
+}
+
+#[cfg(test)]
+mod on_disk_tests {
+    #[test]
+    fn a_daemon_replaced_while_running_restarts_from_the_file_now_there() {
+        assert_eq!(super::on_disk("/home/u/.tessel/bin/tesseld (deleted)".into()), std::path::PathBuf::from("/home/u/.tessel/bin/tesseld"));
+        assert_eq!(super::on_disk("/usr/bin/tesseld".into()), std::path::PathBuf::from("/usr/bin/tesseld"));
     }
 }
