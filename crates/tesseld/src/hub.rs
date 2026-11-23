@@ -78,6 +78,9 @@ pub enum HubMsg {
     /// a worktree finished being made (or failed) for a pending create.
     WorktreeReady { client: ClientId, id: u64, create: Box<Create>, result: Result<worktree::Created, RpcError>, setup: Option<String> },
     WorkKept { session: SessionId, kept: Option<String> },
+    RunAdvance { run: SessionId },
+    RunResume { run: SessionId },
+    Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
     Restored { client: ClientId, id: u64, session: SessionId, result: Result<(crate::reducer::Persisted, Vec<tessel_proto::Item>, Option<String>), String> },
     /// keys for a terminal: a binary frame from a client.
     TermInput { client: ClientId, payload: Vec<u8> },
@@ -139,6 +142,22 @@ struct Client {
 
 /// a restart that was asked for: who to answer, until when to wait for
 /// turns to end, and the daemon to hand over to.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RunLive {
+    run: tessel_proto::Run,
+    workflow: tessel_proto::Workflow,
+    picked: std::collections::BTreeMap<String, tessel_proto::Pick>,
+    texts: HashMap<String, String>,
+    folder: String,
+    from: usize,
+    cost_from: f64,
+    busy_seen: bool,
+    term: Option<TermId>,
+}
+
+const DOC_NOTE: &str = "\n\nWhen you're done, reply with the whole document in Markdown as your final message and nothing else: no preamble, no sign-off. It's kept exactly as you write it.";
+const ASK_NOTE: &str = "\n\nAsk me in one go, with the tessel_ask tool if you have it, and wait for my answers before going on.";
+
 #[derive(Clone)]
 struct Deleted {
     meta: Meta,
@@ -207,6 +226,8 @@ pub struct Hub {
     sign_ins_at: Option<std::time::SystemTime>,
     deleted: HashMap<SessionId, Deleted>,
     deleted_swept: Option<std::time::Instant>,
+    runs: HashMap<SessionId, RunLive>,
+    choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
     restart: Option<Restart>,
     /// what tessel did to each session's repository, newest last: what undo takes back.
@@ -294,6 +315,8 @@ impl Hub {
             sign_ins_at: None,
             deleted: HashMap::new(),
             deleted_swept: None,
+            runs: HashMap::new(),
+            choices_kept: HashMap::new(),
             next_term: 1,
             restart: None,
             git_undo: Default::default(),
@@ -329,6 +352,17 @@ impl Hub {
                 hub.store.save(state.persisted(), fx.upserts);
             }
             hub.sessions.insert(id, Live { state, agent: None, generation: 0, last_summary: None, interrupt_deadline: None, restart_when_idle: false, fork_from: None });
+        }
+        for (id, body) in hub.store.load_runs().await? {
+            let Ok(rl) = serde_json::from_str::<RunLive>(&body) else { continue };
+            if let Some(live) = hub.sessions.get_mut(&id) {
+                live.state.run = Some(rl.run.clone());
+            }
+            let resume = !rl.run.done() && rl.term.is_none() && rl.run.steps.get(rl.run.at).is_some_and(|s| s.state == tessel_proto::StepState::Working);
+            hub.runs.insert(id, rl);
+            if resume {
+                let _ = hub.tx.send(HubMsg::RunResume { run: id });
+            }
         }
         Ok(hub)
     }
@@ -572,6 +606,14 @@ impl Hub {
                 }
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
+            HubMsg::RunAdvance { run } => self.advance_run(run),
+            HubMsg::RunResume { run } => self.start_step(run),
+            HubMsg::Choices { client, id, keep, result } => {
+                if let (Some(key), Ok(c)) = (keep, &result) {
+                    self.choices_kept.insert(key, (now_ms(), c.clone()));
+                }
+                self.respond(client, id, result.map(|choices| Response::Choices { choices }).map_err(|e| RpcError::new(ErrorCode::Conflict, e)));
+            }
             HubMsg::WorkKept { session, kept } => {
                 if let Some(d) = self.deleted.get_mut(&session) {
                     d.row.kept = kept;
@@ -657,6 +699,7 @@ impl Hub {
                 }
             }
             HubMsg::TermExited { term, code } => {
+                self.run_term_exited(term, code);
                 if let Some(t) = self.terms.get_mut(&term) {
                     t.info.exited = Some(code);
                     if t.closing || !t.info.keep_open {
@@ -943,6 +986,12 @@ impl Hub {
                 });
                 return None;
             }
+            Request::Workflows { cwd } => Ok(Response::Workflows { workflows: crate::workflow::load_all(&self.cfg.paths.home, cwd.as_deref().map(Path::new)) }),
+            Request::WorkflowSave { name, yaml, .. } => crate::workflow::save(&self.cfg.paths.home, &name, &yaml)
+                .map(|workflow| Response::WorkflowSaved { workflow })
+                .map_err(|e| RpcError::new(ErrorCode::Invalid, format!("that isn't a workflow yet: {e}"))),
+            Request::WorkflowOptions { workflow, input, picked, cwd, fresh } => return self.workflow_options(client, id, workflow, input, picked, cwd, fresh),
+            Request::WorkflowRun { workflow, picked, cwd } => self.run_workflow(workflow, picked, cwd),
             Request::SessionPurge { session } => {
                 self.purge(session);
                 Ok(Response::Ack)
@@ -2096,6 +2145,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         if persist {
             self.publish_summary(session, now);
         }
+        self.watch_runs(session);
     }
 
     /// tell subscribers about a session's summary, but only if it changed.
@@ -2119,6 +2169,346 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         for client in targets {
             self.send(client, Envelope::Ev { ev: ev.clone() });
         }
+    }
+
+    fn workflow_options(
+        &mut self,
+        client: ClientId,
+        id: u64,
+        workflow: String,
+        input: String,
+        picked: std::collections::BTreeMap<String, tessel_proto::Pick>,
+        cwd: Option<String>,
+        fresh: bool,
+    ) -> Option<Result<Response, RpcError>> {
+        use tessel_proto::Options;
+        let Some(w) = crate::workflow::find(&self.cfg.paths.home, cwd.as_deref().map(Path::new), &workflow) else {
+            return Some(Err(RpcError::new(ErrorCode::NotFound, format!("there's no workflow {workflow}"))));
+        };
+        let Some(field) = w.inputs.iter().find(|i| i.id == input) else {
+            return Some(Err(RpcError::new(ErrorCode::NotFound, format!("{} has no input {input}", w.name))));
+        };
+        let (key, keep) = match &field.options {
+            Some(Options::Tool { server, tool, args, keep_secs, .. }) => (format!("{server}.{tool} {}", crate::workflow::render_json(args, &picked)), *keep_secs),
+            Some(Options::Ask { ask, keep_secs }) => (format!("ask {}", crate::workflow::render(ask, &picked, &HashMap::new())), *keep_secs),
+            Some(Options::List { choices }) => return Some(Ok(Response::Choices { choices: choices.clone() })),
+            _ => return Some(Ok(Response::Choices { choices: Vec::new() })),
+        };
+        if !fresh
+            && let (Some(k), Some((at, c))) = (keep, self.choices_kept.get(&key))
+            && now_ms().saturating_sub(*at) < k * 1000
+        {
+            return Some(Ok(Response::Choices { choices: c.clone() }));
+        }
+        let tx = self.tx.clone();
+        let keep = keep.map(|_| key);
+        match field.options.clone() {
+            Some(Options::Tool { server, tool, args, label, value, .. }) => {
+                let args = crate::workflow::render_json(&args, &picked);
+                let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+                let cwd = cwd.map(std::path::PathBuf::from);
+                tokio::spawn(async move {
+                    let result = async {
+                        let s = crate::mcp_call::server_config(&server, &home, cwd.as_deref())?;
+                        let v = crate::mcp_call::call(&s, &tool, args, Duration::from_secs(60)).await.map_err(|e| format!("{server}: {e}"))?;
+                        Ok(crate::mcp_call::choices(&v, label.as_deref(), value.as_deref()))
+                    }
+                    .await;
+                    let _ = tx.send(HubMsg::Choices { client, id, keep, result });
+                });
+            }
+            Some(Options::Ask { ask, .. }) => {
+                let prompt = format!(
+                    "{}\n\nAnswer with only a JSON array of objects, each with \"value\" and \"label\" strings. No other words.",
+                    crate::workflow::render(&ask, &picked, &HashMap::new())
+                );
+                let backend = self.backend.clone();
+                tokio::spawn(async move {
+                    let result = async {
+                        let text = backend.one_shot(prompt, "haiku").await.map_err(|e| e.to_string())?;
+                        let json = text.find('[').zip(text.rfind(']')).map(|(a, b)| &text[a..=b]).ok_or("the answer wasn't a list")?;
+                        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+                        Ok(crate::mcp_call::choices(&v, Some("{{label}}"), Some("{{value}}")))
+                    }
+                    .await;
+                    let _ = tx.send(HubMsg::Choices { client, id, keep, result });
+                });
+            }
+            _ => return Some(Ok(Response::Choices { choices: Vec::new() })),
+        }
+        None
+    }
+
+    fn run_workflow(&mut self, workflow: String, picked: std::collections::BTreeMap<String, tessel_proto::Pick>, cwd: Option<String>) -> Result<Response, RpcError> {
+        use tessel_proto::{Run, RunStep, StepState};
+        let w = crate::workflow::find(&self.cfg.paths.home, cwd.as_deref().map(Path::new), &workflow).ok_or_else(|| RpcError::new(ErrorCode::NotFound, format!("there's no workflow {workflow}")))?;
+        if !w.problems.is_empty() {
+            return Err(RpcError::new(ErrorCode::Invalid, format!("{} needs fixing first: {}", w.name, w.problems.join("; "))));
+        }
+        if let Some(missing) = w.inputs.iter().find(|i| !i.optional && picked.get(&i.id).is_none_or(|p| crate::workflow::plain(&p.value).trim().is_empty())) {
+            return Err(RpcError::new(ErrorCode::Invalid, format!("{} needs {}", w.name, missing.label)));
+        }
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        let none = HashMap::new();
+        let title = w.title.as_deref().map(|t| crate::workflow::render(t, &picked, &none)).map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).unwrap_or_else(|| w.name.clone());
+        let folder = match w.folder.as_deref().map(|f| crate::workflow::render(f, &picked, &none)) {
+            Some(f) if f.starts_with("~/") => home.join(&f[2..]),
+            Some(f) if !f.trim().is_empty() => std::path::PathBuf::from(f),
+            _ => home.join("tessel").join("runs").join(crate::workflow::slug(&w.name)).join(format!("{}-{}", crate::workflow::slug(&title), &Uuid::new_v4().simple().to_string()[..4])),
+        };
+        std::fs::create_dir_all(&folder).map_err(|e| RpcError::new(ErrorCode::Internal, format!("making {}: {e}", folder.display())))?;
+        let folder = folder.to_string_lossy().into_owned();
+        let create = Create { cmd_id: Uuid::new_v4(), cwd: folder.clone(), goal: Some(title), prompt: None, attachments: Vec::new(), model: w.model.clone(), parent: None, fork: None };
+        let Response::Session { summary } = self.create_session(create, folder.clone(), None)? else {
+            return Err(RpcError::new(ErrorCode::Internal, "the run's chat wasn't made"));
+        };
+        let head = summary.id;
+        if let (Some(e), Some(live)) = (&w.effort, self.sessions.get_mut(&head)) {
+            live.state.effort = Some(e.clone());
+        }
+        let run = Run {
+            workflow: w.id.clone(),
+            name: w.name.clone(),
+            icon: w.icon.clone(),
+            steps: w.steps.iter().map(|s| RunStep { name: s.name.clone(), state: StepState::Waiting, started_ms: None, finished_ms: None, session: None, cost_usd: 0.0 }).collect(),
+            at: 0,
+            doc: None,
+            started_ms: now_ms(),
+            finished_ms: None,
+            failed: None,
+            head: Some(head),
+        };
+        self.runs.insert(head, RunLive { run, workflow: w, picked, texts: HashMap::new(), folder, from: 0, cost_from: 0.0, busy_seen: false, term: None });
+        self.start_step(head);
+        Ok(Response::Session { summary: self.sessions[&head].state.summary(now_ms()) })
+    }
+
+    fn start_step(&mut self, run_id: SessionId) {
+        use tessel_proto::{StepDoes, StepState};
+        let Some(rl) = self.runs.get(&run_id).cloned() else { return };
+        if rl.run.done() {
+            return;
+        }
+        let at = rl.run.at;
+        let Some(step) = rl.workflow.steps.get(at).cloned() else {
+            self.finish_run(run_id);
+            return;
+        };
+        let mut session = (0..at).rev().find_map(|i| rl.run.steps[i].session).unwrap_or(run_id);
+        let render = |t: &str| crate::workflow::render(t, &rl.picked, &rl.texts);
+        let mut term = None;
+        let mut message = None;
+        let mut problem = None;
+        match &step.does {
+            StepDoes::Shell(cmd) => match self.open_term(Some(session), rl.folder.clone(), vec![render(cmd)], 120, 32, false) {
+                Ok(info) => term = Some(info.id),
+                Err(e) => problem = Some(e.message),
+            },
+            StepDoes::Prompt(t) | StepDoes::Ask(t) => {
+                let mut text = render(t);
+                if matches!(step.does, StepDoes::Ask(_)) {
+                    text.push_str(ASK_NOTE);
+                }
+                if step.doc {
+                    text.push_str(DOC_NOTE);
+                }
+                if step.fresh {
+                    let before: Vec<String> = rl.workflow.steps[..at].iter().filter_map(|s| rl.texts.get(&s.id).filter(|t| !t.trim().is_empty()).map(|t| format!("## {}\n\n{t}", s.name))).collect();
+                    if !before.is_empty() {
+                        text = format!("What was done so far:\n\n{}\n\n---\n\n{text}", before.join("\n\n"));
+                    }
+                    let model = step.model.clone().or_else(|| rl.workflow.model.clone());
+                    let create = Create { cmd_id: Uuid::new_v4(), cwd: rl.folder.clone(), goal: Some(step.name.clone()), prompt: None, attachments: Vec::new(), model, parent: Some(run_id), fork: None };
+                    match self.create_session(create, rl.folder.clone(), None) {
+                        Ok(Response::Session { summary }) => session = summary.id,
+                        Ok(_) => {}
+                        Err(e) => problem = Some(e.message),
+                    }
+                }
+                if let Some(m) = step.model.as_deref().filter(|_| !step.fresh) {
+                    self.set_session_model(session, m);
+                }
+                if let Some(e) = step.effort.clone().or_else(|| rl.workflow.effort.clone())
+                    && let Some(live) = self.sessions.get_mut(&session)
+                {
+                    if let Some(agent) = &live.agent {
+                        agent.apply_settings(&serde_json::json!({"effortLevel": e}));
+                    }
+                    live.state.effort = Some(e);
+                }
+                message = Some(text);
+            }
+            StepDoes::Unknown => problem = Some("this step doesn't say what to do".into()),
+        }
+        let (from, cost_from) = self.sessions.get(&session).map_or((0, 0.0), |l| (l.state.items().len(), l.state.cost_usd()));
+        if let Some(rl) = self.runs.get_mut(&run_id) {
+            let s = &mut rl.run.steps[at];
+            s.state = StepState::Working;
+            s.started_ms = Some(now_ms());
+            s.session = Some(session);
+            rl.from = from;
+            rl.cost_from = cost_from;
+            rl.busy_seen = false;
+            rl.term = term;
+        }
+        self.sync_run(run_id);
+        if let Some(text) = message
+            && let Err(e) = self.send_user(session, Uuid::new_v4(), text, Vec::new())
+        {
+            problem = Some(e.message);
+        }
+        if let Some(p) = problem {
+            self.fail_run(run_id, p);
+        }
+    }
+
+    fn set_session_model(&mut self, session: SessionId, model: &str) {
+        let Some(live) = self.sessions.get(&session) else { return };
+        match &live.agent {
+            Some(agent) => agent.set_model(model),
+            None => {
+                let _ = self.apply(session, Input::SetModel { model: model.to_owned() });
+            }
+        }
+    }
+
+    fn watch_runs(&mut self, session: SessionId) {
+        use tessel_proto::StepState;
+        if self.runs.is_empty() {
+            return;
+        }
+        let Some(live) = self.sessions.get(&session) else { return };
+        let busy = live.state.turn_open() || !live.state.pending().is_empty() || live.state.tasks_running() > 0;
+        let mut due = Vec::new();
+        for (id, rl) in self.runs.iter_mut() {
+            let Some(step) = rl.run.steps.get(rl.run.at) else { continue };
+            if rl.run.done() || rl.term.is_some() || step.session != Some(session) || !matches!(step.state, StepState::Working | StepState::Asking) {
+                continue;
+            }
+            if busy {
+                rl.busy_seen = true;
+            } else if rl.busy_seen {
+                due.push(*id);
+            }
+        }
+        for run in due {
+            let _ = self.tx.send(HubMsg::RunAdvance { run });
+        }
+    }
+
+    fn advance_run(&mut self, run_id: SessionId) {
+        use tessel_proto::{AttentionReason, ItemBody, RunState, StepDoes, StepState};
+        let Some(rl) = self.runs.get(&run_id) else { return };
+        let at = rl.run.at;
+        let Some(session) = rl.run.steps.get(at).and_then(|s| s.session) else { return };
+        if rl.run.done() || rl.term.is_some() || !rl.busy_seen {
+            return;
+        }
+        let Some(live) = self.sessions.get(&session) else {
+            self.fail_run(run_id, "its chat was deleted".into());
+            return;
+        };
+        let state = &live.state;
+        if state.turn_open() || !state.pending().is_empty() || state.tasks_running() > 0 {
+            return;
+        }
+        let since = state.items().get(rl.from..).unwrap_or_default();
+        let text = since.iter().rev().find_map(|i| match &i.body {
+            ItemBody::Text { text, .. } if i.parent.is_none() && !text.trim().is_empty() => Some(text.clone()),
+            _ => None,
+        });
+        let asked_in_place = since.iter().any(|i| matches!(&i.body, ItemBody::Tool { tool, .. } if tool.ends_with("tessel_ask")));
+        let summary = state.summary(now_ms());
+        let failed = summary.run_state == RunState::Errored || summary.attention.as_ref().is_some_and(|a| a.reason == AttentionReason::Errored);
+        let cost = (state.cost_usd() - rl.cost_from).max(0.0);
+        let step = rl.workflow.steps[at].clone();
+        let waiting_on_you = matches!(step.does, StepDoes::Ask(_)) && rl.run.steps[at].state == StepState::Working && !asked_in_place && !failed;
+        let rl = self.runs.get_mut(&run_id).expect("checked above");
+        let s = &mut rl.run.steps[at];
+        s.cost_usd += cost;
+        if waiting_on_you {
+            s.state = StepState::Asking;
+            rl.busy_seen = false;
+            rl.cost_from = cost + rl.cost_from;
+            self.sync_run(run_id);
+            return;
+        }
+        s.finished_ms = Some(now_ms());
+        if failed {
+            self.fail_run(run_id, "the agent stopped with an error".into());
+            return;
+        }
+        s.state = StepState::Done;
+        let text = text.unwrap_or_default();
+        if step.doc && !text.trim().is_empty() {
+            let path = std::path::Path::new(&rl.folder).join(format!("{}.md", crate::workflow::slug(&rl.workflow.name)));
+            match std::fs::write(&path, &text) {
+                Ok(()) => rl.run.doc = Some(path.to_string_lossy().into_owned()),
+                Err(e) => eprintln!("tesseld: writing {}: {e}", path.display()),
+            }
+        }
+        rl.texts.insert(step.id.clone(), text);
+        rl.run.at += 1;
+        if rl.run.at >= rl.run.steps.len() {
+            self.finish_run(run_id);
+        } else {
+            self.sync_run(run_id);
+            self.start_step(run_id);
+        }
+    }
+
+    fn run_term_exited(&mut self, term: TermId, code: i32) {
+        use tessel_proto::StepState;
+        let Some(run_id) = self.runs.iter().find(|(_, r)| r.term == Some(term)).map(|(id, _)| *id) else { return };
+        let rl = self.runs.get_mut(&run_id).expect("just found");
+        rl.term = None;
+        let at = rl.run.at;
+        rl.run.steps[at].finished_ms = Some(now_ms());
+        if code != 0 {
+            self.fail_run(run_id, format!("the command stopped with exit code {code}"));
+            return;
+        }
+        rl.run.steps[at].state = StepState::Done;
+        rl.run.at += 1;
+        if rl.run.at >= rl.run.steps.len() {
+            self.finish_run(run_id);
+        } else {
+            self.sync_run(run_id);
+            self.start_step(run_id);
+        }
+    }
+
+    fn finish_run(&mut self, run_id: SessionId) {
+        if let Some(rl) = self.runs.get_mut(&run_id) {
+            rl.run.finished_ms = Some(now_ms());
+        }
+        self.sync_run(run_id);
+    }
+
+    fn fail_run(&mut self, run_id: SessionId, why: String) {
+        use tessel_proto::StepState;
+        if let Some(rl) = self.runs.get_mut(&run_id) {
+            let at = rl.run.at;
+            if let Some(s) = rl.run.steps.get_mut(at) {
+                s.state = StepState::Failed;
+                s.finished_ms.get_or_insert(now_ms());
+            }
+            rl.run.failed = Some(why);
+            rl.run.finished_ms = Some(now_ms());
+        }
+        self.sync_run(run_id);
+    }
+
+    fn sync_run(&mut self, run_id: SessionId) {
+        let Some(rl) = self.runs.get(&run_id) else { return };
+        if let Ok(body) = serde_json::to_string(rl) {
+            self.store.save_run(run_id, body);
+        }
+        let run = rl.run.clone();
+        if let Some(live) = self.sessions.get_mut(&run_id) {
+            live.state.run = Some(run);
+        }
+        self.publish_summary(run_id, now_ms());
     }
 
     fn purge(&mut self, session: SessionId) {

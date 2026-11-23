@@ -54,6 +54,7 @@ fn session(n: u128, goal: &str, state: RunState, attention: Option<AttentionReas
         cost_usd: 0.0,
         trace: vec![],
         asking: None,
+        run: None,
         last_seq: 5,
         created_ms: n as u64,
         updated_ms: 0,

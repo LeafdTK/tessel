@@ -42,6 +42,7 @@ fn summary() -> SessionSummary {
         cost_usd: 0.0,
         trace: vec![],
         asking: None,
+        run: None,
         last_seq: 7,
         created_ms: 1,
         updated_ms: 2,

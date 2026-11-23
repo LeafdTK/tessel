@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 enum Job {
     Save { session: Box<Persisted>, items: Vec<Item> },
@@ -25,6 +25,8 @@ enum Job {
     Undelete { id: SessionId },
     LoadDeleted { reply: oneshot::Sender<anyhow::Result<Vec<(Persisted, DeletedRow)>>> },
     LoadSession { id: SessionId, reply: oneshot::Sender<anyhow::Result<Option<Persisted>>> },
+    SaveRun { id: SessionId, body: String },
+    LoadRuns { reply: oneshot::Sender<anyhow::Result<Vec<(SessionId, String)>>> },
     LoadSessions { reply: oneshot::Sender<anyhow::Result<Vec<Persisted>>> },
     LoadItems { id: SessionId, reply: oneshot::Sender<anyhow::Result<Vec<Item>>> },
     /// resolves once everything queued before it is on disk.
@@ -81,6 +83,16 @@ impl Store {
     pub async fn load_session(&self, id: SessionId) -> anyhow::Result<Option<Persisted>> {
         let (reply, rx) = oneshot::channel();
         self.tx.send(Job::LoadSession { id, reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
+    }
+
+    pub fn save_run(&self, id: SessionId, body: String) {
+        let _ = self.tx.send(Job::SaveRun { id, body });
+    }
+
+    pub async fn load_runs(&self) -> anyhow::Result<Vec<(SessionId, String)>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::LoadRuns { reply }).ok().context("store thread is gone")?;
         rx.await.context("store thread is gone")?
     }
 
@@ -195,6 +207,17 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 7 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE runs (
+                 id   TEXT PRIMARY KEY,
+                 body TEXT NOT NULL
+             );
+             PRAGMA user_version = 7;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -211,7 +234,8 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
                 let r = conn
                     .execute("DELETE FROM items WHERE session = ?1", params![id])
                     .and_then(|_| conn.execute("DELETE FROM sessions WHERE id = ?1", params![id]))
-                    .and_then(|_| conn.execute("DELETE FROM deleted WHERE id = ?1", params![id]));
+                    .and_then(|_| conn.execute("DELETE FROM deleted WHERE id = ?1", params![id]))
+                    .and_then(|_| conn.execute("DELETE FROM runs WHERE id = ?1", params![id]));
                 if let Err(e) = r {
                     eprintln!("tesseld: store: deleting session {id}: {e:#}");
                 }
@@ -236,6 +260,20 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
             }
             Job::LoadSession { id, reply } => {
                 let _ = reply.send(load_rows(&conn, &format!("WHERE id = '{id}'")).map(|mut v| v.pop()));
+            }
+            Job::SaveRun { id, body } => {
+                let r = conn.execute("INSERT INTO runs (id, body) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET body = excluded.body", params![id.to_string(), body]);
+                if let Err(e) = r {
+                    eprintln!("tesseld: store: saving run {id}: {e:#}");
+                }
+            }
+            Job::LoadRuns { reply } => {
+                let load = || -> anyhow::Result<Vec<(SessionId, String)>> {
+                    let mut stmt = conn.prepare("SELECT id, body FROM runs")?;
+                    let rows: Vec<(String, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+                    Ok(rows.into_iter().filter_map(|(id, body)| id.parse().ok().map(|id| (id, body))).collect())
+                };
+                let _ = reply.send(load());
             }
             Job::LoadSessions { reply } => {
                 let _ = reply.send(load_sessions(&conn));

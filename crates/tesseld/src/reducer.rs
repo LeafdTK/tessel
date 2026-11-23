@@ -152,6 +152,7 @@ pub struct SessionState {
     /// cost reported by the current process (it reports a running total).
     cost_process: f64,
     pub updated_ms: Millis,
+    pub run: Option<tessel_proto::Run>,
 }
 
 /// the persisted half of a session, for rebuilding one from the store.
@@ -211,6 +212,7 @@ impl SessionState {
             cost_base: 0.0,
             cost_process: 0.0,
             updated_ms: created,
+            run: None,
         }
     }
 
@@ -291,6 +293,10 @@ impl SessionState {
 
     pub fn is_alive(&self) -> bool {
         self.alive
+    }
+
+    pub fn tasks_running(&self) -> usize {
+        self.tasks.len()
     }
 
     pub fn turn_open(&self) -> bool {
@@ -469,6 +475,7 @@ impl SessionState {
             cost_usd: self.cost_usd(),
             trace: self.trace(now),
             asking: self.pending.iter().find(|p| !p.is_question && p.plan.is_none()).map(|p| p.request_id.clone()),
+            run: self.run.clone(),
             last_seq: self.seq,
             created_ms: self.meta.created_ms,
             updated_ms: self.updated_ms,

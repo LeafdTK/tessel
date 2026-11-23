@@ -149,6 +149,33 @@ pub enum Request {
     SessionPurge {
         session: SessionId,
     },
+    Workflows {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    WorkflowOptions {
+        workflow: String,
+        input: String,
+        #[serde(default)]
+        picked: std::collections::BTreeMap<String, crate::Pick>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default)]
+        fresh: bool,
+    },
+    WorkflowRun {
+        workflow: String,
+        #[serde(default)]
+        picked: std::collections::BTreeMap<String, crate::Pick>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
+    WorkflowSave {
+        name: String,
+        yaml: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     PermissionRespond {
         cmd_id: Uuid,
         session: SessionId,
@@ -755,6 +782,15 @@ pub enum Response {
     },
     Deleted {
         sessions: Vec<DeletedSession>,
+    },
+    Workflows {
+        workflows: Vec<crate::Workflow>,
+    },
+    Choices {
+        choices: Vec<crate::Choice>,
+    },
+    WorkflowSaved {
+        workflow: crate::Workflow,
     },
     /// the daemon handed over to a new one: its pid, and what carried on.
     Restarted {

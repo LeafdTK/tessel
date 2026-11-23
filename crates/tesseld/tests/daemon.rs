@@ -42,7 +42,9 @@ impl Daemon {
 
     /// (re)start the daemon on the same home with a fresh stand-in agent.
     async fn boot(&mut self, fixtures: &[&str]) {
-        self.backend = Arc::new(ReplayBackend::new(fixtures.iter().map(|f| fixture(f)).collect()));
+        let again = fixtures.iter().any(|f| f.ends_with('+'));
+        let replay = ReplayBackend::new(fixtures.iter().map(|f| fixture(f.trim_end_matches('+'))).collect());
+        self.backend = Arc::new(if again { replay.again() } else { replay });
         // a daemon that has just stopped can still hold its lock for a moment;
         // a restart waits for it, as a client starting one does.
         let mut tries = 0;
@@ -1645,4 +1647,85 @@ async fn deleted_chats_are_kept_thirty_days() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(deleted(&c).await[0].id, t.id, "the recent one stays");
+}
+
+
+fn write_workflow(d: &Daemon, file: &str, yaml: &str) {
+    let dir = d.cfg.paths.home.join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(file), yaml).unwrap();
+}
+
+async fn run_of(c: &Client, head: SessionId, what: &str, pred: impl Fn(&tessel_proto::Run) -> bool) -> tessel_proto::Run {
+    until(c, head, what, |s| s.run.as_ref().is_some_and(&pred)).await.run.unwrap()
+}
+
+fn pick(value: &str, label: &str) -> tessel_proto::Pick {
+    tessel_proto::Pick { value: serde_json::Value::String(value.into()), label: label.into() }
+}
+
+#[tokio::test]
+async fn a_workflow_runs_its_steps_in_order_and_keeps_its_doc() {
+    let d = Daemon::start(&["plain+"]).await;
+    let folder = d.cfg.paths.home.join("out");
+    write_workflow(&d, "notes.yaml", &format!(r#"
+name: Notes
+title: "Notes on {{{{topic.label}}}}"
+folder: {}
+inputs:
+  topic: {{ label: Topic, type: select, options: [{{ value: lim, label: Limits }}] }}
+steps:
+  - id: gather
+    prompt: Gather what you know about {{{{topic.label}}}} ({{{{topic}}}}).
+  - shell: echo checked > checked.txt
+  - prompt: "Write the notes from: {{{{steps.gather.text}}}}"
+    fresh: true
+    doc: true
+"#, folder.display()));
+    let (c, _) = d.client().await;
+    let Response::Workflows { workflows } = c.request(Request::Workflows { cwd: None }).await.unwrap() else { panic!() };
+    assert_eq!((workflows.len(), workflows[0].problems.len()), (1, 0), "{:?}", workflows[0].problems);
+    let Response::Choices { choices } = c.request(Request::WorkflowOptions { workflow: "notes".into(), input: "topic".into(), picked: Default::default(), cwd: None, fresh: false }).await.unwrap() else { panic!() };
+    assert_eq!(choices[0].label, "Limits");
+
+    match c.request(Request::WorkflowRun { workflow: "notes".into(), picked: Default::default(), cwd: None }).await {
+        Err(tessel_client::ClientError::Rpc(e)) => assert!(e.message.contains("needs Topic"), "{}", e.message),
+        other => panic!("a missing input is refused: {other:?}"),
+    }
+    let picked = [("topic".to_owned(), pick("lim", "Limits"))].into_iter().collect();
+    let Response::Session { summary: head } = c.request(Request::WorkflowRun { workflow: "notes".into(), picked, cwd: None }).await.unwrap() else { panic!() };
+    assert_eq!(head.goal, "Notes on Limits");
+    assert_eq!(head.cwd, folder.to_string_lossy());
+
+    let run = run_of(&c, head.id, "the run to finish", |r| r.done()).await;
+    assert_eq!(run.failed, None);
+    assert!(run.steps.iter().all(|s| s.state == tessel_proto::StepState::Done), "{:?}", run.steps);
+    assert_eq!(std::fs::read_to_string(folder.join("checked.txt")).unwrap().trim(), "checked", "the shell step ran in the run's folder");
+    let doc = run.doc.expect("a doc");
+    assert!(!std::fs::read_to_string(&doc).unwrap().trim().is_empty());
+    assert_ne!(run.steps[2].session, Some(head.id), "the fresh step has a tab of its own");
+    let tab = list(&c).await.into_iter().find(|s| Some(s.id) == run.steps[2].session).expect("the fresh tab");
+    assert_eq!((tab.cwd.as_str(), tab.parent), (head.cwd.as_str(), Some(head.id)));
+
+    let written = d.backend.written.lock().unwrap().join("\n");
+    assert!(written.contains("Gather what you know about Limits (lim)."), "the step's prompt, filled in");
+    assert!(written.contains("What was done so far"), "the fresh step is told what came before");
+    assert!(written.contains("final message and nothing else"), "the doc step is asked for the doc itself");
+}
+
+#[tokio::test]
+async fn an_ask_step_waits_for_your_answer_before_going_on() {
+    let d = Daemon::start(&["plain+"]).await;
+    write_workflow(&d, "chat.yaml", "name: Chat\nsteps:\n  - ask: What should I focus on?\n  - prompt: Go on with that.\n");
+    let (c, _) = d.client().await;
+    let Response::Session { summary: head } = c.request(Request::WorkflowRun { workflow: "chat".into(), picked: Default::default(), cwd: None }).await.unwrap() else { panic!() };
+    let asking = run_of(&c, head.id, "the question to be asked", |r| r.steps[0].state == tessel_proto::StepState::Asking).await;
+    assert_eq!(asking.at, 0);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let still = until(&c, head.id, "still asking", |_| true).await.run.unwrap();
+    assert_eq!(still.steps[1].state, tessel_proto::StepState::Waiting, "nothing goes on until you answer");
+
+    c.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: head.id, text: "limits, mostly".into(), attachments: vec![] }).await.unwrap();
+    let run = run_of(&c, head.id, "the run to finish", |r| r.done()).await;
+    assert!(run.steps.iter().all(|s| s.state == tessel_proto::StepState::Done), "{:?}", run.steps);
 }

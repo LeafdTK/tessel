@@ -8,6 +8,7 @@ pub mod checkpoint;
 pub mod handoff;
 pub mod hub;
 pub mod kube;
+pub mod mcp_call;
 pub mod orphans;
 pub mod procs;
 pub mod projects;
@@ -20,6 +21,7 @@ pub mod store;
 pub mod term;
 pub mod voice;
 pub mod workspace;
+pub mod workflow;
 pub mod worktree;
 
 use anyhow::Context;

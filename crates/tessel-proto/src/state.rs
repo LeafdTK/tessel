@@ -135,6 +135,8 @@ pub struct SessionSummary {
     /// need the whole card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asking: Option<crate::RequestId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<crate::Run>,
     pub last_seq: Seq,
     pub created_ms: Millis,
     pub updated_ms: Millis,

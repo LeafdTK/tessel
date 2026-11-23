@@ -624,6 +624,7 @@ mod tests {
             cost_usd: 0.0,
             trace: vec![],
             asking: None,
+            run: None,
             last_seq: 1,
             created_ms: n as u64,
             updated_ms: 0,

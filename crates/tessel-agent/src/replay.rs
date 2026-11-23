@@ -27,6 +27,7 @@ pub struct ReplayBackend {
     pub spawned: Arc<Mutex<Vec<SpawnOpts>>>,
     /// every one-off question asked, and the model it was asked of.
     pub asked: Arc<Mutex<Vec<(String, String)>>>,
+    again: bool,
 }
 
 impl ReplayBackend {
@@ -39,7 +40,13 @@ impl ReplayBackend {
             written: Default::default(),
             spawned: Default::default(),
             asked: Default::default(),
+            again: false,
         }
+    }
+
+    pub fn again(mut self) -> Self {
+        self.again = true;
+        self
     }
 
     /// keep the recording's pacing, but never wait longer than `max_gap` between lines.
@@ -91,6 +98,7 @@ impl Backend for ReplayBackend {
         let wake = Arc::new(Notify::new());
         let written = self.written.clone();
         let max_gap = self.max_gap;
+        let again = self.again;
 
         let (k, w) = (killed.clone(), wake.clone());
         tokio::spawn(async move {
@@ -142,12 +150,26 @@ impl Backend for ReplayBackend {
                     Dir::In => {}
                 }
             }
+            let mut round = 0;
             if !k.load(Ordering::SeqCst) && code.is_some() {
                 // a real agent stays up between turns until its input closes or it is told to stop.
                 loop {
                     tokio::select! {
                         line = stdin_rx.recv() => match line {
-                            Some(l) => written.lock().unwrap().push(l),
+                            Some(l) => {
+                                written.lock().unwrap().push(l);
+                                if again {
+                                    round += 1;
+                                    let start = recs.iter().position(|r| r.text().is_some_and(|t| t.contains("\"subtype\":\"init\""))).map_or(0, |i| i + 1);
+                                    for rec in recs[start..].iter().filter(|r| r.dir == Dir::Out) {
+                                        if let Some(text) = rec.text()
+                                            && stdout_tx.send(text.replace("msg_", &format!("msg_r{round}_"))).is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
                             None => break,
                         },
                         _ = w.notified() => { code = None; break; }

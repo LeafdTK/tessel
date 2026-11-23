@@ -28,6 +28,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 # both already in the build.
 toml = "0.8"
 globset = "0.4"
+serde_yaml_ng = "0.10"
 
 [dev-dependencies]
 base64 = "0.22"
