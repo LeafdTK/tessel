@@ -42,10 +42,11 @@ pub async fn change(ws: &Path) -> Result<Change, String> {
     let main = crate::ship::main_branch(ws).await;
     let head = git(ws, &["rev-parse", "HEAD"]).await?;
     let base = git(ws, &["merge-base", "HEAD", &main]).await.unwrap_or_else(|_| head.clone());
-    let mut diff = git(ws, &["diff", "--no-color", "--no-ext-diff", "-U3", &base]).await?;
-    let mut paths: Vec<String> = git(ws, &["diff", "--name-only", &base]).await?.lines().map(str::to_owned).collect();
+    let local = format!(":(exclude){}", crate::setup::LOCAL);
+    let mut diff = git(ws, &["diff", "--no-color", "--no-ext-diff", "-U3", &base, "--", ".", &local]).await?;
+    let mut paths: Vec<String> = git(ws, &["diff", "--name-only", &base, "--", ".", &local]).await?.lines().map(str::to_owned).collect();
     let untracked = git(ws, &["ls-files", "--others", "--exclude-standard"]).await.unwrap_or_default();
-    for f in untracked.lines().filter(|f| !f.is_empty()) {
+    for f in untracked.lines().filter(|f| !f.is_empty() && *f != crate::setup::LOCAL) {
         let Ok(text) = std::fs::read_to_string(ws.join(f)) else { continue };
         if text.len() > 256 * 1024 {
             continue;
@@ -361,7 +362,29 @@ pub fn verdict(p: &Proof) -> Verdict {
     }
 }
 
-pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: Ask, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Room {
+    pub used: f64,
+    pub anyway: bool,
+}
+
+pub fn room(windows: &[tessel_proto::UsageWindow], now_secs: i64, anyway: bool) -> Room {
+    let used = windows.iter().filter(|w| w.resets_at.is_none_or(|r| r > now_secs)).map(|w| w.used).fold(0.0, f64::max);
+    Room { used, anyway }
+}
+
+pub fn model_for(cfg: &str, calls: &[Vec<String>], room: Room) -> &'static str {
+    let picked = match cfg {
+        "haiku" => "haiku",
+        "opus" => "opus",
+        "sonnet" => "sonnet",
+        _ if calls.len() == 1 && calls[0].len() <= 3 => "haiku",
+        _ => "sonnet",
+    };
+    if room.used >= 0.8 && !room.anyway { "haiku" } else { picked }
+}
+
+pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: Ask, room: Room, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
     let mut p = Proof { started_ms: now(), stage: "Reading the change".into(), ..Default::default() };
     tell(&p);
     let change = match change(&ws).await {
@@ -432,6 +455,14 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
 
     let judged = applying.iter().any(|r| r.check == Check::Judge);
     let calls = panel(&cfg, &change, judged);
+    if room.used >= 0.95 && !room.anyway {
+        p.skipped = true;
+        return finish(p, Some(&format!("reviewers skipped: your usage limit is at {:.0}%", room.used * 100.0)));
+    }
+    let model = match cfg.model.as_str() {
+        "haiku" | "sonnet" | "opus" | "auto" => model_for(&cfg.model, &calls, room).to_owned(),
+        custom => custom.to_owned(),
+    };
     p.stage = match calls.len() {
         1 => "Reviewing".to_owned(),
         n => format!("Reviewing with {n} reviewers"),
@@ -448,7 +479,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
             .collect();
         let know_refs: Vec<&Knowledge> = knowledge.iter().collect();
         let prompt = review_prompt(&lenses, &ask, &change, &rule_refs, &know_refs, &book.guidance);
-        let (b, cwd, model, changed, ids) = (backend.clone(), ws.clone(), cfg.model.clone(), change.paths.clone(), rule_ids.clone());
+        let (b, cwd, model, changed, ids) = (backend.clone(), ws.clone(), model.clone(), change.paths.clone(), rule_ids.clone());
         reviewers.spawn(async move {
             let start = Instant::now();
             let got = b.review(prompt, cwd, &model).await;
@@ -483,7 +514,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, ask: A
         tell(&p);
         let start = Instant::now();
         let mut checking: Vec<Finding> = weighty.iter().map(|&i| found[i].clone()).collect();
-        match backend.review(recheck_prompt(&change, &checking), ws.clone(), &cfg.model).await {
+        match backend.review(recheck_prompt(&change, &checking), ws.clone(), &model).await {
             Ok(r) => {
                 apply_recheck(&mut checking, &r.text);
                 for (k, &i) in weighty.iter().enumerate() {
@@ -595,7 +626,7 @@ mod tests {
 
     #[test]
     fn the_panel_grows_with_the_change_and_its_risk() {
-        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "sonnet".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true };
+        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "auto".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true };
         let change = |changed: usize, paths: &[&str]| Change { changed, paths: paths.iter().map(|p| (*p).to_owned()).collect(), ..Default::default() };
         let small = change(12, &["src/list.rs"]);
         assert_eq!(panel(&cfg(None), &small, false), vec![vec!["correctness".to_owned(), "scope".to_owned()]], "a small change is one reviewer");
@@ -607,6 +638,23 @@ mod tests {
         let both = vec!["correctness".to_owned(), "scope".to_owned()];
         let f = parse_findings(&both, "```json\n[{\"lens\":\"scope\",\"file\":\"a\",\"title\":\"x\"},{\"lens\":\"made-up\",\"file\":\"a\",\"title\":\"y\"}]\n```", &[], &[]).unwrap();
         assert_eq!((f[0].lens.as_str(), f[1].lens.as_str()), ("scope", "correctness"));
+    }
+
+    #[test]
+    fn the_reviewer_s_model_follows_the_change_and_how_much_is_left() {
+        let one = vec![vec!["correctness".to_owned(), "scope".to_owned()]];
+        let wide = vec![vec!["correctness".to_owned(), "edge-cases".to_owned(), "security".to_owned(), "scope".to_owned()]];
+        let full: Vec<Vec<String>> = crate::rules::LENSES.iter().map(|l| vec![(*l).to_owned()]).collect();
+        let free = Room::default();
+        assert_eq!(model_for("auto", &one, free), "haiku", "a small change is a small model's job");
+        assert_eq!(model_for("auto", &wide, free), "sonnet");
+        assert_eq!(model_for("auto", &full, free), "sonnet");
+        assert_eq!(model_for("opus", &one, free), "opus", "a repository that asks for one gets it");
+        let tight = Room { used: 0.85, anyway: false };
+        assert_eq!(model_for("auto", &full, tight), "haiku", "near the limit everything is the small model");
+        assert_eq!(model_for("auto", &full, Room { anyway: true, ..tight }), "sonnet");
+        let w = |name: &str, used: f64, resets_at: Option<i64>| tessel_proto::UsageWindow { name: name.into(), used, resets_at, status: String::new() };
+        assert_eq!(room(&[w("five_hour", 0.4, Some(100)), w("seven_day", 0.9, Some(50))], 60, false).used, 0.4, "a window that has started over doesn't count");
     }
 
     #[test]

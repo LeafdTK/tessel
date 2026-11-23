@@ -773,7 +773,7 @@ pub(crate) async fn proof_of(client: &Client, session: SessionId) -> anyhow::Res
 
 async fn prove(client: &Client, session: SessionId) -> anyhow::Result<tessel_proto::proof::Proof> {
     let before = proof_of(client, session).await?.map(|p| p.started_ms);
-    client.request(Request::ProofRun { session }).await?;
+    client.request(Request::ProofRun { session, anyway: true }).await?;
     let mut said = String::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(800)).await;

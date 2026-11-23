@@ -1858,7 +1858,7 @@ async fn a_change_is_proved_against_the_house_rules_and_a_failed_proof_holds_the
     let ws = PathBuf::from(&s.cwd);
     std::fs::write(ws.join("src/k8s/deploy.go"), "package k8s\nfunc Deploy() { client.Update(obj) }\n").unwrap();
 
-    c.request(Request::ProofRun { session: s.id }).await.unwrap();
+    c.request(Request::ProofRun { session: s.id, anyway: false }).await.unwrap();
     let done = until(&c, s.id, "proved", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await;
     let p = done.proof.unwrap();
     assert_eq!(p.verdict, Verdict::Failed);
@@ -1898,7 +1898,7 @@ async fn a_failing_check_stops_a_proof_before_any_reviewer_is_paid_for() {
     std::fs::write(repo.join("a.txt"), "two\n").unwrap();
     let (c, _) = d.client().await;
     let s = create(&c, &repo.to_string_lossy(), None).await;
-    c.request(Request::ProofRun { session: s.id }).await.unwrap();
+    c.request(Request::ProofRun { session: s.id, anyway: false }).await.unwrap();
     let p = until(&c, s.id, "proved", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await.proof.unwrap();
     assert_eq!(p.verdict, Verdict::Failed);
     assert!(p.verify[0].output.contains("error: it broke"));

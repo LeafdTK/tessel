@@ -1456,7 +1456,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     r.map(|said| Response::Shipped { said, url: None }).map_err(|e| RpcError::new(ErrorCode::Invalid, e))
                 });
             }
-            Request::ProofRun { session } => {
+            Request::ProofRun { session, anyway } => {
                 let Some(live) = self.sessions.get(&session) else { return Some(Err(not_found(session))) };
                 if self.proving.contains(&session) {
                     return Some(Err(RpcError::new(ErrorCode::Conflict, "it's being proved already")));
@@ -1475,12 +1475,13 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 let said = said.into_iter().rev().take(4).rev().collect();
                 let ask = crate::proof::Ask { goal: live.state.meta.goal.clone(), said };
                 self.proving.insert(session);
+                let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, anyway);
                 let (tx, backend) = (self.tx.clone(), self.backend.clone());
                 tokio::spawn(async move {
                     let tell = move |p: &tessel_proto::proof::Proof| {
                         let _ = tx.send(HubMsg::Proof { session, proof: Box::new(p.clone()) });
                     };
-                    crate::proof::prove(backend, ws, root, ask, now_ms, tell).await;
+                    crate::proof::prove(backend, ws, root, ask, room, now_ms, tell).await;
                 });
                 Ok(Response::Ack)
             }

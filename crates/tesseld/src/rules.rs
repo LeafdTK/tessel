@@ -38,7 +38,7 @@ pub fn config(workspace: &Path, root: &Path) -> Config {
     };
     Config {
         verify: list(get("verify")).unwrap_or_default(),
-        model: get("model").and_then(toml::Value::as_str).unwrap_or("sonnet").to_owned(),
+        model: get("model").and_then(toml::Value::as_str).unwrap_or("auto").to_owned(),
         lenses: list(get("lenses")).filter(|l| !l.is_empty()),
         risk: RISK.iter().map(|s| (*s).to_owned()).chain(list(get("risk")).unwrap_or_default()).collect(),
         starter: get("starter").and_then(toml::Value::as_bool).unwrap_or(true),

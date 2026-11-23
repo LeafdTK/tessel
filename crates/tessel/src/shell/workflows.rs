@@ -729,7 +729,7 @@ const DESCRIBED: &str = "Make me a tessel workflow, so this runs from a form ins
 
 impl Shell {
     pub(crate) fn make_workflow_from(&mut self, session: SessionId) {
-        self.cmd(Cmd::Fork { session, workspace: false, before: None, draft: None, send: Some(FROM_CHAT.to_owned()) });
+        self.cmd(Cmd::Fork { session, workspace: false, before: None, draft: None, send: Some(format!("{FROM_CHAT}\n\n{}", tessel_proto::workflow::FORMAT)) });
     }
 
     pub(crate) fn author_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -743,7 +743,7 @@ impl Shell {
     }
 
     pub(crate) fn authoring_prompt(&mut self, typed: String) -> String {
-        if std::mem::take(&mut self.authoring) { format!("{DESCRIBED}\n\n{typed}") } else { typed }
+        if std::mem::take(&mut self.authoring) { format!("{DESCRIBED}\n\n{typed}\n\n{}", tessel_proto::workflow::FORMAT) } else { typed }
     }
 
     pub(crate) fn authoring_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {

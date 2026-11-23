@@ -3128,7 +3128,7 @@ fn a_chat_becomes_a_workflow_and_one_can_be_described(cx: &mut TestAppContext) {
     rig.click(cx, "create");
     let asked = rig.asked();
     assert!(
-        matches!(asked.as_slice(), [Cmd::Create { prompt, worktree: false, .. }] if prompt.starts_with("Make me a tessel workflow") && prompt.ends_with("weekly report from my commits")),
+        matches!(asked.as_slice(), [Cmd::Create { prompt, worktree: false, .. }] if prompt.starts_with("Make me a tessel workflow") && prompt.contains("weekly report from my commits") && prompt.contains("A tessel workflow is a YAML file")),
         "{asked:?}"
     );
     assert!(!rig.exists(cx, "authoring-chip"), "once asked, it's an ordinary chat");
@@ -3200,7 +3200,7 @@ fn the_software_factory_stays_out_of_the_way_until_it_is_on_and_a_failed_proof_h
     rig.click(cx, "tab-checks");
     rig.asked();
     rig.click(cx, "proof-run");
-    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "proof.run", req: tessel_proto::Request::ProofRun { session } } if *session == a.id)));
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "proof.run", req: tessel_proto::Request::ProofRun { session, .. } } if *session == a.id)));
 
     let finding = Finding { lens: "security".into(), rule: Some("no-token-logs".into()), file: Some("src/login.rs".into()), line: Some(3), severity: Severity::Block, title: "Token logged".into(), why: "the session token reaches the log".into(), confirmed: Some(true) };
     let refuted = Finding { title: "Imagined".into(), confirmed: Some(false), ..finding.clone() };

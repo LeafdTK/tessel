@@ -238,6 +238,8 @@ pub enum Request {
     },
     ProofRun {
         session: SessionId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        anyway: bool,
     },
     Rules {
         session: SessionId,

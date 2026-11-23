@@ -40,15 +40,16 @@ Inline $...$ maths is not typeset, so write short inline expressions as plain te
 Use a diagram or a formula when it explains something better than prose, not for decoration.";
 
 /// added to `HOST_NOTE` when the agent has tessel's tools.
-pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Reach for them on your own, without being asked and without announcing them:\n\
-- When something reads better seen than read (numbers to compare, a result summary, a checklist, progress that moves while you work, options for the person to pick), draw it with tessel_surface instead of a markdown table, ASCII art or a status paragraph, and update it in place with set as the work goes on.\n\
-- When you need answers from the person before going on (which option, a detail, a preference), ask with tessel_ask: one short form, the likely answer first. It waits for them and gives you their answers, so you carry on in the same turn instead of ending it with a question.\n\
-- When the repository has a .tessel/rules folder, prove a finished change with tessel_prove before you say it's done, fix the real findings, and prove again (twice at most).\n\
-- Run commands with your own Bash, as usual: builds, tests, and dev servers too (run_in_background for anything that keeps running). Use tessel_terminal only when the person asks for a terminal of their own.\n\
-- When you build or change anything with a UI, look at it with tessel_browser: open it, use it, screenshot it. The person watches that page in the Browser pane and may point at parts of it to show you what they mean (each arrives as a picked_element note, with its selector and, in a development build, the source file and components it came from, then its picture: go to that source first).\n\
-- This workspace has ten ports of its own, $TESSEL_PORT to $TESSEL_PORT+9: start servers on those, never on a fixed port another workspace may be using. Its setup script, run buttons and the files each new workspace gets are in .tessel/settings.toml; change that file when asked to change any of them.\n\
-- Leave the window as the person arranged it: open, close, move or switch panes and change the layout only when they ask you to.\n\
-Keep to what genuinely reads better that way: a one-line answer stays a line.";
+pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Use them on your own, without announcing them:\n\
+- Draw results that read better seen than read (comparisons, checklists, progress) with tessel_surface, and update them in place.\n\
+- Need an answer from the person to go on? Ask with tessel_ask and carry on in the same turn.\n\
+- Run commands with your own Bash (run_in_background for servers). tessel_terminal is only for a terminal the person asks for.\n\
+- Check UI you build with tessel_browser. The person may point at parts of the page: each arrives as a picked_element note with its selector and, in a dev build, its source file. Go to that source first.\n\
+- Start servers on this workspace's ports, $TESSEL_PORT to $TESSEL_PORT+9, never a fixed one. Its setup and run buttons live in .tessel/settings.toml.\n\
+- Leave the window as the person arranged it unless they ask.\n\
+A one-line answer stays a line.";
+
+pub const PROVE_NOTE: &str = "\n- This repository has house rules (.tessel/rules): when a change is finished, check it with tessel_prove, fix the real findings, and check again (twice at most).";
 
 /// visual mode, said to the agent: the person is watching, so its commands
 /// run where they can see them.

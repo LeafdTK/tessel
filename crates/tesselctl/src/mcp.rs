@@ -14,12 +14,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-const WINDOW: &str = "Run any command in the tessel window: everything a person can click. \
-Examples: {\"cmd\":\"pane.split\",\"args\":{\"dir\":\"right\"}}, {\"cmd\":\"pane.show\",\"args\":{\"module\":\"changes\"}}, \
-{\"cmd\":\"theme.use\",\"args\":{\"name\":\"oxblood\"}}, {\"cmd\":\"session.open\",\"args\":{\"session\":\"<id prefix>\"}}. \
-Size a pane however you like: {\"cmd\":\"pane.size\",\"args\":{\"pane\":\"terminal\",\"size\":0.3,\"dir\":\"height\"}} \
-(a fraction of the room, or small, half, large); hide or show one with pane.toggle. \
-Panes are named by id, @focused, or the module they show. tessel_window_state shows what is on screen; tessel_commands lists every command.";
+const WINDOW: &str = "Run a tessel window command: anything a person can click. Only when the person asks you to change the window. \
+e.g. {\"cmd\":\"pane.show\",\"args\":{\"module\":\"changes\"}}, {\"cmd\":\"pane.size\",\"args\":{\"pane\":\"terminal\",\"size\":0.3}}. \
+{\"cmd\":\"ui.ls\"} shows what's on screen; {\"cmd\":\"commands.list\"} lists every command.";
 
 /// window commands an agent may not run. tessel's tools run without asking,
 /// so anything that loses work or changes what agents may do stays with people.
@@ -32,14 +29,10 @@ const FOR_PEOPLE: &[(&str, &str)] = &[
 fn tools() -> Value {
     let kinds: Vec<String> = KINDS.iter().map(|(k, about)| if about.is_empty() { (*k).to_owned() } else { format!("{k} ({about})") }).collect();
     let surface = format!(
-        "Show things visually in the chat: use this instead of markdown tables, ASCII art or status paragraphs whenever \
-a result reads better as UI (metrics, comparisons, checklists, progress that updates, choices the person can click). \
-Draw live UI in your chat (or in a Surfaces pane) and update it in place. ops: put (draw or redraw a whole surface: surface, node, region inline|pane; \
-pane surfaces show in a Surfaces pane, opened with tessel_window pane.show {{\"module\":\"surfaces\"}}, and in the chat while none is open), \
-set (change one element's props in place: surface, element (an id; leave out for the top element), props), remove (surface). An element is \
-{{\"k\": kind, \"id\": optional, \"p\": props, \"c\": children}}. When the person clicks a button, ticks a checkbox \
-or picks a choice you get a message <surface-event surface=… element=… act=… value=…/>. Everything is drawn in tessel's own \
-style; you choose structure and tone, not colours. Kinds: {}.",
+        "Live UI in the chat, instead of markdown tables, ASCII art or status paragraphs, when a result reads better as UI \
+(metrics, comparisons, checklists, progress, choices). ops: put (surface, node, region inline|pane), set (surface, element id or none for the top, props: merged in place), remove. \
+An element is {{\"k\": kind, \"id\"?, \"p\": props, \"c\": children}}. Clicks and picks come back as <surface-event surface=… element=… act=… value=…/>. \
+tessel draws it in its own style: you pick structure and tone, not colours. Kinds: {}.",
         kinds.join("; ")
     );
     json!([
@@ -52,28 +45,15 @@ style; you choose structure and tone, not colours. Kinds: {}.",
             }, "required": ["cmd"]}
         },
         {
-            "name": "tessel_window_state",
-            "description": "What the tessel window shows right now: the open session, panes (id, module, focused, size), drawers, theme.",
-            "inputSchema": {"type": "object", "properties": {}}
-        },
-        {
-            "name": "tessel_commands",
-            "description": "Every command tessel_window takes, with its arguments and shortcut.",
-            "inputSchema": {"type": "object", "properties": {}}
-        },
-        {
             "name": "tessel_layout",
-            "description": "Read or replace the whole window layout (ui.json). Read first, change what you need, write it back. \
-A write answers with what tessel's checker found (errors are refused, warnings and adjustments listed). \
-The reference for the format is ui/README.md in tessel's home.",
+            "description": "Read or replace the window layout (ui.json), only when asked. Read, change, write back; a write answers with what the checker found. Format: ui/README.md in tessel's home.",
             "inputSchema": {"type": "object", "properties": {
                 "json": {"type": "object", "description": "the new ui.json; leave out to read the current one"}
             }}
         },
         {
             "name": "tessel_terminal",
-            "description": "Terminals of the person's own, in this session's folder, kept in panes: only when they ask for one (a shell to use, a server they want in a pane). \
-For running commands yourself, builds and dev servers included, use Bash (run_in_background for what keeps running). \
+            "description": "A terminal of the person's own, only when they ask for one. Run your own commands with Bash. \
 ops: open (command: what to run, or leave out for a shell; show: put it in a new pane, only when the person asked for one, default false) -> its id; \
 run (term, command: typed, then return); send (term, text: typed as is; \\u0003 is ctrl-c); \
 read (term, history: also what scrolled away) -> its text; wait (term, text: until the screen shows it, or leave out to wait for it to exit; timeout seconds, default 30); \
@@ -90,14 +70,9 @@ list; close (term).",
         },
         {
             "name": "tessel_browser",
-            "description": "A real browser page the person watches live in tessel's Browser pane, and can point at parts of to show you. \
-Use it whenever you build or change UI: open the app (with no url it starts at this workspace's server, localhost:$TESSEL_PORT), read the page, \
-click and type through what you built, and take a screenshot to see it as the person does. They see everything you do as you do it. \
-Start with snapshot: the page as an outline of roles, names and states, every control with a ref (e12) to act on; \
-refs stay the same until the page changes address, so take a new snapshot after navigating. \
-ops: open (url?), back, forward, reload, snapshot (root?: a ref or selector to read only part), read (the page's text, with CSS selectors), screenshot, \
-click (ref, or selector, or x and y in CSS pixels), type (text, ref or selector?: clicked first), select (value, ref or selector: a dropdown's option), \
-key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
+            "description": "A real browser page the person watches live. Use it to check UI you build: open (no url: this workspace's server), use it, screenshot it. \
+snapshot gives an outline with refs (e12) to act on; take a new one after navigating. \
+ops: open (url?), back, forward, reload, snapshot (root?), read (text, with selectors), screenshot, click (ref | selector | x,y), type (text, ref|selector?), select (value, ref|selector), key, scroll (dy, dx).",
             "inputSchema": {"type": "object", "properties": {
                 "op": {"type": "string", "enum": ["open", "back", "forward", "reload", "snapshot", "read", "screenshot", "click", "type", "select", "key", "scroll"]},
                 "url": {"type": "string"},
@@ -115,7 +90,7 @@ key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
         },
         {
             "name": "tessel_workflow_save",
-            "description": format!("Save a workflow, so the person can run it again from a form. It answers with any problems it found: fix them and save again until there are none. {}", tessel_proto::workflow::FORMAT),
+            "description": "Save a tessel workflow (YAML), so the person can run it again from a form. It answers with any problems and the format: fix them and save again until it saves clean.",
             "inputSchema": {"type": "object", "properties": {
                 "name": {"type": "string", "description": "the workflow's name (its file is named after it)"},
                 "yaml": {"type": "string", "description": "the whole workflow, as YAML"}
@@ -123,12 +98,12 @@ key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
         },
         {
             "name": "tessel_prove",
-            "description": "Prove your change before you say it's done. Runs the repository's verify commands and house rules (.tessel/rules), and has independent reviewers check correctness, edge cases, security, the rules and scope; their findings are double-checked. Answers with what failed and where. Fix what's real, then prove again. It takes a few minutes.",
+            "description": "Check your finished change: the repository's verify commands, its house rules (.tessel/rules) and independent reviewers. Answers with what failed and where.",
             "inputSchema": {"type": "object", "properties": {}}
         },
         {
             "name": "tessel_ask",
-            "description": "Ask the person something and wait for the answer, as a small form in the chat. Use it whenever you need details, a choice or a preference before going on, instead of asking in text and ending your turn: their answers come back as this tool's result and you carry on. Keep it short: a few fields, the likely answer first. Field types: text (a line), long (a paragraph), select (one of options), multiselect (any of options), toggle (yes or no). The result is a JSON object of field id to answer; a field left empty is missing from it.",
+            "description": "Ask the person and wait, as a small form in the chat, instead of asking in text and ending your turn. A few fields, the likely answer first. Answers come back as JSON (field id to answer; empty fields left out).",
             "inputSchema": {"type": "object", "properties": {
                 "title": {"type": "string", "description": "the question, as a short heading"},
                 "note": {"type": "string", "description": "a line of context, if it helps"},
@@ -344,10 +319,11 @@ impl Server {
             "tessel_workflow_save" => {
                 let name = args.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let yaml = args.get("yaml").and_then(Value::as_str).unwrap_or("").to_owned();
-                match self.ask(Request::WorkflowSave { name, yaml, cwd: None }).await? {
-                    Response::WorkflowSaved { workflow } if workflow.problems.is_empty() => format!("saved {} at {}. it's in the person's workflows now", workflow.name, workflow.path),
-                    Response::WorkflowSaved { workflow } => format!("saved at {}, but it has problems to fix, then save again:\n- {}", workflow.path, workflow.problems.join("\n- ")),
-                    other => anyhow::bail!("unexpected reply: {other:?}"),
+                match self.ask(Request::WorkflowSave { name, yaml, cwd: None }).await {
+                    Ok(Response::WorkflowSaved { workflow }) if workflow.problems.is_empty() => format!("saved {} at {}. it's in the person's workflows now", workflow.name, workflow.path),
+                    Ok(Response::WorkflowSaved { workflow }) => format!("saved at {}, but it has problems to fix, then save again:\n- {}\n\n{}", workflow.path, workflow.problems.join("\n- "), tessel_proto::workflow::FORMAT),
+                    Ok(other) => anyhow::bail!("unexpected reply: {other:?}"),
+                    Err(e) => anyhow::bail!("{e:#}\n\n{}", tessel_proto::workflow::FORMAT),
                 }
             }
             "tessel_prove" => {
@@ -357,7 +333,7 @@ impl Server {
                     _ => None,
                 };
                 let before = current(self.ask(Request::SessionList).await?).map(|p| p.started_ms);
-                self.ask(Request::ProofRun { session }).await?;
+                self.ask(Request::ProofRun { session, anyway: false }).await?;
                 loop {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let Some(p) = current(self.ask(Request::SessionList).await?) else { continue };
@@ -399,7 +375,12 @@ pub async fn serve() -> anyhow::Result<()> {
                 "serverInfo": {"name": "tessel", "version": env!("CARGO_PKG_VERSION")}
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tools()})),
+            "tools/list" => {
+                let ruled = std::env::current_dir().is_ok_and(|d| tessel_proto::proof::has_house_rules(&d));
+                let all = tools();
+                let listed: Vec<&Value> = all.as_array().into_iter().flatten().filter(|t| ruled || t["name"] != "tessel_prove").collect();
+                Ok(json!({"tools": listed}))
+            }
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));

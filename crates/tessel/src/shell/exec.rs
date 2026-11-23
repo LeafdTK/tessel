@@ -444,7 +444,7 @@ impl Shell {
                     Some(s) => s.parse().map_err(|_| format!("session: {s} isn't a session id"))?,
                     None => self.model.open.as_ref().map(|o| o.id).ok_or("no chat is open")?,
                 };
-                self.prove(session, cx);
+                self.prove(session, args.get("anyway").and_then(|v| v.as_bool()).unwrap_or(false), cx);
                 done
             }
             "app.notch" => {

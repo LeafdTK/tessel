@@ -6,9 +6,13 @@ use std::process::{Command, Stdio};
 
 /// send these messages, close stdin, and read every answer.
 fn talk(env: &[(&str, &str)], msgs: &[Value]) -> Vec<Value> {
+    talk_in(&std::env::temp_dir(), env, msgs)
+}
+
+fn talk_in(dir: &std::path::Path, env: &[(&str, &str)], msgs: &[Value]) -> Vec<Value> {
     let home = std::env::temp_dir().join(format!("tesselctl-mcp-{}", std::process::id()));
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_tesselctl"));
-    cmd.arg("mcp").env("TESSEL_HOME", &home).env_remove("TESSEL_SESSION").stdin(Stdio::piped()).stdout(Stdio::piped());
+    cmd.current_dir(dir).arg("mcp").env("TESSEL_HOME", &home).env_remove("TESSEL_SESSION").stdin(Stdio::piped()).stdout(Stdio::piped());
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -45,8 +49,8 @@ fn an_agent_can_start_it_list_its_tools_and_hear_why_a_call_failed() {
     assert_eq!(out[0]["result"]["protocolVersion"], "2025-06-18");
 
     let names: Vec<&str> = out[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["tessel_window", "tessel_window_state", "tessel_commands", "tessel_layout", "tessel_terminal", "tessel_browser", "tessel_workflow_save", "tessel_prove", "tessel_ask", "tessel_surface"]);
-    let surface = out[1]["result"]["tools"][9]["description"].as_str().unwrap();
+    assert_eq!(names, ["tessel_window", "tessel_layout", "tessel_terminal", "tessel_browser", "tessel_workflow_save", "tessel_ask", "tessel_surface"], "proving is only offered where there are house rules");
+    let surface = out[1]["result"]["tools"][6]["description"].as_str().unwrap();
     assert!(surface.contains("progress") && surface.contains("<surface-event"), "the kinds and the event are explained");
 
     assert_eq!(out[2]["id"], 3);
@@ -54,4 +58,18 @@ fn an_agent_can_start_it_list_its_tools_and_hear_why_a_call_failed() {
     assert!(out[2]["result"]["content"][0]["text"].as_str().unwrap().contains("wasn't started by tessel"));
 
     assert_eq!(out[3]["error"]["code"], -32601);
+}
+
+#[test]
+fn a_repository_with_house_rules_gets_the_proving_tool_and_every_listing_stays_lean() {
+    let dir = std::env::temp_dir().join(format!("tesselctl-mcp-rules-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join(".tessel/rules")).unwrap();
+    std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+    let list = [json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}), json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})];
+    let out = talk_in(&dir.join("src/deep"), &[], &list);
+    let tools = out[1]["result"]["tools"].as_array().unwrap();
+    assert!(tools.iter().any(|t| t["name"] == "tessel_prove"), "found from a folder inside the repository");
+    let chars: usize = tools.iter().map(|t| t.to_string().len()).sum();
+    assert!(chars < 8000, "every turn of every chat carries these: {chars} chars");
+    let _ = std::fs::remove_dir_all(&dir);
 }

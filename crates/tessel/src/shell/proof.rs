@@ -27,8 +27,8 @@ impl Shell {
         self.ui.factory.unwrap_or(false)
     }
 
-    pub(crate) fn prove(&mut self, session: SessionId, cx: &mut Context<Self>) {
-        self.cmd(Cmd::Ask { tag: "proof.run", req: Request::ProofRun { session } });
+    pub(crate) fn prove(&mut self, session: SessionId, anyway: bool, cx: &mut Context<Self>) {
+        self.cmd(Cmd::Ask { tag: "proof.run", req: Request::ProofRun { session, anyway } });
         cx.notify();
     }
 
@@ -120,7 +120,7 @@ impl Shell {
                     .ghost()
                     .label(if s.proof.is_some() { "Prove Again" } else { "Prove" })
                     .disabled(proving)
-                    .on_click(cx.listener(move |this, _, _, cx| this.prove(session, cx))),
+                    .on_click(cx.listener(move |this, _, _, cx| this.prove(session, false, cx))),
             ),
         );
         let Some(proof) = &s.proof else { return Some(col.child(dim("Not proved yet.".into()))) };
@@ -141,6 +141,9 @@ impl Shell {
             .child(dim(format!("{} files · {took} · ${:.2}{}", proof.files, proof.cost_usd, if proof.overridden { " · shipped anyway" } else { "" })));
         if let Some(why) = &proof.problem {
             col = col.child(dim(why.clone()));
+        }
+        if proof.skipped {
+            col = col.child(h_flex().px_3().pt_1().child(Button::new("proof-anyway").small().outline().label("Review Anyway").on_click(cx.listener(move |this, _, _, cx| this.prove(session, true, cx)))));
         }
         for (ix, v) in proof.verify.iter().enumerate() {
             col = col.child(

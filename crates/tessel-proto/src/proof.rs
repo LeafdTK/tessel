@@ -163,6 +163,8 @@ pub struct Proof {
     pub problem: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub overridden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub skipped: bool,
 }
 
 impl Proof {
@@ -218,4 +220,8 @@ impl Proof {
         }
         out.trim_end().to_owned()
     }
+}
+
+pub fn has_house_rules(dir: &std::path::Path) -> bool {
+    dir.ancestors().take(12).any(|d| d.join(".tessel/rules").is_dir())
 }
