@@ -248,6 +248,10 @@ impl Shell {
                         .child(theme::float_sep(&p))
                         .child(theme::float_item(&p, "session-menu-finder", Some("folder-open"), "Open in Finder", None, false).on_click(act(Box::new(move |_, _, _| reveal(&f)), true)))
                         .child(theme::float_item(&p, "session-menu-copy", Some("copy"), "Copy session id", None, false).on_click(act(Box::new(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(sid.to_string()))), true)))
+                        .child(theme::float_item(&p, "session-menu-workflow", Some("workflow"), "Make this a workflow", Some("Run it again from a form"), false).on_click(act(Box::new(move |this, _, cx| {
+                            this.make_workflow_from(sid);
+                            cx.notify();
+                        }), true)))
                         .child(theme::float_sep(&p))
                         .child(
                             theme::float_danger(&p, SharedString::from(format!("session-{sid}-delete")), Some("trash"), if armed { "Click again to delete" } else { "Delete session" }, armed.then_some("It stays in Recently Deleted for 30 days"))

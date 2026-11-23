@@ -247,9 +247,6 @@ impl Shell {
     pub(crate) fn workflow_cards(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let p = self.palette.get();
         let ready: Vec<&Workflow> = self.workflows.iter().collect();
-        if ready.is_empty() {
-            return None;
-        }
         let mut row = h_flex().flex_wrap().gap_2();
         for w in ready {
             let id = w.id.clone();
@@ -278,6 +275,23 @@ impl Shell {
                     })),
             );
         }
+        row = row.child(
+            h_flex()
+                .id("workflow-card-new")
+                .test_support()
+                .gap_2()
+                .px_3()
+                .h(px(34.))
+                .rounded(px(theme::R_TILE))
+                .border_1()
+                .border_dashed()
+                .border_color(p.separator)
+                .hover(|d| d.bg(p.hover))
+                .cursor_pointer()
+                .child(Icon::empty().path("icons/plus.svg").size(theme::z(14.)).text_color(p.secondary))
+                .child(div().set(Type::Callout).text_color(p.secondary).child("New workflow"))
+                .on_click(cx.listener(|this, _, window, cx| this.author_workflow(window, cx))),
+        );
         Some(v_flex().gap_2().child(div().px_1().set(Type::Subheadline).text_color(p.tertiary).child("Workflows")).child(row).into_any_element())
     }
 
@@ -394,7 +408,11 @@ impl Shell {
                                     .min_w_0()
                                     .child(div().set(Type::Title).text_color(p.label).child(w.name.clone()))
                                     .children(w.description.clone().map(|d| div().set(Type::Callout).text_color(p.secondary).child(d))),
-                            ),
+                            )
+                            .when(!self.on_host(), |d| {
+                                let path = w.path.clone();
+                                d.child(Button::new("workflow-edit").xsmall().ghost().icon(Icon::empty().path("icons/pencil.svg")).tooltip("Edit its file").on_click(cx.listener(move |this, _, _, _| this.edit_workflow_file(&path))))
+                            }),
                     )
                     .child(div().id("workflow-fields").flex_1().min_h_0().overflow_y_scroll().px_5().py_3().child(fields))
                     .child(
@@ -701,6 +719,59 @@ impl Shell {
             });
         })
         .detach();
+    }
+}
+
+const FROM_CHAT: &str = "Turn what we did in this conversation into a tessel workflow, so next time it runs from a form instead of a chat. Work out which parts change from one run to the next: those become inputs (give selects their options from one of your MCP tools when one can list them). Put everything else that made this result good into the steps' prompts, so a run doesn't need explaining again. Save it with tessel_workflow_save and fix whatever it reports until it saves clean. Then tell me in a line what it does and what it asks for.";
+
+const DESCRIBED: &str = "Make me a tessel workflow, so this runs from a form instead of a chat. Ask me with tessel_ask about anything that would change it (what varies between runs, where things come from, how the result should look), then save it with tessel_workflow_save and fix whatever it reports until it saves clean. Then tell me in a line what it does and what it asks for. What I want it to do:";
+
+impl Shell {
+    pub(crate) fn make_workflow_from(&mut self, session: SessionId) {
+        self.cmd(Cmd::Fork { session, workspace: false, before: None, draft: None, send: Some(FROM_CHAT.to_owned()) });
+    }
+
+    pub(crate) fn author_workflow(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.authoring = true;
+        self.show_new = true;
+        self.new_prompt.update(cx, |p, cx| {
+            p.set_value("", window, cx);
+            p.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn authoring_prompt(&mut self, typed: String) -> String {
+        if std::mem::take(&mut self.authoring) { format!("{DESCRIBED}\n\n{typed}") } else { typed }
+    }
+
+    pub(crate) fn authoring_chip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.authoring {
+            return None;
+        }
+        let p = self.palette.get();
+        Some(
+            h_flex()
+                .id("authoring-chip")
+                .test_support()
+                .gap_2()
+                .px_2()
+                .h(px(28.))
+                .rounded(px(theme::R_TILE))
+                .bg(p.accent.opacity(0.12))
+                .text_color(p.accent)
+                .child(Icon::empty().path("icons/workflow.svg").size(theme::z(13.)))
+                .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child("New workflow: say what it should do"))
+                .child(Button::new("authoring-cancel").xsmall().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
+                    this.authoring = false;
+                    cx.notify();
+                })))
+                .into_any_element(),
+        )
+    }
+
+    pub(crate) fn edit_workflow_file(&self, path: &str) {
+        let _ = std::process::Command::new("open").arg("-t").arg(path).spawn();
     }
 }
 

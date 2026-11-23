@@ -3104,3 +3104,31 @@ fn a_runs_steps_show_above_its_chat_and_its_doc_opens_when_it_lands(cx: &mut Tes
     assert!(rig.exists(cx, "doc-save"));
     assert!(rig.exists(cx, "run-open-doc"));
 }
+
+#[gpui_kit::test]
+fn a_chat_becomes_a_workflow_and_one_can_be_described(cx: &mut TestAppContext) {
+    let a = session(1, "Study guide for calc", RunState::Idle, None);
+    let mut rig = Rig::with_sessions(cx, a.clone(), vec![]);
+    rig.asked();
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("workflow.from_chat", &serde_json::json!({}), window, cx))).unwrap().unwrap();
+    let asked = rig.asked();
+    assert!(
+        matches!(asked.as_slice(), [Cmd::Fork { session, workspace: false, send: Some(text), .. }] if *session == a.id && text.contains("tessel_workflow_save")),
+        "the chat is carried on with the ask to make it a workflow: {asked:?}"
+    );
+
+    rig.feed(cx, vec![UiEvent::Answer { tag: "workflows", result: Ok(tessel_proto::Response::Workflows { workflows: vec![] }) }]);
+    rig.shell.update(cx, |s, cx| s.show_new_session(cx));
+    rig.settle(cx);
+    rig.click(cx, "workflow-card-new");
+    assert!(rig.exists(cx, "authoring-chip"));
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.new_prompt.update(cx, |p, cx| p.set_value("weekly report from my commits", window, cx)))).unwrap();
+    rig.asked();
+    rig.click(cx, "create");
+    let asked = rig.asked();
+    assert!(
+        matches!(asked.as_slice(), [Cmd::Create { prompt, worktree: false, .. }] if prompt.starts_with("Make me a tessel workflow") && prompt.ends_with("weekly report from my commits")),
+        "{asked:?}"
+    );
+    assert!(!rig.exists(cx, "authoring-chip"), "once asked, it's an ordinary chat");
+}

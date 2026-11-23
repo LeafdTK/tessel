@@ -30,7 +30,7 @@ pub enum Cmd {
     /// carry a session's conversation on in a new tab, or a new workspace, and open it.
     /// a new session carrying on this one's conversation; `before` a message of
     /// yours: only what came before it, with `draft` in its message box.
-    Fork { session: SessionId, workspace: bool, before: Option<tessel_proto::ItemId>, draft: Option<String> },
+    Fork { session: SessionId, workspace: bool, before: Option<tessel_proto::ItemId>, draft: Option<String>, send: Option<String> },
     Send { session: SessionId, text: String, attachments: Vec<Attachment> },
     SetModel { session: SessionId, model: String },
     SetEffort { session: SessionId, effort: Option<String> },
@@ -568,11 +568,14 @@ async fn session(
                             Err(e) => Err(e),
                         }
                     }
-                    Cmd::Fork { session, workspace, before, draft } => match client.request(Request::SessionFork { cmd_id: Uuid::new_v4(), session, workspace, before }).await {
+                    Cmd::Fork { session, workspace, before, draft, send } => match client.request(Request::SessionFork { cmd_id: Uuid::new_v4(), session, workspace, before }).await {
                         Ok(Response::Session { summary }) => {
                             let id = summary.id;
                             if let Some(text) = draft {
                                 let _ = ui.send(UiEvent::Draft { session: id, text });
+                            }
+                            if let Some(text) = send {
+                                let _ = client.request(Request::SessionSend { cmd_id: Uuid::new_v4(), session: id, text, attachments: Vec::new() }).await;
                             }
                             let _ = ui.send(UiEvent::Session(summary));
                             let _ = ui.send(UiEvent::Created);

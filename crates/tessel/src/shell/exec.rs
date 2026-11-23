@@ -174,6 +174,18 @@ impl Shell {
                 done
             }
 
+            "workflow.from_chat" => {
+                let id = match arg(args, "session") {
+                    Some(s) => self.find_session(s)?,
+                    None => self.model.open.as_ref().map(|o| o.id).ok_or("no chat is open")?,
+                };
+                self.make_workflow_from(id);
+                Ok(json!({"forked": id.to_string()}))
+            }
+            "workflow.new" => {
+                self.author_workflow(window, cx);
+                Ok(json!({}))
+            }
             "workflow.list" => Ok(serde_json::to_value(&self.workflows).unwrap_or_default()),
             "workflow.run" => {
                 let name = need(args, "workflow", cmd)?;
@@ -304,7 +316,7 @@ impl Shell {
                         (Some(found.id.clone()), Some(text.clone()))
                     }
                 };
-                self.cmd(Cmd::Fork { session: id, workspace, before, draft });
+                self.cmd(Cmd::Fork { session: id, workspace, before, draft, send: None });
                 done
             }
             "session.retry" => {

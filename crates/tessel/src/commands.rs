@@ -43,6 +43,8 @@ pub static COMMANDS: &[Spec] = &[
     c("app.focus", "Focus on this session", "focus", Some("⇧ ⌘ F"), "{}", ""),
     // sessions
     c("session.new", "New session", "square-pen", Some("⌘ N"), "{}", "cwd?, prompt?, worktree?: with a prompt it starts at once"),
+    c("workflow.from_chat", "Make this chat a workflow", "workflow", None, "{}", "session?: the open chat if left out"),
+    c("workflow.new", "New workflow", "workflow", None, "{}", ""),
     q("workflow.run", "Run a workflow", "workflow: its id or name; picked?: {input: {value, label}} runs it at once, else its form opens"),
     q("workflow.list", "The workflows on this machine", ""),
     c("session.next", "Next session that needs you", "bell", Some("⌘ J"), "{}", ""),

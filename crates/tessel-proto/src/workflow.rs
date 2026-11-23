@@ -202,6 +202,14 @@ pub enum StepState {
     Unknown,
 }
 
+pub const FORMAT: &str = "A tessel workflow is a YAML file: a recipe that runs from a form instead of a chat. Keys:\n\
+- name (required), icon (a lucide icon name, like graduation-cap), description (one line), say (phrases that, typed in the new-session box, offer it: [\"study guide\", \"help me study\"])\n\
+- title (the run's chat title, may use inputs), folder (where it runs; default a folder of its own under ~/tessel/runs), model (opus, sonnet, haiku or a full id), effort (low, medium, high, xhigh, max)\n\
+- inputs: a map of id to {label, type, options, optional, placeholder, default}. types: select, multiselect, text, long, toggle, date, file (select when it has options). options are a list ([a, b] or [{value, label}]), or {tool: server.tool, args: {...}, label: \"{{name}}\", value: \"{{id}}\", keep: 1d} to fill them by calling one of the person's MCP tools directly (fast, no model), or {ask: \"a prompt\"} to have a small model list them. an input whose options mention another input ({{course}}) loads once that one is picked.\n\
+- steps: a list. each is a prompt (a string, or {prompt: ...}), {ask: ...} (you ask the person and wait for the answers), or {shell: a command}. a step may add id, name, fresh: true (a new tab, told what came before), doc: true (its final message is the run's document, saved and shown), model, effort.\n\
+- templates in any text: {{input}} is its value, {{input.label}} what the person saw, {{steps.id.text}} an earlier step's final message.\n\
+Keep it short: few inputs, few steps, and put what made a good result into the prompts themselves.";
+
 pub fn names_in(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = text;

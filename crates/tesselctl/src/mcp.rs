@@ -114,6 +114,14 @@ key (key: Enter, Tab, Escape, ArrowDown…), scroll (dy, dx).",
             }, "required": ["op"]}
         },
         {
+            "name": "tessel_workflow_save",
+            "description": format!("Save a workflow, so the person can run it again from a form. It answers with any problems it found: fix them and save again until there are none. {}", tessel_proto::workflow::FORMAT),
+            "inputSchema": {"type": "object", "properties": {
+                "name": {"type": "string", "description": "the workflow's name (its file is named after it)"},
+                "yaml": {"type": "string", "description": "the whole workflow, as YAML"}
+            }, "required": ["name", "yaml"]}
+        },
+        {
             "name": "tessel_ask",
             "description": "Ask the person something and wait for the answer, as a small form in the chat. Use it whenever you need details, a choice or a preference before going on, instead of asking in text and ending your turn: their answers come back as this tool's result and you carry on. Keep it short: a few fields, the likely answer first. Field types: text (a line), long (a paragraph), select (one of options), multiselect (any of options), toggle (yes or no). The result is a JSON object of field id to answer; a field left empty is missing from it.",
             "inputSchema": {"type": "object", "properties": {
@@ -327,6 +335,15 @@ impl Server {
                 let op: SurfaceOp = serde_json::from_value(op).map_err(|e| anyhow::anyhow!("that isn't a surface op: {e}"))?;
                 self.ask(Request::SurfaceOp { session, op }).await?;
                 "done: it's on screen".to_owned()
+            }
+            "tessel_workflow_save" => {
+                let name = args.get("name").and_then(Value::as_str).unwrap_or("").to_owned();
+                let yaml = args.get("yaml").and_then(Value::as_str).unwrap_or("").to_owned();
+                match self.ask(Request::WorkflowSave { name, yaml, cwd: None }).await? {
+                    Response::WorkflowSaved { workflow } if workflow.problems.is_empty() => format!("saved {} at {}. it's in the person's workflows now", workflow.name, workflow.path),
+                    Response::WorkflowSaved { workflow } => format!("saved at {}, but it has problems to fix, then save again:\n- {}", workflow.path, workflow.problems.join("\n- ")),
+                    other => anyhow::bail!("unexpected reply: {other:?}"),
+                }
             }
             "tessel_ask" => {
                 let session = self.session.ok_or_else(|| anyhow::anyhow!("asking belongs to a session, and this agent wasn't started by tessel"))?;

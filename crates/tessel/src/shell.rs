@@ -405,6 +405,7 @@ pub struct Shell {
     pub(crate) wf_form: Option<workflows::WfForm>,
     pub(crate) wf_last: HashMap<String, std::collections::BTreeMap<String, tessel_proto::Pick>>,
     pub(crate) doc_view: Option<(String, Option<String>)>,
+    pub(crate) authoring: bool,
     pub(crate) doc_reveal: bool,
     pub(crate) ask_drafts: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), serde_json::Value>>>,
     pub(crate) ask_inputs: std::rc::Rc<std::cell::RefCell<HashMap<(String, String), Entity<InputState>>>>,
@@ -850,6 +851,7 @@ impl Shell {
             wf_form: None,
             wf_last: HashMap::new(),
             doc_view: None,
+            authoring: false,
             doc_reveal: false,
             ask_drafts: Default::default(),
             ask_inputs: Default::default(),
@@ -1515,7 +1517,9 @@ impl Shell {
 
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let prompt = self.new_prompt.read(cx).value().to_string();
-        let Some(cwd) = self.new_folder() else {
+        let authoring = self.authoring;
+        let home = std::env::var("HOME").ok().filter(|_| authoring && !self.on_host());
+        let Some(cwd) = self.new_folder().or(home) else {
             self.error = Some("Choose a project for the session to work in.".into());
             cx.notify();
             return;
@@ -1523,7 +1527,8 @@ impl Shell {
         if self.creating.is_some() {
             return;
         }
-        let worktree = self.new_worktree && self.folder_is_git(&cwd) != Some(false);
+        let worktree = !authoring && self.new_worktree && self.folder_is_git(&cwd) != Some(false);
+        let prompt = self.authoring_prompt(prompt);
         // what was written and attached stays until the session exists, so a
         // failure to make it loses nothing.
         self.cmd(Cmd::Create { cwd, worktree, prompt, attachments: self.attachments.clone() });
@@ -2007,6 +2012,7 @@ impl Shell {
         let picker = self.project_picker(cx);
         let chips = self.attachment_chips(cx);
         let workflow_chip = self.workflow_chip(cx);
+        let authoring_chip = self.authoring_chip(cx);
         let workflow_cards = self.workflow_cards(cx);
         let paste = cx.entity().downgrade();
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
@@ -2034,7 +2040,8 @@ impl Shell {
             .when(crate::glass::liquid(), |d| d.child(glass_spot(theme::R_CARD)))
             .children(chips)
             .child(Input::new(&self.new_prompt).id("new-prompt").appearance(false).on_paste(move |item, window, cx| paste.update(cx, |this, cx| this.paste(item, window, cx)).unwrap_or(false)))
-            .children(workflow_chip)
+            .children(authoring_chip)
+            .children(workflow_chip.filter(|_| !self.authoring))
             .child(
                 h_flex()
                     .flex_wrap()
