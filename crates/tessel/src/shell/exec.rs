@@ -358,6 +358,12 @@ impl Shell {
                 self.edit_ui(|f| Self::set_in(f, "theme", "density", v), window, cx);
                 done
             }
+            "theme.font" => {
+                let font = need(args, "font", cmd)?.trim().to_owned();
+                let value = (font != crate::theme::DEFAULT_FONT && !font.is_empty()).then(|| json!(font));
+                self.edit_ui(|f| Self::set_in(f, "theme", "font", value), window, cx);
+                done
+            }
             "theme.glow" => {
                 let on = match args.get("on").and_then(Value::as_bool) {
                     Some(on) => on,

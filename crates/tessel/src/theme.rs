@@ -362,9 +362,7 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
         t.mono_font_family = mono();
         // a mac scrollbar is there when you reach for it, not all the time.
         t.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Hover;
-        if let Some(font) = &spec.font {
-            t.font_family = font.clone().into();
-        }
+        t.font_family = ui_font(spec.font.as_deref()).unwrap_or(SYSTEM_FONT).into();
     });
     palette
 }
@@ -465,6 +463,34 @@ pub fn z(v: f32) -> Pixels {
 
 /// the named sizes the settings offer.
 pub const SCALES: [(&str, f32); 3] = [("compact", 0.9), ("default", 1.0), ("large", 1.12)];
+
+pub const DEFAULT_FONT: &str = "Allo";
+const SYSTEM_FONT: &str = ".SystemUIFont";
+
+const ALLO: [&[u8]; 8] = [
+    include_bytes!("../assets/fonts/allo/Allo-Regular.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-Medium.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-SemiBold.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-Bold.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-Oblique.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-MediumOblique.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-SemiBoldOblique.otf"),
+    include_bytes!("../assets/fonts/allo/Allo-BoldOblique.otf"),
+];
+
+pub fn add_fonts(cx: &mut gpui_kit::App) {
+    if let Err(e) = cx.text_system().add_fonts(ALLO.iter().map(|b| std::borrow::Cow::Borrowed(*b)).collect()) {
+        eprintln!("tessel: couldn't load Allo: {e}");
+    }
+}
+
+pub fn ui_font(chosen: Option<&str>) -> Option<&str> {
+    match chosen.map(str::trim) {
+        None | Some("") => Some(DEFAULT_FONT),
+        Some("system") => None,
+        Some(f) => Some(f),
+    }
+}
 
 /// the monospace face in use.
 pub fn mono() -> SharedString {

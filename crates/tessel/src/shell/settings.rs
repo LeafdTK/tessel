@@ -198,7 +198,20 @@ impl Shell {
             "solid"
         };
         let backdrop = theme.backdrop.unwrap_or_default().name();
+        let chosen_font = crate::theme::ui_font(theme.font.as_deref()).unwrap_or("system").to_owned();
+        let font_seg = |id: &'static str, label: &'static str, value: &'static str| {
+            let on = if value == "system" { chosen_font == "system" } else { chosen_font == value };
+            theme::segment(&p, id, label, on).test_support().on_click(cx.listener(move |this, _, w, cx| {
+                let _ = this.exec("theme.font", &json!({"font": value}), w, cx);
+            }))
+        };
+        let font_row = self.setting_row(
+            "Font",
+            "Allo is a warm, rounded take on Inter. System is the Mac's own.",
+            theme::tray(&p).child(font_seg("theme-font-allo", "Allo", crate::theme::DEFAULT_FONT)).child(font_seg("theme-font-system", "System", "system")),
+        );
         let themes_rows = v_flex()
+            .child(font_row)
             .child(self.picture_row(
                 "Material",
                 "What the frame around the panes is made of. Text always sits on solid panes.",

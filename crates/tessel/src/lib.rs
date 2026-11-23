@@ -262,6 +262,7 @@ pub fn run(mut launch: Launch) {
     // the whole lucide catalog, not the kit's default handful: a layout may name any icon.
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
         gpui_kit::init(cx);
+        theme::add_fonts(cx);
         bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());
 

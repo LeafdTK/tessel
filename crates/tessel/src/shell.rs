@@ -2818,7 +2818,7 @@ impl Render for Shell {
         let show_overview = self.overview || self.overview_fade.value() > 0.001;
         let ui = self.ui.clone();
         let root = self.node(&ui.root, false, now, cx);
-        let font = ui.theme.font.clone();
+        let font = crate::theme::ui_font(ui.theme.font.as_deref()).map(str::to_owned);
 
         // glass: nothing opaque under the frame, so the blurred desktop shows through it.
         // felt: the cloth is drawn under everything, and the frame is clear over it.
