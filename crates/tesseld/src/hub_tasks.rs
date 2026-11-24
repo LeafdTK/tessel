@@ -410,6 +410,7 @@ impl Hub {
             }
             self.task_saved(&id);
         }
+        self.recheck_waiting();
         self.dispatch();
         self.pump_land();
     }
@@ -884,9 +885,35 @@ impl Hub {
                 self.start_proof(s, false, false);
                 continue;
             }
-            self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-            self.note(&id, "tessel", "tessel restarted while landing it: land it again");
+            if self.tasks[&id].state == TaskState::Landing && session.is_some_and(|s| self.sessions.contains_key(&s)) {
+                self.land_queue.push_back(id.clone());
+                continue;
+            }
+            self.escalate(&id, "tessel restarted while it was being checked, and its workspace is gone".into());
             self.task_saved(&id);
+        }
+        self.recheck_waiting();
+        self.pump_land();
+    }
+
+    pub(super) fn recheck_waiting(&mut self) {
+        if self.settings.paused {
+            return;
+        }
+        let old: Vec<(String, SessionId)> = self
+            .tasks
+            .values()
+            .filter(|t| t.state == TaskState::Review && t.ask.is_none())
+            .filter_map(|t| Some((t.id.clone(), t.session?)))
+            .filter(|(_, s)| self.sessions.get(s).is_some_and(|l| std::path::Path::new(&l.state.meta.cwd).is_dir()))
+            .collect();
+        for (id, s) in old {
+            self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
+            self.note(&id, "tessel", "checking it again for the final review");
+            self.task_saved(&id);
+            if !self.proving.contains(&s) {
+                self.start_proof(s, false, false);
+            }
         }
     }
 }
