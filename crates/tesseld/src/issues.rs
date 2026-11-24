@@ -74,6 +74,26 @@ pub async fn labeled(root: &Path, label: &str) -> Result<Vec<Issue>, String> {
     Ok(v.as_array().map(|a| a.iter().filter_map(read).collect()).unwrap_or_default())
 }
 
+pub async fn open(root: &Path) -> Result<Vec<tessel_proto::task::IssueInfo>, String> {
+    let repo = slug(root).await.ok_or("this project isn't on GitHub")?;
+    let out = gh(root, &["issue", "list", "--repo", &repo, "--state", "open", "--limit", "40", "--json", "number,url,title,labels"]).await.map_err(|e| if e.contains("couldn't run gh") { "GitHub's gh isn't installed where tessel runs".into() } else { e })?;
+    let v: serde_json::Value = serde_json::from_str(&out).map_err(|e| e.to_string())?;
+    Ok(v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|i| {
+                    Some(tessel_proto::task::IssueInfo {
+                        number: i["number"].as_u64()?,
+                        title: i["title"].as_str()?.to_owned(),
+                        url: i["url"].as_str()?.to_owned(),
+                        labels: i["labels"].as_array().map(|l| l.iter().filter_map(|x| x["name"].as_str().map(str::to_owned)).collect()).unwrap_or_default(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 pub fn spec(issue: &Issue) -> String {
     if issue.body.is_empty() { format!("From {}", issue.url) } else { format!("{}\n\nFrom {}", issue.body, issue.url) }
 }

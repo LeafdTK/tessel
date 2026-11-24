@@ -278,6 +278,9 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    IssueList {
+        repo: String,
+    },
     TaskFromIssue {
         repo: String,
         issue: String,
@@ -906,6 +909,9 @@ pub enum Response {
     Shot {
         path: String,
         png: String,
+    },
+    IssueList {
+        issues: Vec<crate::task::IssueInfo>,
     },
     Checkup {
         proof: crate::proof::Proof,

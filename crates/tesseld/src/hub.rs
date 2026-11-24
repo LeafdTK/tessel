@@ -1538,6 +1538,15 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::IssueList { repo } => {
+                let root = crate::board::repo_root(Path::new(&repo));
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let result = crate::issues::open(&root).await.map(|issues| Response::IssueList { issues }).map_err(|e| RpcError::new(ErrorCode::Invalid, e));
+                    let _ = tx.send(HubMsg::Reply { client, id, result });
+                });
+                return None;
+            }
             Request::TaskFromIssue { repo, issue, ready } => {
                 let root = crate::board::repo_root(Path::new(&repo));
                 let tx = self.tx.clone();

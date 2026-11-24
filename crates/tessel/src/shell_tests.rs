@@ -3324,6 +3324,12 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_title.update(cx, |i, cx| i.set_value("#42", window, cx)))).unwrap();
     rig.click(cx, "task-start");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskFromIssue { issue, ready: true, .. } } if issue == "#42")), "an issue number brings that issue in");
+    rig.click(cx, "board-issues");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "issues", req: tessel_proto::Request::IssueList { repo } } if repo == "/work/api")), "opening Issues asks for the project's open ones");
+    let issue = |n: u64, title: &str| tessel_proto::task::IssueInfo { number: n, title: title.into(), url: format!("https://github.com/o/api/issues/{n}"), labels: vec![] };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "issues", result: Ok(Response::IssueList { issues: vec![issue(7, "Login button is cut off"), issue(9, "Export to CSV")] }) }]);
+    rig.click(cx, "board-issue-1");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskFromIssue { issue, ready: true, .. } } if issue.ends_with("/issues/9"))), "picking one starts it");
 
     rig.feed(cx, vec![UiEvent::Task(t("t1", TaskState::Landed, &[], Some(a.id)))]);
     assert!(rig.shell.read_with(cx, |s, _| s.tasks.iter().any(|x| x.id == "t1" && x.state == TaskState::Landed)), "live updates land in place");

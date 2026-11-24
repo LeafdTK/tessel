@@ -111,6 +111,7 @@ impl Shell {
             .when(glass, |d| d.relative().child(super::glass_spot(theme::R_CARD + 2.)))
             .child(self.board_picker(cx))
             .child(div().flex_1().min_w_0().text_size(theme::z(15.)).child(Input::new(&self.task_title).id("task-title").appearance(false)))
+            .child(self.issues_button(cx))
             .child(big_button(&p, "task-draft", "Draft", theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
             .child(big_button(&p, "task-start", "Start", theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx))));
         let mut body = v_flex().w_full().max_w(theme::z(920.)).mx_auto().px(theme::z(28.)).pt(theme::z(24.)).pb(theme::z(40.)).child(composer);
@@ -158,6 +159,97 @@ impl Shell {
             body = body.child(empty_board(&p));
         }
         v_flex().id("board").size_full().overflow_y_scroll().child(body).into_any_element()
+    }
+
+    pub(crate) fn issues_answer(&mut self, result: Result<Response, String>) {
+        self.issues_loading = false;
+        if let Some((_, slot)) = &mut self.board_issues {
+            *slot = match result {
+                Ok(Response::IssueList { issues }) => Ok(issues),
+                Ok(_) => Err("GitHub's answer didn't make sense".into()),
+                Err(e) => Err(e),
+            };
+        }
+    }
+
+    fn ask_issues(&mut self) {
+        let Some(repo) = self.board_repo() else { return };
+        self.board_issues = Some((repo.clone(), Ok(Vec::new())));
+        self.issues_loading = true;
+        self.cmd(Cmd::Ask { tag: "issues", req: Request::IssueList { repo } });
+    }
+
+    fn issues_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let me = cx.entity().downgrade();
+        let popover = Popover::new("board-issues-popover")
+            .p_0()
+            .anchor(Anchor::TopRight)
+            .trigger(
+                super::composer::tool_button("board-issues")
+                    .flex_shrink_0()
+                    .h(theme::z(34.))
+                    .px(theme::z(12.))
+                    .rounded(theme::z(theme::R_CONTROL))
+                    .child(h_flex().gap(theme::z(7.)).items_center().child(Icon::empty().path("icons/circle-dot.svg").size(theme::z(15.))).child(div().text_size(theme::z(13.5)).font_weight(FontWeight::MEDIUM).child("Issues"))),
+            )
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let mut list = theme::float_list(&p).w(px(420.));
+                let Some((repo, got)) = this.board_issues.clone() else { return list.into_any_element() };
+                list = list.child(theme::float_label(&p, &format!("Open issues in {}", super::projects::folder_name(&repo))));
+                let quiet = |t: String| div().px(theme::z(10.)).py(theme::z(12.)).set(Type::Callout).text_color(p.secondary).child(t);
+                match got {
+                    Err(e) => list = list.child(quiet(e)),
+                    Ok(issues) if issues.is_empty() && this.issues_loading => list = list.child(quiet("Asking GitHub…".into())),
+                    Ok(issues) if issues.is_empty() => list = list.child(quiet("No open issues. Label one `tessel` on GitHub and it's started by itself.".into())),
+                    Ok(issues) => {
+                        let mut rows = v_flex().id("board-issue-list").max_h(px(380.)).overflow_y_scroll();
+                        for (i, issue) in issues.into_iter().enumerate() {
+                            let filed = this.tasks.iter().any(|t| t.issue.as_deref() == Some(issue.url.as_str()) && t.state != TaskState::Dropped);
+                            let (me, popover, url, repo) = (me.clone(), popover.clone(), issue.url.clone(), repo.clone());
+                            rows = rows.child(
+                                h_flex()
+                                    .id(SharedString::from(format!("board-issue-{i}")))
+                                    .test_support()
+                                    .min_h(theme::z(44.))
+                                    .px(theme::z(10.))
+                                    .gap(theme::z(10.))
+                                    .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                                    .when(!filed, |d| {
+                                        d.cursor_pointer().hover(|d| d.bg(p.hover)).on_click(move |_, window, cx| {
+                                            popover.update(cx, |st, cx| st.dismiss(window, cx));
+                                            let _ = me.update(cx, |this, cx| {
+                                                this.cmd(Cmd::Ask { tag: "task", req: Request::TaskFromIssue { repo: repo.clone(), issue: url.clone(), ready: true } });
+                                                cx.notify();
+                                            });
+                                        })
+                                    })
+                                    .child(div().w(theme::z(44.)).flex_shrink_0().set(Type::Callout).font_features(theme::tabular()).text_color(p.secondary).child(format!("#{}", issue.number)))
+                                    .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(if filed { p.tertiary } else { p.label }).child(issue.title.clone()))
+                                    .when(issue.labels.iter().any(|l| l == "tessel"), |d| d.child(div().px(theme::z(7.)).rounded_full().bg(p.accent.opacity(0.14)).set(Type::Subheadline).text_color(p.accent).child("tessel")))
+                                    .child(div().flex_shrink_0().set(Type::Subheadline).text_color(if filed { p.tertiary } else { p.accent }).child(if filed { "On the board" } else { "Start" })),
+                            );
+                        }
+                        list = list.child(rows);
+                    }
+                }
+                list.into_any_element()
+            });
+        let _ = p;
+        div()
+            .flex_shrink_0()
+            .capture_any_mouse_down(
+                cx.listener(|this, _, _, cx| {
+                    this.ask_issues();
+                    cx.notify();
+                }),
+            )
+            .child(popover)
+            .into_any_element()
     }
 
     fn board_projects(&self) -> Vec<String> {

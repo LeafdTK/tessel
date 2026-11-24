@@ -94,3 +94,12 @@ pub enum TaskAct {
     #[serde(other)]
     Unknown,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IssueInfo {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+}
