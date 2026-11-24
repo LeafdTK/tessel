@@ -2449,9 +2449,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     // the account's limits, as any of its agents last heard them: everyone's.
                     if let AgentEvent::RateLimit { windows, .. } = &ev
                         && !windows.is_empty()
-                        && *windows != self.usage
+                        && let merged = merge_usage(&self.usage, windows)
+                        && merged != self.usage
                     {
-                        self.usage = windows.clone();
+                        self.usage = merged;
                         if let Ok(text) = serde_json::to_string(&self.usage) {
                             let _ = std::fs::write(self.cfg.paths.home.join("usage.json"), text);
                         }
@@ -3454,5 +3455,28 @@ mod on_disk_tests {
     fn a_daemon_replaced_while_running_restarts_from_the_file_now_there() {
         assert_eq!(super::on_disk("/home/u/.tessel/bin/tesseld (deleted)".into()), std::path::PathBuf::from("/home/u/.tessel/bin/tesseld"));
         assert_eq!(super::on_disk("/usr/bin/tesseld".into()), std::path::PathBuf::from("/usr/bin/tesseld"));
+    }
+}
+
+pub(crate) fn merge_usage(known: &[tessel_proto::UsageWindow], heard: &[tessel_proto::UsageWindow]) -> Vec<tessel_proto::UsageWindow> {
+    let mut out = known.to_vec();
+    for w in heard {
+        match out.iter_mut().find(|o| o.name == w.name) {
+            Some(o) => *o = w.clone(),
+            None => out.push(w.clone()),
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+#[cfg(test)]
+mod usage_tests {
+    #[test]
+    fn a_report_of_one_limit_keeps_the_others() {
+        let w = |name: &str, used: f64| tessel_proto::UsageWindow { name: name.into(), used, resets_at: None, status: String::new() };
+        let merged = super::merge_usage(&[w("five_hour", 0.4), w("seven_day", 0.1)], &[w("seven_day", 0.2)]);
+        assert_eq!(merged, vec![w("five_hour", 0.4), w("seven_day", 0.2)]);
+        assert_eq!(super::merge_usage(&[], &[w("five_hour", 0.3)]), vec![w("five_hour", 0.3)]);
     }
 }

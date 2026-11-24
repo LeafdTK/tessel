@@ -319,15 +319,16 @@ impl Shell {
     fn usage_block(&self) -> Option<AnyElement> {
         let p = self.palette.get();
         let now = (super::now_ms() / 1000) as i64;
-        let mut windows: Vec<&tessel_proto::UsageWindow> = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r > now)).collect();
+        let mut windows: Vec<&tessel_proto::UsageWindow> = self.usage.iter().collect();
         if windows.is_empty() {
             return None;
         }
         windows.sort_by_key(|w| (w.name != "five_hour", w.name.clone()));
         let mut col = v_flex().id("usage-limits").test_support().flex_shrink_0().mx(theme::z(theme::SIDE_INSET)).px(theme::z(theme::SIDE_PAD)).pt(theme::z(12.)).pb(theme::z(10.)).gap(theme::z(10.)).border_t_1().border_color(p.separator);
         for w in windows {
-            let pct = (w.used * 100.0).round().clamp(0.0, 100.0) as u32;
-            let tone = if w.status == "rejected" || pct >= 95 { p.failed } else if pct >= 70 { p.blocked } else { p.label };
+            let over = w.resets_at.is_some_and(|r| r <= now);
+            let pct = if over { 0 } else { (w.used * 100.0).round().clamp(0.0, 100.0) as u32 };
+            let tone = if (!over && w.status == "rejected") || pct >= 95 { p.failed } else if pct >= 70 { p.blocked } else { p.label };
             col = col.child(
                 v_flex()
                     .gap(theme::z(5.))
@@ -339,7 +340,7 @@ impl Shell {
                             .child(div().flex_shrink_0().set(Type::Subheadline).font_features(theme::tabular()).text_color(if pct >= 70 { tone } else { p.secondary }).child(format!("{pct}%"))),
                     )
                     .child(div().h(theme::z(5.)).w_full().rounded_full().bg(p.fill).child(div().h_full().rounded_full().bg(tone).w(relative(pct as f32 / 100.0))))
-                    .children(w.resets_at.map(|t| div().set(Type::Subheadline).text_color(p.tertiary).child(format!("Resets {}", super::composer::resets(t))))),
+                    .children(w.resets_at.filter(|_| !over).map(|t| div().set(Type::Subheadline).text_color(p.tertiary).child(format!("Resets {}", super::composer::resets(t))))),
             );
         }
         Some(col.into_any_element())

@@ -37,7 +37,8 @@ impl Shell {
                     .h(theme::z(height))
                     .px(theme::z(theme::SIDE_PAD + 2.))
                     .rounded(theme::z(theme::by_height(height)))
-                    .bg(p.fill)
+                    .border_1()
+                    .border_color(p.separator)
                     .child(
                         h_flex()
                             .w_full()
