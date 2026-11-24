@@ -115,7 +115,11 @@ pub async fn ship(ws: &Path, root: &Path, goal: &str, step: ShipStep) -> Result<
             Ok((format!("Opened a pull request into {main}."), url))
         }
         ShipStep::MergePullRequest { squash } => {
-            run("gh", ws, &["pr", "merge", &branch, if squash { "--squash" } else { "--rebase" }], 120).await?;
+            let mut args = vec!["pr", "merge", branch.as_str(), if squash { "--squash" } else { "--rebase" }];
+            if squash {
+                args.extend(["--body", ""]);
+            }
+            run("gh", ws, &args, 120).await?;
             Ok((format!("Merged into {main}, {}.", if squash { "squashed" } else { "rebased" }), None))
         }
         ShipStep::Update => {

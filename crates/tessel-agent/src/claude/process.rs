@@ -215,9 +215,11 @@ impl ClaudeBackend {
         if let Some(effort) = &opts.effort {
             args.extend(["--effort".to_owned(), effort.clone()]);
         }
+        let mut settings = serde_json::json!({"includeCoAuthoredBy": false, "attribution": {"commit": "", "pr": ""}});
         if opts.fast {
-            args.extend(["--settings".to_owned(), serde_json::json!({"fastMode": true}).to_string()]);
+            settings["fastMode"] = serde_json::json!(true);
         }
+        args.extend(["--settings".to_owned(), settings.to_string()]);
         if let Some(mode) = &opts.permission_mode {
             args.extend(["--permission-mode".to_owned(), mode.clone()]);
         }
@@ -780,10 +782,13 @@ mod tests {
         let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
-        let at = args.iter().position(|a| a == "--settings").expect("fast mode is a setting");
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&args[at + 1]).unwrap(), serde_json::json!({"fastMode": true}));
+        let settings = |args: &[String]| serde_json::from_str::<serde_json::Value>(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
+        assert_eq!(settings(&args)["fastMode"], serde_json::json!(true));
         let plain = ClaudeBackend::args(&SpawnOpts { effort: None, fast: false, ..opts });
-        assert!(!plain.iter().any(|a| a == "--effort" || a == "--settings"));
+        assert!(!plain.iter().any(|a| a == "--effort"));
+        assert!(settings(&plain).get("fastMode").is_none());
+        assert_eq!(settings(&plain)["includeCoAuthoredBy"], serde_json::json!(false), "commits are yours, with no co-author added");
+        assert_eq!(settings(&plain)["attribution"], serde_json::json!({"commit": "", "pr": ""}));
     }
 
     #[test]

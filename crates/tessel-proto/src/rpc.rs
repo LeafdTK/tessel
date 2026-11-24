@@ -278,6 +278,12 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    TaskFromIssue {
+        repo: String,
+        issue: String,
+        #[serde(default)]
+        ready: bool,
+    },
     Views,
     Metrics,
     Checkup {

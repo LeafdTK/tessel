@@ -79,8 +79,9 @@ pub async fn why(repo: &Path, failed: &[(String, String)]) -> String {
     out.trim_end().to_owned()
 }
 
-pub async fn merge(repo: &Path, url: &str) -> Result<Ci, String> {
-    gh(repo, &["pr", "merge", url, "--squash"], 120).await?;
+pub async fn merge(repo: &Path, url: &str, closes: Option<u64>) -> Result<Ci, String> {
+    let body = closes.map(|n| format!("Closes #{n}")).unwrap_or_default();
+    gh(repo, &["pr", "merge", url, "--squash", "--body", &body], 120).await?;
     for _ in 0..5 {
         if let Ok(Ci::Merged(sha)) = poll(repo, url).await {
             return Ok(Ci::Merged(sha));

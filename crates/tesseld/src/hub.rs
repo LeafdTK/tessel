@@ -92,6 +92,8 @@ pub enum HubMsg {
     Labeled { workflow: String, cwd: Option<String>, trigger: String, issues: Vec<serde_json::Value> },
     Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
     Ci { task: String, result: Result<crate::ci::Ci, String>, why: String },
+    Issue { repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)> },
+    Issues { repo: String, issues: Vec<crate::issues::Issue> },
     CheckedUp { repo: String, proof: Box<tessel_proto::proof::Proof>, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
@@ -252,6 +254,7 @@ pub struct Hub {
     ci_polled: HashMap<String, std::time::Instant>,
     ci_busy: HashSet<String>,
     checkups: HashSet<String>,
+    issues_polled: Option<std::time::Instant>,
     egress: Option<crate::egress::Egress>,
     triggers: triggers_state::State,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
@@ -353,6 +356,7 @@ impl Hub {
             ci_polled: Default::default(),
             ci_busy: Default::default(),
             checkups: Default::default(),
+            issues_polled: None,
             egress: None,
             triggers: Default::default(),
             asks: HashMap::new(),
@@ -720,6 +724,12 @@ impl Hub {
             HubMsg::RunAdvance { run } => self.advance_run(run),
             HubMsg::Landed { task, result } => self.task_landed(task, result),
             HubMsg::Ci { task, result, why } => self.task_ci(task, result, why),
+            HubMsg::Issue { repo, result, ready, reply } => self.issue_fetched(repo, result, ready, reply),
+            HubMsg::Issues { repo, issues } => {
+                for i in issues {
+                    let _ = self.task_from(repo.clone(), i, true);
+                }
+            }
             HubMsg::CheckedUp { repo, proof, failures, reply } => self.checked_up(repo, *proof, failures, reply),
             HubMsg::Seen { key, workflow, cwd, files } => self.files_seen(key, workflow, cwd, files),
             HubMsg::Labeled { workflow, cwd, trigger, issues } => self.labeled(workflow, cwd, trigger, issues),
@@ -1528,6 +1538,16 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::TaskFromIssue { repo, issue, ready } => {
+                let root = crate::board::repo_root(Path::new(&repo));
+                let tx = self.tx.clone();
+                let key = root.to_string_lossy().into_owned();
+                tokio::spawn(async move {
+                    let result = crate::issues::fetch(&root, &issue).await;
+                    let _ = tx.send(HubMsg::Issue { repo: key, result, ready, reply: Some((client, id)) });
+                });
+                return None;
+            }
             Request::Triggers => Ok(self.triggers_response()),
             Request::Views => Ok(Response::Views { views: crate::views::load(&self.cfg.paths.home) }),
             Request::Metrics => {

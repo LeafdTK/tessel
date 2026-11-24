@@ -1,3 +1,6 @@
 [proof]
 look = ["scripts/shots.sh"]
 look_paths = ["crates/tessel/src/**"]
+
+[factory]
+issues = "tessel"

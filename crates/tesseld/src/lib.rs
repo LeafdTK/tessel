@@ -15,6 +15,7 @@ pub mod keys;
 pub mod lab;
 pub mod handoff;
 pub mod hub;
+pub mod issues;
 pub mod kube;
 pub mod mcp_call;
 pub mod orphans;

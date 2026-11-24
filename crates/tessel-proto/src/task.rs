@@ -76,6 +76,8 @@ pub struct Task {
     pub landed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }

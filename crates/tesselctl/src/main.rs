@@ -50,6 +50,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             --plan: an agent splits it into small tasks first
                                             a task for the board; ready ones are worked on in workspaces of
                                             their own, proved, and wait for you to land them
+  tesselctl task solve ISSUE [--draft] [--repo DIR]   a GitHub issue (42, #42 or its link) becomes a task,
+                                            started at once; landing it closes the issue
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
   tesselctl key add NAME [--preset github|github-git] [--for HOST]… [--env VAR] [--method M]… [--path P]…
              [--from 'gh auth token']       a key agents use without ever seeing it: kept in the keychain, added
@@ -626,6 +628,16 @@ async fn run() -> anyhow::Result<()> {
                     let plan = args.flag("--plan");
                     let title = args.rest.join(" ");
                     let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None }).await?)?;
+                    println!("{}", line(&t));
+                }
+                "solve" => {
+                    let repo = match args.opt("--repo")? {
+                        Some(r) => r,
+                        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+                    };
+                    let ready = !args.flag("--draft");
+                    let issue = args.next("an issue: its number, like 42, or its link")?;
+                    let t = one(client.request(Request::TaskFromIssue { repo, issue, ready }).await?)?;
                     println!("{}", line(&t));
                 }
                 "ready" | "draft" | "land" | "drop" | "change" | "plan" => {

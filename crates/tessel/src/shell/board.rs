@@ -50,7 +50,12 @@ impl Shell {
             cx.notify();
             return;
         };
-        self.cmd(Cmd::Ask { tag: "task", req: Request::TaskCreate { repo, title, spec: String::new(), deps: Vec::new(), parent: None, ready, budget_usd: None, plan: false, from: None } });
+        let req = if is_issue(&title) {
+            Request::TaskFromIssue { repo, issue: title, ready }
+        } else {
+            Request::TaskCreate { repo, title, spec: String::new(), deps: Vec::new(), parent: None, ready, budget_usd: None, plan: false, from: None }
+        };
+        self.cmd(Cmd::Ask { tag: "task", req });
         self.task_title.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
     }
@@ -221,6 +226,13 @@ impl Shell {
             }
             _ => {}
         }
+        if let Some(url) = t.issue.clone() {
+            let label = url.rsplit('/').next().filter(|n| n.chars().all(|c| c.is_ascii_digit())).map_or_else(|| "Issue".to_owned(), |n| format!("Issue #{n}"));
+            actions = actions.child(big_button(&p, format!("task-issue-{id}"), &label, theme::ButtonKind::Ghost, cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.open_url(&url);
+            })));
+        }
         if let Some(url) = t.pr.clone() {
             actions = actions.child(big_button(&p, format!("task-pr-{id}"), "Pull Request", theme::ButtonKind::Secondary, cx.listener(move |_, _, _, cx| {
                 cx.stop_propagation();
@@ -343,6 +355,12 @@ impl Shell {
             })
             .into_any_element()
     }
+}
+
+fn is_issue(text: &str) -> bool {
+    let t = text.trim();
+    let number = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit());
+    t.strip_prefix('#').is_some_and(number) || (t.contains("github.com/") && t.split('/').collect::<Vec<_>>().windows(2).any(|w| w[0] == "issues" && number(w[1].split(['?', '#']).next().unwrap_or(""))))
 }
 
 fn big_button(p: &Palette, id: impl Into<SharedString>, label: &str, kind: theme::ButtonKind, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {

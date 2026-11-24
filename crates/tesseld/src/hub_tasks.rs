@@ -78,6 +78,7 @@ impl Hub {
             risk: None,
             landed: None,
             pr: None,
+            issue: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -373,13 +374,13 @@ impl Hub {
                 continue;
             };
             let root = std::path::PathBuf::from(&t.repo);
-            let pr = t.pr.clone();
+            let (pr, issue) = (t.pr.clone(), t.issue.clone());
             let verify = crate::rules::config(std::path::Path::new(&ws), &root).verify;
             let mode = board::factory(std::path::Path::new(&ws), &root).land;
             self.landing = Some(id.clone());
             let (tx, backend) = (self.tx.clone(), self.backend.clone());
             tokio::spawn(async move {
-                let result = crate::land::land(backend, std::path::Path::new(&ws), &root, &t.title, &verify, mode, pr.as_deref()).await;
+                let result = crate::land::land(backend, std::path::Path::new(&ws), &root, &t.title, &verify, mode, pr.as_deref(), issue.as_deref()).await;
                 let _ = tx.send(HubMsg::Landed { task: id, result });
             });
             return;
@@ -445,9 +446,13 @@ impl Hub {
     fn merge_pr(&mut self, id: &str, url: String) {
         let Some(t) = self.tasks.get(id) else { return };
         self.ci_busy.insert(id.to_owned());
-        let (tx, repo, task) = (self.tx.clone(), std::path::PathBuf::from(&t.repo), id.to_owned());
+        let (tx, repo, task, issue) = (self.tx.clone(), std::path::PathBuf::from(&t.repo), id.to_owned(), t.issue.clone());
         tokio::spawn(async move {
-            let result = crate::ci::merge(&repo, &url).await;
+            let closes = match &issue {
+                Some(u) => crate::issues::closes(&repo, u).await,
+                None => None,
+            };
+            let result = crate::ci::merge(&repo, &url, closes).await;
             let _ = tx.send(HubMsg::Ci { task, result, why: String::new() });
         });
     }
@@ -588,8 +593,65 @@ impl Hub {
         }
     }
 
+    pub(super) fn issue_fetched(&mut self, repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)>) {
+        let answer = match result {
+            Ok(issue) => self.task_from(repo, issue, ready),
+            Err(e) => Err(RpcError::new(ErrorCode::Invalid, e)),
+        };
+        if let Some((client, id)) = reply {
+            self.respond(client, id, answer);
+        }
+    }
+
+    pub(super) fn task_from(&mut self, repo: String, issue: crate::issues::Issue, ready: bool) -> Result<Response, RpcError> {
+        if let Some(t) = self.tasks.values().find(|t| t.issue.as_deref() == Some(issue.url.as_str()) && t.state != TaskState::Dropped) {
+            return Ok(Response::Task { task: t.clone() });
+        }
+        let spec = crate::issues::spec(&issue);
+        let Ok(Response::Task { task }) = self.task_create(repo, issue.title.clone(), spec, Vec::new(), None, false, None, false) else {
+            return Err(RpcError::new(ErrorCode::Invalid, format!("couldn't file #{}", issue.number)));
+        };
+        let id = task.id;
+        if let Some(t) = self.tasks.get_mut(&id) {
+            t.issue = Some(issue.url.clone());
+            if ready {
+                t.state = TaskState::Ready;
+            }
+        }
+        self.note(&id, "tessel", format!("from #{}", issue.number));
+        self.task_saved(&id);
+        self.dispatch();
+        Ok(Response::Task { task: self.tasks[&id].clone() })
+    }
+
+    fn poll_issues(&mut self) {
+        if self.issues_polled.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60)) {
+            return;
+        }
+        self.issues_polled = Some(std::time::Instant::now());
+        let mut roots: Vec<String> = self.tasks.values().map(|t| t.repo.clone()).collect();
+        roots.extend(self.sessions.values().filter_map(|l| l.state.meta.worktree.as_ref().map(|w| w.repo.clone())));
+        roots.sort();
+        roots.dedup();
+        for repo in roots {
+            let root = std::path::PathBuf::from(&repo);
+            let Some(label) = board::factory(&root, &root).issues else { continue };
+            let known: Vec<String> = self.tasks.values().filter_map(|t| t.issue.clone()).collect();
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                if let Ok(found) = crate::issues::labeled(&root, &label).await {
+                    let issues: Vec<crate::issues::Issue> = found.into_iter().filter(|i| !known.contains(&i.url)).collect();
+                    if !issues.is_empty() {
+                        let _ = tx.send(HubMsg::Issues { repo, issues });
+                    }
+                }
+            });
+        }
+    }
+
     pub(super) fn tasks_tick(&mut self) {
         self.poll_ci();
+        self.poll_issues();
         let over: Vec<(String, SessionId)> = self
             .tasks
             .values()

@@ -45,7 +45,7 @@ async fn subject(backend: &Arc<dyn Backend>, ws: &Path, main: &str, title: &str)
     }
 }
 
-pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str, verify: &[String], mode: Land, pr: Option<&str>) -> Result<Landed, Stuck> {
+pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str, verify: &[String], mode: Land, pr: Option<&str>, issue: Option<&str>) -> Result<Landed, Stuck> {
     let main = crate::ship::main_branch(ws).await;
     let other = |e: String| Stuck::Other(e);
     let mut add = vec!["add", "-A", "--", "."];
@@ -67,6 +67,10 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
         }
     }
     let message = subject(&backend, ws, &main, title).await;
+    let closes = match issue {
+        Some(url) => crate::issues::closes(root, url).await.map(|n| format!("Closes #{n}")),
+        None => None,
+    };
     match mode {
         Land::Main => {
             let here = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
@@ -81,7 +85,11 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             }
             let branch = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
             git(ws, &["reset", "--soft", &main]).await.map_err(other)?;
-            git(ws, &["commit", "-q", "-m", &message]).await.map_err(other)?;
+            let whole = match &closes {
+                Some(c) => format!("{message}\n\n{c}"),
+                None => message.clone(),
+            };
+            git(ws, &["commit", "-q", "-m", &whole]).await.map_err(other)?;
             git(root, &["merge", "--ff-only", &branch]).await.map_err(other)?;
             let sha = git(root, &["rev-parse", "--short", "HEAD"]).await.unwrap_or_default();
             Ok(Landed::Merged { sha, said: format!("Merged into {main}.") })
@@ -92,7 +100,7 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             Ok(Landed::Opened { url: url.to_owned(), said: "Pushed the fix to its pull request.".into() })
         }
         Land::PullRequest => {
-            let (said, url) = crate::ship::ship(ws, root, title, ShipStep::PullRequest { title: message, body: String::new(), draft: false }).await.map_err(other)?;
+            let (said, url) = crate::ship::ship(ws, root, title, ShipStep::PullRequest { title: message, body: closes.unwrap_or_default(), draft: false }).await.map_err(other)?;
             Ok(Landed::Opened { url: url.unwrap_or_default(), said })
         }
     }
@@ -139,7 +147,7 @@ mod tests {
         std::fs::write(ws.join(".DS_Store"), "junk").unwrap();
         std::fs::write(root.join("b.txt"), "moved on\n").unwrap();
         sh(&root, &["commit", "-q", "-am", "chore: meanwhile"]);
-        let landed = land(backend(), &ws, &root, "Count to two", &["test -f c.txt".into()], Land::Main, None).await.unwrap();
+        let landed = land(backend(), &ws, &root, "Count to two", &["test -f c.txt".into()], Land::Main, None, None).await.unwrap();
         let Landed::Merged { sha, .. } = landed else { panic!() };
         assert_eq!(sha, sh(&root, &["rev-parse", "--short", "HEAD"]));
         assert_eq!(sh(&root, &["log", "-1", "--format=%s"]), "fix: what the replay agent would say", "uncommitted work is committed, then all of it squashed");
@@ -150,6 +158,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn landing_an_issue_s_task_closes_that_issue_when_it_reaches_github_and_no_other() {
+        let (_base, root, ws) = repo();
+        sh(&root, &["remote", "add", "origin", "https://github.com/o/r.git"]);
+        std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+        sh(&ws, &["commit", "-q", "-am", "fix: count to two"]);
+        land(backend(), &ws, &root, "Count to two", &[], Land::Main, None, Some("https://github.com/o/r/issues/9")).await.unwrap();
+        assert_eq!(sh(&root, &["log", "-1", "--format=%B"]), "fix: count to two\n\nCloses #9");
+        assert!(!sh(&root, &["log", "-1", "--format=%B"]).to_lowercase().contains("co-authored"));
+        std::fs::write(ws.join("b.txt"), "three\n").unwrap();
+        sh(&ws, &["commit", "-q", "-am", "fix: three"]);
+        land(backend(), &ws, &root, "Three", &[], Land::Main, None, Some("https://github.com/someone/else/issues/9")).await.unwrap();
+        assert_eq!(sh(&root, &["log", "-1", "--format=%B"]), "fix: three", "another repository's issue isn't closed from here");
+    }
+
+    #[tokio::test]
     async fn a_conflict_or_a_failing_check_stops_it_and_says_why_and_main_is_untouched() {
         let (_base, root, ws) = repo();
         std::fs::write(ws.join("a.txt"), "mine\n").unwrap();
@@ -157,13 +180,13 @@ mod tests {
         std::fs::write(root.join("a.txt"), "theirs\n").unwrap();
         sh(&root, &["commit", "-q", "-am", "fix: theirs"]);
         let before = sh(&root, &["rev-parse", "HEAD"]);
-        assert_eq!(land(backend(), &ws, &root, "x", &[], Land::Main, None).await, Err(Stuck::Conflict(vec!["a.txt".into()])));
+        assert_eq!(land(backend(), &ws, &root, "x", &[], Land::Main, None, None).await, Err(Stuck::Conflict(vec!["a.txt".into()])));
         assert_eq!(sh(&ws, &["status", "--porcelain"]), "", "the rebase was taken back");
 
         sh(&ws, &["reset", "-q", "--hard", "main"]);
         std::fs::write(ws.join("b.txt"), "new\n").unwrap();
         sh(&ws, &["commit", "-q", "-am", "fix: b"]);
-        let stuck = land(backend(), &ws, &root, "x", &["echo 'error: nope' && false".into()], Land::Main, None).await.unwrap_err();
+        let stuck = land(backend(), &ws, &root, "x", &["echo 'error: nope' && false".into()], Land::Main, None, None).await.unwrap_err();
         assert!(matches!(&stuck, Stuck::Checks(out) if out.contains("error: nope")), "{stuck:?}");
         assert_eq!(sh(&root, &["rev-parse", "HEAD"]), before);
         assert_eq!(subject(&backend(), &ws, "main", "x").await, "fix: b", "a single typed commit keeps its own subject, for free");
