@@ -88,11 +88,11 @@ impl Shell {
         let p = self.palette.get();
         let mut col = v_flex().id("board").size_full().overflow_y_scroll().pb_4().child(
             h_flex()
-                .px_3()
-                .pt_3()
-                .pb_2()
+                .px_4()
+                .pt_4()
+                .pb_3()
                 .gap_2()
-                .child(div().flex_1().child(Input::new(&self.task_title).id("task-title").small()))
+                .child(div().flex_1().child(Input::new(&self.task_title).id("task-title")))
                 .child(Button::new("task-add").small().outline().label("Add").on_click(cx.listener(|this, _, window, cx| this.add_task(false, window, cx)))),
         );
         let mut any = false;
@@ -133,18 +133,24 @@ impl Shell {
             TaskState::Running if t.plan => "Planning".to_owned(),
             TaskState::Landing => "Landing".to_owned(),
             TaskState::Running => summary.and_then(|s| s.activity.clone()).unwrap_or_else(|| "Working".into()),
-            TaskState::Review => t.notes.last().map(|n| super::sentence(&n.text)).unwrap_or_else(|| "Ready for you".into()),
+            TaskState::Review => t
+                .notes
+                .last()
+                .map(|n| n.text.as_str())
+                .filter(|n| !["proven", "failed", "couldn't be proved"].iter().any(|v| n.starts_with(v)) || n.contains(": "))
+                .map(super::sentence)
+                .unwrap_or_else(|| "Ready for you".into()),
             TaskState::Landed => t.landed.clone().map(|l| format!("Landed {l}")).unwrap_or_else(|| "Landed".into()),
             TaskState::Ready if !t.deps.is_empty() => {
-                let waiting: Vec<&str> = t.deps.iter().filter(|d| self.tasks.iter().any(|x| &&x.id == d && x.state != TaskState::Landed)).map(String::as_str).collect();
+                let waiting: Vec<String> = t.deps.iter().filter_map(|d| self.tasks.iter().find(|x| &x.id == d && x.state != TaskState::Landed)).map(|x| format!("“{}”", x.title.chars().take(40).collect::<String>())).collect();
                 if waiting.is_empty() { "Up next".into() } else { format!("After {}", waiting.join(", ")) }
             }
             _ => String::new(),
         };
         let cost = self.task_cost(t);
         let repo = t.repo.rsplit('/').next().unwrap_or(&t.repo).to_owned();
-        let button = |name: &str| Button::new(ElementId::from(SharedString::from(format!("task-{name}-{id}")))).xsmall();
-        let mut actions = h_flex().gap_1();
+        let button = |name: &str| Button::new(ElementId::from(SharedString::from(format!("task-{name}-{id}")))).small();
+        let mut actions = h_flex().gap_2();
         match t.state {
             TaskState::Draft => {
                 let (i, j) = (id.clone(), id.clone());
@@ -174,11 +180,11 @@ impl Shell {
             .id(ElementId::from(SharedString::from(format!("task-{id}"))))
             .test_support()
             .aria_label(SharedString::from(t.title.clone()))
-            .mx_2()
-            .mb_1()
-            .px_3()
-            .py_2()
-            .gap(px(4.))
+            .mx_3()
+            .mb_2()
+            .px_4()
+            .py_3()
+            .gap(px(6.))
             .rounded(px(theme::R_CARD))
             .border_1()
             .border_color(p.separator)
@@ -217,8 +223,8 @@ impl Shell {
                         .pt_1()
                         .gap_2()
                         .child(div().flex_1().child(Input::new(&self.task_change).id("task-change").small()))
-                        .child(Button::new("task-change-rule").xsmall().ghost().label("Send + Rule").on_click(cx.listener(|this, _, window, cx| this.change_task_and_teach(window, cx))))
-                        .child(Button::new("task-change-send").xsmall().outline().label("Send").on_click(cx.listener(|this, _, window, cx| this.change_task(window, cx)))),
+                        .child(Button::new("task-change-rule").small().ghost().label("Send + Rule").on_click(cx.listener(|this, _, window, cx| this.change_task_and_teach(window, cx))))
+                        .child(Button::new("task-change-send").small().outline().label("Send").on_click(cx.listener(|this, _, window, cx| this.change_task(window, cx)))),
                 )
             })
             .into_any_element()

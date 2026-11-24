@@ -510,7 +510,7 @@ impl Shell {
                     d.child(
                         Button::new("dictation-cancel")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .icon(gpui_kit::component::Icon::empty().path("icons/x.svg"))
                             .tooltip("Throw it away (esc)")
                             .on_click(cx.listener(|this, _, window, cx| this.dictate_cancel(window, cx))),
@@ -518,7 +518,7 @@ impl Shell {
                     .child(
                         Button::new("dictation-done")
                             .primary()
-                            .xsmall()
+                            .small()
                             .label("Done")
                             .tooltip("Put what you said in the box (⇧⌥)")
                             .on_click(cx.listener(|this, _, window, cx| this.dictate_stop(window, cx))),

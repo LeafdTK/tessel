@@ -2381,7 +2381,7 @@ impl Shell {
                             .child(
                                 div().flex_shrink_0().invisible().group_hover(group, |s| s.visible()).child(
                                     Button::new(SharedString::from(format!("open-file-{}", item.id)))
-                                        .xsmall()
+                                        .small()
                                         .ghost()
                                         .icon(gpui_kit::component::Icon::empty().path("icons/eye.svg"))
                                         .tooltip("Open")
@@ -2443,7 +2443,7 @@ impl Shell {
                     let (me, said) = (me.downgrade(), item.id.clone());
                     Button::new(("edit", ix))
                         .ghost()
-                        .xsmall()
+                        .small()
                         .icon(gpui_kit::component::Icon::empty().path("icons/pencil.svg"))
                         .tooltip("Edit from here, in a new tab")
                         .on_click(move |_, window, cx| {
@@ -2458,7 +2458,7 @@ impl Shell {
                         h_flex().absolute().top(px(-6.)).right(px(-6.)).invisible().group_hover(group, |s| s.visible()).children(edit).child(
                             Button::new(("copy", ix))
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .icon(gpui_kit::component::Icon::empty().path("icons/copy.svg"))
                                 .tooltip("Copy")
                                 .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))),
@@ -2551,7 +2551,7 @@ impl Shell {
             .child(
                 Button::new(SharedString::from(format!("turn-{id}-copy")))
                     .ghost()
-                    .xsmall()
+                    .small()
                     .icon(gpui_kit::component::Icon::empty().path("icons/copy.svg"))
                     .tooltip("Copy the reply")
                     .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(reply.clone()))),
@@ -2611,7 +2611,7 @@ impl Shell {
         gpui_kit::component::popover::Popover::new(SharedString::from(format!("turn-{id}-menu")))
             .p_0()
             .anchor(Anchor::TopLeft)
-            .trigger(Button::new(SharedString::from(format!("turn-{id}-more"))).ghost().xsmall().icon(gpui_kit::component::Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
+            .trigger(Button::new(SharedString::from(format!("turn-{id}-more"))).ghost().small().icon(gpui_kit::component::Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
             .content(move |_, _, cx| {
                 let popover = cx.entity();
                 let Some(shell) = me.upgrade() else { return div().into_any_element() };

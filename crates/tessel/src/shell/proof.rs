@@ -104,7 +104,7 @@ impl Shell {
                 .text_color(p.accent)
                 .child(Icon::empty().path("icons/badge-check.svg").size(theme::z(13.)))
                 .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child("Teach this repository: say what every change should follow"))
-                .child(Button::new("teaching-cancel").xsmall().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
+                .child(Button::new("teaching-cancel").small().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
                     this.teaching = false;
                     cx.notify();
                 })))
@@ -124,7 +124,7 @@ impl Shell {
                 .pr_3()
                 .items_end()
                 .child(self.section("House Rules").flex_1())
-                .child(Button::new("rules-teach").xsmall().ghost().label("Teach").on_click(cx.listener(|this, _, window, cx| this.teach(window, cx)))),
+                .child(Button::new("rules-teach").small().ghost().label("Teach").on_click(cx.listener(|this, _, window, cx| this.teach(window, cx)))),
         );
         let Some(book) = book else { return Some(col) };
         let own: Vec<_> = book.rules.iter().filter(|r| !r.builtin).collect();
@@ -135,17 +135,17 @@ impl Shell {
                     .gap_2()
                     .items_center()
                     .child(div().flex_1().set(Type::Subheadline).text_color(p.secondary).child("Only tessel's own checks so far."))
-                    .child(Button::new("rules-set-up").xsmall().outline().label("Set Up").on_click(cx.listener(|this, _, _, cx| this.set_up_rules(cx)))),
+                    .child(Button::new("rules-set-up").small().outline().label("Set Up").on_click(cx.listener(|this, _, _, cx| this.set_up_rules(cx)))),
             );
         }
         let row = |id: String, title: String, tag: String, path: String, cx: &mut Context<Self>| {
             h_flex()
                 .id(ElementId::from(SharedString::from(id)))
                 .test_support()
-                .h(px(24.))
+                .h(px(32.))
                 .mx_1()
-                .px_2()
-                .gap_2()
+                .px_3()
+                .gap_3()
                 .rounded(px(theme::R_TILE))
                 .hover(|d| d.bg(p.hover))
                 .on_click(cx.listener(move |this, _, _, cx| this.open_file(path.clone(), cx)))
@@ -226,10 +226,10 @@ impl Shell {
                 .id("proof-chip")
                 .test_support()
                 .aria_label(SharedString::from(format!("Proof: {}", verdict_word(proof))))
-                .h(px(22.))
-                .px(px(8.))
-                .gap(px(5.))
-                .rounded(px(11.))
+                .h(px(28.))
+                .px(px(11.))
+                .gap(px(6.))
+                .rounded(px(14.))
                 .border_1()
                 .border_color(p.separator)
                 .hover(|d| d.bg(p.hover))
@@ -254,7 +254,7 @@ impl Shell {
         let mut col = v_flex().child(
             h_flex().pr_3().items_end().child(self.section("Proof").flex_1()).child(
                 Button::new("proof-run")
-                    .xsmall()
+                    .small()
                     .ghost()
                     .label(if s.proof.is_some() { "Prove Again" } else { "Prove" })
                     .disabled(proving)
@@ -274,9 +274,10 @@ impl Shell {
         };
         let secs = proof.finished_ms.unwrap_or(proof.started_ms).saturating_sub(proof.started_ms) / 1000;
         let took = if secs >= 60 { format!("{}m {}s", secs / 60, secs % 60) } else { format!("{secs}s") };
+        let cost = if proof.cost_usd > 0.0 && proof.cost_usd < 0.005 { "under 1¢".to_owned() } else { format!("${:.2}", proof.cost_usd) };
         col = col
             .child(div().px_3().set(Type::Callout).text_color(ink).child(verdict_word(proof)))
-            .child(dim(format!("{} files · {took} · ${:.2}{}", proof.files, proof.cost_usd, if proof.overridden { " · shipped anyway" } else { "" })));
+            .child(dim(format!("{} files · {took} · {cost}{}", proof.files, if proof.overridden { " · shipped anyway" } else { "" })));
         if let Some(why) = &proof.problem {
             col = col.child(dim(why.clone()));
         }
@@ -319,9 +320,9 @@ impl Shell {
                     .test_support()
                     .aria_label(SharedString::from(f.title.clone()))
                     .mx_1()
-                    .px_2()
-                    .py_1()
-                    .gap(px(2.))
+                    .px_3()
+                    .py_2()
+                    .gap(px(4.))
                     .rounded(px(theme::R_TILE))
                     .when(file.is_some(), |d| d.hover(|d| d.bg(p.hover)))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -339,7 +340,7 @@ impl Shell {
                             .when(f.rule.is_none(), |d| {
                                 d.child(
                                     Button::new(ElementId::from(SharedString::from(format!("proof-rule-{ix}"))))
-                                        .xsmall()
+                                        .small()
                                         .ghost()
                                         .label("Make a Rule")
                                         .on_click(cx.listener(move |this, _, _, cx| {

@@ -579,7 +579,7 @@ impl Shell {
                     .h(px(32.))
                     .px(px(10.))
                     .child(div().flex_1().set(Type::Callout).font_weight(FontWeight(550.)).child("Tool servers"))
-                    .child(Button::new("mcp-refresh").ghost().xsmall().icon(Icon::empty().path("icons/refresh-cw.svg")).tooltip("Check Again").on_click(move |_, _, cx| {
+                    .child(Button::new("mcp-refresh").ghost().small().icon(Icon::empty().path("icons/refresh-cw.svg")).tooltip("Check Again").on_click(move |_, _, cx| {
                         if let Some(id) = session {
                             let _ = refresh.update(cx, |this, cx| {
                                 this.cmd(Cmd::RefreshMcp(id));

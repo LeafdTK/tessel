@@ -96,7 +96,7 @@ impl Shell {
                 .when(self.down_since.is_some(), |d| {
                     d.child(div().flex_1()).child(
                         Button::new("connection-redial")
-                            .xsmall()
+                            .small()
                             .ghost()
                             .label("Reconnect now")
                             .on_click(cx.listener(|this, _, _, cx| {

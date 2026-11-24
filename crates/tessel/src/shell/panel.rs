@@ -839,7 +839,7 @@ impl Shell {
             .child(counts(git.added, git.removed))
             .child(
                 Button::new("diff-mode")
-                    .xsmall()
+                    .small()
                     .ghost()
                     .icon(gpui_kit::component::Icon::empty().path(if self.ws.split { "icons/columns-2.svg" } else { "icons/rows-2.svg" }))
                     .tooltip(if self.ws.split { "Side by Side. Click for Unified." } else { "Unified. Click for Side by Side." })
@@ -1111,13 +1111,13 @@ impl Shell {
             .child(div().flex_1().overflow_hidden().set(Type::Subheadline).text_color(p.tertiary).truncate().child(dir.to_owned()))
             .when(file.dirty, |d| {
                 d.child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).child("Edited"))
-                    .child(Button::new("file-revert").xsmall().ghost().label("Revert").on_click(cx.listener(|this, _, window, cx| this.revert_file(window, cx))))
+                    .child(Button::new("file-revert").small().ghost().label("Revert").on_click(cx.listener(|this, _, window, cx| this.revert_file(window, cx))))
             })
             .when(super::files::is_markdown(&file.path) && file.editor.is_some(), |d| {
                 let rendered = file.rendered;
                 d.child(
                     Button::new("file-render")
-                        .xsmall()
+                        .small()
                         .ghost()
                         .icon(gpui_kit::component::Icon::empty().path(if rendered { "icons/pencil.svg" } else { "icons/book-open.svg" }))
                         .label(if rendered { "Edit" } else { "Read" })
@@ -1130,19 +1130,19 @@ impl Shell {
                 )
             })
             .when(editable && !file.rendered, |d| {
-                d.child(Button::new("file-save").xsmall().when(file.dirty, |b| b.primary()).when(!file.dirty, |b| b.outline()).disabled(!file.dirty).label("Save").on_click(cx.listener(|this, _, _, cx| this.save_file(cx))))
+                d.child(Button::new("file-save").small().when(file.dirty, |b| b.primary()).when(!file.dirty, |b| b.outline()).disabled(!file.dirty).label("Save").on_click(cx.listener(|this, _, _, cx| this.save_file(cx))))
             })
             .when(!popped, |d| {
                 d.child(
                     Button::new("file-pop-out")
-                        .xsmall()
+                        .small()
                         .ghost()
                         .icon(gpui_kit::component::Icon::empty().path("icons/panel-right-open.svg"))
                         .tooltip("Open in a pane of its own")
                         .on_click(cx.listener(|this, _, window, cx| this.pop_out_file(window, cx))),
                 )
             })
-            .child(Button::new("file-close").xsmall().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
+            .child(Button::new("file-close").small().ghost().label("Close").on_click(cx.listener(|this, _, _, cx| this.close_file(cx))));
         let body: AnyElement = match (&file.preview, &file.editor) {
             _ if file.pages.is_some() => self.pages_el(file.pages.as_deref().unwrap_or_default()),
             (Some((image, note)), _) => self.preview_el(image, note.as_deref()),
@@ -1188,7 +1188,7 @@ impl Shell {
         col = col.child(
             h_flex().pr_3().items_end().child(self.section("Pull Request").flex_1()).child(
                 Button::new("checks-refresh")
-                    .xsmall()
+                    .small()
                     .ghost()
                     .label(if self.ws.pr_loading { "Checking…" } else { "Refresh" })
                     .disabled(self.ws.pr_loading)
@@ -1342,7 +1342,7 @@ impl Shell {
 
         col = col.child(
             h_flex().pr_3().items_end().child(self.section("Linked Folders").flex_1()).child(
-                Button::new("link-folder").xsmall().ghost().label("Link Folder…").on_click(cx.listener(|this, _, _, cx| this.link_folder(cx))),
+                Button::new("link-folder").small().ghost().label("Link Folder…").on_click(cx.listener(|this, _, _, cx| this.link_folder(cx))),
             ),
         );
         if s.linked_dirs.is_empty() {
@@ -1352,7 +1352,7 @@ impl Shell {
             let (sid, path) = (s.id, dir.clone());
             col = col.child(
                 h_flex().pr_3().child(div().flex_1().overflow_hidden().child(line(dir.clone()))).child(
-                    Button::new(("unlink", ix)).xsmall().ghost().label("Remove").on_click(cx.listener(move |this, _, _, _| this.cmd(Cmd::UnlinkDir { session: sid, path: path.clone() }))),
+                    Button::new(("unlink", ix)).small().ghost().label("Remove").on_click(cx.listener(move |this, _, _, _| this.cmd(Cmd::UnlinkDir { session: sid, path: path.clone() }))),
                 ),
             );
         }

@@ -27,9 +27,11 @@ fn state_word(s: TaskState) -> String {
 }
 
 fn day_of(ms: u64) -> (i64, String) {
-    let days = (ms / 86_400_000) as i64;
-    let names = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    (days, names[days.rem_euclid(7) as usize].to_owned())
+    use chrono::{Datelike as _, TimeZone as _};
+    match chrono::Local.timestamp_millis_opt(ms as i64).single() {
+        Some(t) => (i64::from(t.num_days_from_ce()), t.format("%a").to_string()),
+        None => ((ms / 86_400_000) as i64, String::new()),
+    }
 }
 
 impl Shell {
@@ -101,7 +103,8 @@ impl Shell {
             }
             "cost.daily" => {
                 let today = day_of(super::now_ms()).0;
-                let mut by_day: Vec<(String, f64)> = (0..7).rev().map(|back| (day_of(((today - back) as u64) * 86_400_000).1, 0.0)).collect();
+                let now = super::now_ms();
+                let mut by_day: Vec<(String, f64)> = (0..7).rev().map(|back| (day_of(now.saturating_sub(back as u64 * 86_400_000)).1, 0.0)).collect();
                 for s in &self.model.sessions {
                     let (d, _) = day_of(s.updated_ms.max(s.created_ms));
                     let back = today - d;
@@ -166,7 +169,7 @@ impl Shell {
                 .text_color(p.accent)
                 .child(Icon::empty().path("icons/layout-dashboard.svg").size(theme::z(13.)))
                 .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child("New view: say what it should show"))
-                .child(Button::new("view-chip-cancel").xsmall().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
+                .child(Button::new("view-chip-cancel").small().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
                     this.making_view = false;
                     cx.notify();
                 })))
@@ -182,23 +185,23 @@ impl Shell {
             tabs = tabs.child(self.view_tab(&v.id, &v.title, shown == v.id, cx));
         }
         let head = h_flex()
-            .px_3()
-            .pt_3()
-            .pb_2()
-            .gap_2()
+            .px_4()
+            .pt_4()
+            .pb_3()
+            .gap_3()
             .child(div().flex_1().min_w_0().child(tabs))
-            .child(Button::new("views-refresh").xsmall().ghost().icon(Icon::empty().path("icons/refresh-cw.svg")).on_click(cx.listener(|this, _, _, cx| {
+            .child(Button::new("views-refresh").small().ghost().icon(Icon::empty().path("icons/refresh-cw.svg")).on_click(cx.listener(|this, _, _, cx| {
                 this.refresh_views();
                 cx.notify();
             })))
-            .child(Button::new("views-new").xsmall().outline().label("New View").on_click(cx.listener(|this, _, window, cx| this.make_view(window, cx))));
+            .child(Button::new("views-new").small().outline().label("New View").on_click(cx.listener(|this, _, window, cx| this.make_view(window, cx))));
         let session = self.model.open.as_ref().map(|o| o.id).unwrap_or_else(|| tessel_proto::SessionId(uuid::Uuid::nil()));
         let body: AnyElement = match self.saved_views.iter().find(|v| v.id == shown) {
             Some(v) if !v.problems.is_empty() => v_flex().gap_1().children(v.problems.iter().map(|pr| div().set(Type::Subheadline).text_color(p.failed).child(pr.clone()))).into_any_element(),
             Some(v) => self.element(&format!("view-{}", v.id), session, &v.node, cx),
             None => self.element("view-factory", session, &factory_view(), cx),
         };
-        v_flex().id("views").test_support().size_full().child(head).child(div().id("views-body").test_support().flex_1().min_h_0().overflow_y_scroll().px_3().pb_4().child(body)).into_any_element()
+        v_flex().id("views").test_support().size_full().child(head).child(div().id("views-body").test_support().flex_1().min_h_0().overflow_y_scroll().px_4().pb_5().child(body)).into_any_element()
     }
 
     fn view_tab(&self, id: &str, title: &str, on: bool, cx: &mut Context<Self>) -> AnyElement {
@@ -207,8 +210,8 @@ impl Shell {
         div()
             .id(ElementId::from(SharedString::from(format!("view-tab-{id}"))))
             .test_support()
-            .px_2()
-            .py(px(3.))
+            .px_3()
+            .py(px(5.))
             .rounded(px(theme::R_TILE))
             .set(Type::Callout)
             .when(on, |d| d.bg(p.selection).text_color(p.label))

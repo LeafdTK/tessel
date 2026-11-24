@@ -555,7 +555,7 @@ impl Shell {
                 d.child(
                     Button::new(SharedString::from(format!("pane-{id}-sidebar")))
                         .ghost()
-                        .xsmall()
+                        .small()
                         .icon(Icon::empty().path("icons/panel-left.svg"))
                         .tooltip("Show Sidebar")
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
@@ -644,7 +644,7 @@ impl Shell {
                 let mut out = vec![
                     Button::new("toolbar-sidebar")
                         .ghost()
-                        .xsmall()
+                        .small()
                         .icon(Icon::empty().path("icons/panel-left.svg"))
                         .tooltip(if self.drawer("sidebar").is_some_and(|d| d.open) { "Hide Sidebar" } else { "Show Sidebar" })
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)))
@@ -657,7 +657,7 @@ impl Shell {
                 // the header's own spacer comes next: these sit at its far end.
                 out.push(div().flex_1().into_any_element());
                 if self.model.open_summary().is_some_and(|s| s.run_state.is_busy()) && !self.show_new {
-                    out.push(Button::new("toolbar-stop").xsmall().outline().label("Stop").tooltip("Stop the Agent").on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))).into_any_element());
+                    out.push(Button::new("toolbar-stop").small().outline().label("Stop").tooltip("Stop the Agent").on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))).into_any_element());
                 }
                 // the workspace's scripts: the dev server a click away.
                 if !self.views.contains_key(pane_id) {
@@ -671,7 +671,7 @@ impl Shell {
                     out.push(
                         Button::new("toolbar-inspector")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .icon(Icon::empty().path("icons/panel-right.svg"))
                             .tooltip("Show or Hide the Workspace")
                             .on_click(cx.listener(|this, _, _, cx| this.toggle_inspector(cx)))
@@ -839,7 +839,7 @@ impl Shell {
                     d.child(
                         Button::new("working-stop")
                             .outline()
-                            .xsmall()
+                            .small()
                             .label("Stop")
                             .tooltip("Stop this turn. The conversation carries on from here")
                             .on_click(cx.listener(|this, _, _, cx| this.stop_agent(cx))),

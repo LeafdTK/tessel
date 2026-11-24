@@ -123,9 +123,6 @@ pub fn task_prompt(t: &Task) -> String {
             p.push_str(&format!("- {a}\n"));
         }
     }
-    p.push_str(
-        "\n\nThis is a task from the board, in a workspace of its own. Make the whole change, commit it with a message in the repository's style, then stop with one line saying what you did. tessel checks your work when you stop (don't run tessel_prove yourself) and lands it after review.",
-    );
     p
 }
 
@@ -222,6 +219,6 @@ mod tests {
         let p = task_prompt(&t);
         assert!(p.starts_with("do a\n\nUse the existing theme tokens."));
         assert!(p.contains("- keep the old shortcut") && !p.contains("proved: failed"));
-        assert!(p.contains("don't run tessel_prove"));
+        assert!(!p.contains("tessel_prove"), "how a task works is the agent's to know, not something shown as yours");
     }
 }

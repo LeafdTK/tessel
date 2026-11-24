@@ -36,6 +36,9 @@ impl Shell {
                     };
                     self.settings_section = id;
                 }
+                if self.settings_section == "keys" {
+                    self.cmd(Cmd::Ask { tag: "keys", req: tessel_proto::Request::Keys });
+                }
                 self.open_settings(cx);
                 done
             }

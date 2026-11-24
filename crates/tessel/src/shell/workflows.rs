@@ -416,7 +416,7 @@ impl Shell {
                             )
                             .when(!self.on_host(), |d| {
                                 let path = w.path.clone();
-                                d.child(Button::new("workflow-edit").xsmall().ghost().icon(Icon::empty().path("icons/pencil.svg")).tooltip("Edit its file").on_click(cx.listener(move |this, _, _, _| this.edit_workflow_file(&path))))
+                                d.child(Button::new("workflow-edit").small().ghost().icon(Icon::empty().path("icons/pencil.svg")).tooltip("Edit its file").on_click(cx.listener(move |this, _, _, _| this.edit_workflow_file(&path))))
                             }),
                     )
                     .child(div().id("workflow-fields").flex_1().min_h_0().overflow_y_scroll().px_5().py_3().child(fields))
@@ -703,9 +703,9 @@ impl Shell {
             .border_color(p.separator)
             .child(Icon::empty().path("icons/file-text.svg").size(theme::z(14.)).text_color(p.secondary))
             .child(div().flex_1().min_w_0().truncate().set(Type::Callout).text_color(p.label).child(format!("{} · {name}", run.name)))
-            .child(Button::new("doc-copy").xsmall().ghost().icon(Icon::empty().path("icons/copy.svg")).label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
-            .child(Button::new("doc-save").xsmall().ghost().icon(Icon::empty().path("icons/download.svg")).label("Save as…").on_click(cx.listener(move |this, _, _, cx| this.save_doc(save.clone(), cx))))
-            .when(local, |d| d.child(Button::new("doc-reveal").xsmall().ghost().icon(Icon::empty().path("icons/folder-open.svg")).tooltip("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&reveal)))));
+            .child(Button::new("doc-copy").small().ghost().icon(Icon::empty().path("icons/copy.svg")).label("Copy").on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))))
+            .child(Button::new("doc-save").small().ghost().icon(Icon::empty().path("icons/download.svg")).label("Save as…").on_click(cx.listener(move |this, _, _, cx| this.save_doc(save.clone(), cx))))
+            .when(local, |d| d.child(Button::new("doc-reveal").small().ghost().icon(Icon::empty().path("icons/folder-open.svg")).tooltip("Show in Finder").on_click(move |_, _, cx| cx.reveal_path(std::path::Path::new(&reveal)))));
         v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(self.document_el(text, cx))).into_any_element()
     }
 
@@ -773,7 +773,7 @@ impl Shell {
                 .text_color(p.accent)
                 .child(Icon::empty().path("icons/workflow.svg").size(theme::z(13.)))
                 .child(div().set(Type::Callout).font_weight(FontWeight::MEDIUM).child("New workflow: say what it should do"))
-                .child(Button::new("authoring-cancel").xsmall().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
+                .child(Button::new("authoring-cancel").small().ghost().icon(Icon::empty().path("icons/x.svg")).on_click(cx.listener(|this, _, _, cx| {
                     this.authoring = false;
                     cx.notify();
                 })))

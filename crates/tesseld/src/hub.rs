@@ -2246,6 +2246,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         // and which chat it is: everything it starts carries that, so what it
         // leaves running can be found and stopped (see `procs`).
         let mut workspace_env = self.workspace_env(session);
+        if let Some(t) = self.tasks.values().find(|t| t.session == Some(session) && !t.plan) {
+            workspace_env.push(("TESSEL_TASK".into(), t.id.clone()));
+        }
         workspace_env.push(("TESSEL_SESSION".into(), session.to_string()));
         self.prefixed.remove(&session);
         // visual mode: every shell the agent starts goes through `tessel-shell`,

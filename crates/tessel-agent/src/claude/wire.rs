@@ -49,6 +49,8 @@ pub const TOOLS_NOTE: &str = "\n\nThis app is tessel, and you have its tools. Us
 - Leave the window as the person arranged it unless they ask.\n\
 A one-line answer stays a line.";
 
+pub const TASK_NOTE: &str = "\n\nThis chat is a task from the board, in a workspace of its own. Make the whole change, commit it with a message in the repository's style, then stop with one line saying what you did. tessel checks your work when you stop (don't run tessel_prove yourself) and lands it after review.";
+
 pub const PROVE_NOTE: &str = "\n- This repository has house rules (.tessel/rules): when a change is finished, check it with tessel_prove, fix the real findings, and check again (twice at most).";
 
 /// visual mode, said to the agent: the person is watching, so its commands

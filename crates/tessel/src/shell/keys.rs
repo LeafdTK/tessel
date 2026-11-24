@@ -64,8 +64,8 @@ impl Shell {
     pub(crate) fn keys_settings(&self, cx: &mut Context<Self>) -> Div {
         let p = self.palette.get();
         let dim = |t: String| div().set(Type::Subheadline).text_color(p.secondary).child(t);
-        let mut col = v_flex().gap_2();
-        let Some((keys, uses)) = &self.keys else { return col.child(dim("Asking the daemon…".into())) };
+        let mut col = v_flex().px_4().py_4().gap_3();
+        let Some((keys, uses)) = &self.keys else { return col.child(dim("Loading your keys…".into())) };
         for k in keys {
             let name = k.name.clone();
             let detail = format!(
@@ -78,12 +78,12 @@ impl Shell {
                 h_flex()
                     .id(ElementId::from(SharedString::from(format!("keyrow-{name}"))))
                     .test_support()
-                    .gap_2()
-                    .py_1()
+                    .gap_3()
+                    .py_2()
                     .child(Icon::empty().path("icons/key-round.svg").size(theme::z(14.)).text_color(if k.stored { p.label } else { p.tertiary }))
                     .child(v_flex().flex_1().min_w_0().child(div().set(Type::Callout).text_color(p.label).child(name.clone())).child(dim(detail)))
                     .when(k.uses > 0, |d| d.child(dim(format!("used {}×", k.uses))))
-                    .child(Button::new(ElementId::from(SharedString::from(format!("key-rm-{name}")))).xsmall().ghost().icon(Icon::empty().path("icons/trash.svg")).on_click(cx.listener(move |this, _, _, cx| {
+                    .child(Button::new(ElementId::from(SharedString::from(format!("key-rm-{name}")))).small().ghost().icon(Icon::empty().path("icons/trash.svg")).on_click(cx.listener(move |this, _, _, cx| {
                         this.cmd(Cmd::Ask { tag: "keys", req: Request::KeyRemove { name: name.clone() } });
                         cx.notify();
                     }))),
@@ -91,7 +91,7 @@ impl Shell {
         }
         let f = &self.key_inputs;
         col = col
-            .child(div().pt_2().set(Type::Headline).text_color(p.label).child("Add a Key"))
+            .child(div().pt_3().set(Type::Headline).text_color(p.label).child("Add a Key"))
             .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&f.name).id("key-name").small())).child(div().flex_1().child(Input::new(&f.host).id("key-host").small())))
             .child(h_flex().gap_2().child(div().flex_1().child(Input::new(&f.env).id("key-env").small())).child(div().flex_1().child(Input::new(&f.secret).id("key-secret").small())))
             .child(
@@ -101,7 +101,7 @@ impl Shell {
                     .child(Button::new("key-github").small().outline().label("Use GitHub CLI Login").on_click(cx.listener(|this, _, _, cx| this.github_from_cli(cx)))),
             );
         if !uses.is_empty() {
-            col = col.child(div().pt_2().set(Type::Headline).text_color(p.label).child("Recent Use"));
+            col = col.child(div().pt_3().set(Type::Headline).text_color(p.label).child("Recent Use"));
             for u in uses.iter().take(12) {
                 col = col.child(
                     h_flex()

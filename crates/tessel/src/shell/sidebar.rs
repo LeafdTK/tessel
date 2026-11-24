@@ -396,14 +396,14 @@ impl Shell {
                             )
                             .child(
                                 Button::new(SharedString::from(format!("deleted-{id}-restore")))
-                                    .xsmall()
+                                    .small()
                                     .outline()
                                     .label("Restore")
                                     .on_click(act(Box::new(move |this, _, _| this.restore_deleted(id)), true)),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("deleted-{id}-purge")))
-                                    .xsmall()
+                                    .small()
                                     .ghost()
                                     .when(armed, |b| b.danger())
                                     .label(if armed { "Delete forever?" } else { "Delete" })

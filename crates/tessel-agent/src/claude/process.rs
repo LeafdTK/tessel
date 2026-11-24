@@ -233,6 +233,9 @@ impl ClaudeBackend {
             // the note about how replies are shown grows a paragraph about the tools.
             if let Some(i) = args.iter().position(|a| a == wire::HOST_NOTE) {
                 args[i] = format!("{}{}", wire::HOST_NOTE, wire::TOOLS_NOTE);
+                if opts.env.iter().any(|(k, _)| k == "TESSEL_TASK") {
+                    args[i].push_str(wire::TASK_NOTE);
+                }
                 if tessel_proto::proof::has_house_rules(&opts.cwd) {
                     args[i].push_str(wire::PROVE_NOTE);
                 }
