@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::component::Icon;
+use gpui_kit::component::popover::Popover;
 use tessel_proto::task::{Task, TaskAct, TaskState};
 use tessel_proto::{Request, Response};
 
@@ -34,6 +35,9 @@ impl Shell {
     }
 
     fn board_repo(&self) -> Option<String> {
+        if let Some(p) = &self.board_project {
+            return Some(p.clone());
+        }
         self.model
             .open_summary()
             .map(|s| s.worktree.as_ref().map_or_else(|| s.cwd.clone(), |w| w.repo.clone()))
@@ -105,23 +109,14 @@ impl Shell {
             .border_color(p.separator)
             .when(!glass, |d| d.bg(p.raised).shadow_md())
             .when(glass, |d| d.relative().child(super::glass_spot(theme::R_CARD + 2.)))
-            .child(
-                h_flex()
-                    .size(theme::z(30.))
-                    .flex_shrink_0()
-                    .justify_center()
-                    .rounded_full()
-                    .bg(p.accent.opacity(0.12))
-                    .text_color(p.accent)
-                    .child(Icon::empty().path("icons/plus.svg").size(theme::z(16.))),
-            )
+            .child(self.board_picker(cx))
             .child(div().flex_1().min_w_0().text_size(theme::z(15.)).child(Input::new(&self.task_title).id("task-title").appearance(false)))
             .child(big_button(&p, "task-draft", "Draft", theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
             .child(big_button(&p, "task-start", "Start", theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx))));
         let mut body = v_flex().w_full().max_w(theme::z(920.)).mx_auto().px(theme::z(28.)).pt(theme::z(24.)).pb(theme::z(40.)).child(composer);
         let mut any = false;
         for (title, states) in SECTIONS {
-            let mut here: Vec<&Task> = self.tasks.iter().filter(|t| states.contains(&t.state)).collect();
+            let mut here: Vec<&Task> = self.tasks.iter().filter(|t| states.contains(&t.state) && self.board_project.as_ref().is_none_or(|p| &t.repo == p)).collect();
             if here.is_empty() {
                 continue;
             }
@@ -163,6 +158,93 @@ impl Shell {
             body = body.child(empty_board(&p));
         }
         v_flex().id("board").size_full().overflow_y_scroll().child(body).into_any_element()
+    }
+
+    fn board_projects(&self) -> Vec<String> {
+        let mut all = self.project_list();
+        for t in &self.tasks {
+            if !all.contains(&t.repo) {
+                all.push(t.repo.clone());
+            }
+        }
+        all
+    }
+
+    fn board_picker(&self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette.get();
+        let name = self.board_project.as_deref().map(super::projects::folder_name);
+        let me = cx.entity().downgrade();
+        Popover::new("board-project-popover")
+            .p_0()
+            .anchor(Anchor::TopLeft)
+            .trigger(
+                super::composer::tool_button("board-project")
+                    .flex_shrink_0()
+                    .h(theme::z(38.))
+                    .pl(theme::z(6.))
+                    .pr(theme::z(12.))
+                    .rounded(theme::z(theme::R_CONTROL + 2.))
+                    .bg(p.fill)
+                    .child(h_flex().gap(theme::z(9.)).items_center().child(match &name {
+                        Some(n) => super::sidebar::project_tile(n, &p).into_any_element(),
+                        None => h_flex().size(theme::z(26.)).justify_center().rounded(theme::z(7.)).bg(p.accent.opacity(0.14)).text_color(p.accent).child(Icon::empty().path("icons/layers.svg").size(theme::z(14.))).into_any_element(),
+                    })
+                    .child(div().max_w(theme::z(180.)).truncate().text_size(theme::z(14.)).font_weight(FontWeight::MEDIUM).text_color(p.label).child(name.clone().unwrap_or_else(|| "All projects".into())))
+                    .child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(12.)).text_color(p.secondary))),
+            )
+            .content(move |_, _, cx| {
+                let popover = cx.entity();
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let current = this.board_project.clone();
+                let mut rows = v_flex().id("board-project-list").max_h(px(340.)).overflow_y_scroll();
+                let mut options: Vec<Option<String>> = vec![None];
+                options.extend(this.board_projects().into_iter().map(Some));
+                for (i, folder) in options.into_iter().enumerate() {
+                    let on = current == folder;
+                    let name = folder.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "All projects".into());
+                    let open = folder.as_ref().map(|f| this.tasks.iter().filter(|t| &t.repo == f && !t.state.finished()).count()).unwrap_or_else(|| this.tasks.iter().filter(|t| !t.state.finished()).count());
+                    let (me, popover, pick) = (me.clone(), popover.clone(), folder.clone());
+                    rows = rows.child(
+                        h_flex()
+                            .id(SharedString::from(format!("board-project-{i}")))
+                            .test_support()
+                            .min_h(theme::z(44.))
+                            .px(theme::z(10.))
+                            .gap(theme::z(10.))
+                            .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                            .cursor_pointer()
+                            .when(on, |d| d.bg(p.selection))
+                            .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                            .on_click(move |_, window, cx| {
+                                popover.update(cx, |st, cx| st.dismiss(window, cx));
+                                let _ = me.update(cx, |this, cx| {
+                                    this.board_project = pick.clone();
+                                    cx.notify();
+                                });
+                            })
+                            .child(match &folder {
+                                Some(_) => super::sidebar::project_tile(&name, &p).into_any_element(),
+                                None => h_flex().size(theme::z(26.)).justify_center().rounded(theme::z(7.)).bg(p.accent.opacity(0.14)).text_color(p.accent).child(Icon::empty().path("icons/layers.svg").size(theme::z(14.))).into_any_element(),
+                            })
+                            .child(
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(div().set(Type::Body).text_color(p.label).child(name))
+                                    .child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(match &folder {
+                                        Some(f) => f.clone(),
+                                        None => "Every project's tasks".into(),
+                                    })),
+                            )
+                            .when(open > 0, |d| d.child(div().set(Type::Subheadline).font_features(theme::tabular()).text_color(p.secondary).child(open.to_string())))
+                            .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
+                    );
+                }
+                theme::float_list(&p).w(px(340.)).child(theme::float_label(&p, "Tasks go to")).child(rows).into_any_element()
+            })
+            .into_any_element()
     }
 
     fn task_card(&self, t: &Task, cx: &mut Context<Self>) -> AnyElement {
