@@ -730,19 +730,14 @@ pub struct DaemonSettings {
     pub projects: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel: Option<u32>,
-    /// agents write no code comments, and proof flags any that are added.
     #[serde(default)]
     pub no_comments: bool,
-    /// the software factory is paused: nothing new starts, nothing lands, triggers wait.
     #[serde(default)]
     pub paused: bool,
-    /// the model for each of the factory's jobs: build, plan, check, look, test, review.
     #[serde(default)]
     pub roles: std::collections::BTreeMap<String, String>,
-    /// who decides about finished work: "me", "agent" (risky work still comes to you) or "full".
     #[serde(default = "agent")]
     pub autonomy: String,
-    /// where finished work goes unless a task says otherwise: "main", "pr", "keep" or "branch:NAME".
     #[serde(default = "main")]
     pub land: String,
 }
