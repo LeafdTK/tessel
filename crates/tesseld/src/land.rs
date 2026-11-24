@@ -87,7 +87,8 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             Ok(Landed::Merged { sha, said: format!("Merged into {main}.") })
         }
         Land::PullRequest if let Some(url) = pr => {
-            git(ws, &["push", "--force-with-lease", "-u", "origin", "HEAD"]).await.map_err(other)?;
+            let remote = crate::ship::home(root).await.remote;
+            git(ws, &["push", "--force-with-lease", "-u", &remote, "HEAD"]).await.map_err(other)?;
             Ok(Landed::Opened { url: url.to_owned(), said: "Pushed the fix to its pull request.".into() })
         }
         Land::PullRequest => {

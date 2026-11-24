@@ -31,7 +31,37 @@ pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// the repository's main branch: what `origin` points at, else main, else master.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Home {
+    pub remote: String,
+    pub branch: String,
+    pub upstream: String,
+}
+
+async fn tracked(dir: &Path) -> Option<Home> {
+    let common = std::path::PathBuf::from(git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).await.ok()?);
+    let root = if common.file_name().is_some_and(|n| n == ".git") { common.parent()?.to_path_buf() } else { return None };
+    let branch = git(&root, &["symbolic-ref", "--short", "-q", "HEAD"]).await.ok()?;
+    let upstream = git(&root, &["rev-parse", "--abbrev-ref", &format!("{branch}@{{upstream}}")]).await.ok()?;
+    let remote = upstream.split_once('/')?.0.to_owned();
+    let head = git(&root, &["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")]).await.ok()?;
+    (head == upstream).then_some(Home { remote, branch, upstream })
+}
+
+pub async fn home(dir: &Path) -> Home {
+    match tracked(dir).await {
+        Some(h) => h,
+        None => {
+            let branch = main_branch(dir).await;
+            Home { remote: "origin".into(), upstream: format!("origin/{branch}"), branch }
+        }
+    }
+}
+
 pub async fn main_branch(dir: &Path) -> String {
+    if let Some(h) = tracked(dir).await {
+        return h.branch;
+    }
     if let Ok(head) = git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).await {
         return head.trim_start_matches("origin/").to_owned();
     }
@@ -41,6 +71,14 @@ pub async fn main_branch(dir: &Path) -> String {
         }
     }
     "main".to_owned()
+}
+
+pub fn github_repo(url: &str) -> Option<String> {
+    let rest = url.trim().split_once("github.com").map(|(_, r)| r)?;
+    let path = rest.trim_start_matches([':', '/']).trim_end_matches('/').trim_end_matches(".git");
+    let mut parts = path.split('/');
+    let (owner, name) = (parts.next()?, parts.next()?);
+    (!owner.is_empty() && !name.is_empty() && parts.next().is_none()).then(|| format!("{owner}/{name}"))
 }
 
 /// a rebase that stopped: take it back, and say which files clashed.
@@ -53,17 +91,22 @@ async fn conflicted(dir: &Path) -> String {
 
 /// do one step. what it did, in words, and a link if it made one.
 pub async fn ship(ws: &Path, root: &Path, goal: &str, step: ShipStep) -> Result<(String, Option<String>), String> {
-    let main = main_branch(root).await;
+    let Home { remote, branch: main, upstream } = home(root).await;
     let branch = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
     match step {
         ShipStep::Push => {
-            run("git", ws, &["push", "-u", "origin", "HEAD"], 120).await?;
+            run("git", ws, &["push", "-u", &remote, "HEAD"], 120).await?;
             Ok((format!("Pushed {branch}."), None))
         }
         ShipStep::PullRequest { title, body, draft } => {
-            run("git", ws, &["push", "-u", "origin", "HEAD"], 120).await?;
+            run("git", ws, &["push", "-u", &remote, "HEAD"], 120).await?;
             let title = if title.trim().is_empty() { goal.to_owned() } else { title };
-            let mut args = vec!["pr", "create", "--head", &branch, "--base", &main, "--title", &title, "--body", &body];
+            let repo = github_repo(&git(ws, &["remote", "get-url", &remote]).await.unwrap_or_default());
+            let base = upstream.split_once('/').map_or(main.as_str(), |(_, b)| b).to_owned();
+            let mut args = vec!["pr", "create", "--head", &branch, "--base", &base, "--title", &title, "--body", &body];
+            if let Some(r) = &repo {
+                args.extend(["--repo", r.as_str()]);
+            }
             if draft {
                 args.push("--draft");
             }
@@ -76,8 +119,8 @@ pub async fn ship(ws: &Path, root: &Path, goal: &str, step: ShipStep) -> Result<
             Ok((format!("Merged into {main}, {}.", if squash { "squashed" } else { "rebased" }), None))
         }
         ShipStep::Update => {
-            run("git", ws, &["fetch", "origin", &main], 120).await?;
-            if git(ws, &["rebase", "--autostash", &format!("origin/{main}")]).await.is_err() {
+            run("git", ws, &["fetch", &remote], 120).await?;
+            if git(ws, &["rebase", "--autostash", &upstream]).await.is_err() {
                 return Err(conflicted(ws).await);
             }
             Ok((format!("Up to date with {main}."), None))
@@ -107,7 +150,8 @@ pub async fn ship(ws: &Path, root: &Path, goal: &str, step: ShipStep) -> Result<
             }
             git(root, &["merge", "--ff-only", &branch]).await?;
             if push {
-                run("git", root, &["push", "origin", &main], 120).await?;
+                let to = format!("{main}:{}", upstream.split_once('/').map_or(main.as_str(), |(_, b)| b));
+                run("git", root, &["push", &remote, &to], 120).await?;
             }
             Ok((format!("Merged into {main}{}.", if push { " and pushed" } else { "" }), None))
         }
@@ -141,6 +185,38 @@ mod tests {
         sh(&root, &["push", "-q", "-u", "origin", "main"]);
         sh(&root, &["worktree", "add", "-q", "-b", "tessel/x", ws.to_str().unwrap()]);
         (base, root, ws)
+    }
+
+    #[tokio::test]
+    async fn a_checkout_that_tracks_another_remote_s_default_branch_lands_and_pushes_there_not_to_origin() {
+        let (base, root, ws) = repo("two-remotes");
+        let (old, new) = (base.join("old.git"), base.join("new.git"));
+        sh(&base, &["init", "-q", "--bare", "-b", "master", old.to_str().unwrap()]);
+        sh(&base, &["init", "-q", "--bare", "-b", "main", new.to_str().unwrap()]);
+        sh(&root, &["remote", "remove", "origin"]);
+        sh(&root, &["remote", "add", "origin", old.to_str().unwrap()]);
+        sh(&root, &["push", "-q", "origin", "main:master"]);
+        sh(&root, &["remote", "set-head", "origin", "master"]);
+        sh(&root, &["remote", "add", "tessel", new.to_str().unwrap()]);
+        sh(&root, &["push", "-q", "-u", "tessel", "main"]);
+        sh(&root, &["remote", "set-head", "tessel", "main"]);
+        assert_eq!(main_branch(&ws).await, "main");
+        assert_eq!(home(&ws).await, Home { remote: "tessel".into(), branch: "main".into(), upstream: "tessel/main".into() });
+        std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+        sh(&ws, &["commit", "-q", "-am", "step"]);
+        ship(&ws, &root, "Two", ShipStep::MergeIntoMain { squash: true, message: String::new(), push: true }).await.unwrap();
+        assert_eq!(sh(&base, &["--git-dir", new.to_str().unwrap(), "log", "-1", "--format=%s", "main"]), "Two", "pushed where main comes from");
+        assert_eq!(sh(&base, &["--git-dir", old.to_str().unwrap(), "log", "-1", "--format=%s", "master"]), "first", "origin is left alone");
+        sh(&root, &["checkout", "-q", "-b", "side"]);
+        assert_eq!(home(&ws).await.remote, "origin", "a checkout on some other branch falls back to origin's idea");
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_github_remote_names_its_repository() {
+        assert_eq!(github_repo("https://github.com/LeafdTK/tessel.git").as_deref(), Some("LeafdTK/tessel"));
+        assert_eq!(github_repo("git@github.com:o/r.git").as_deref(), Some("o/r"));
+        assert_eq!(github_repo("/tmp/r.git"), None);
     }
 
     #[tokio::test]
