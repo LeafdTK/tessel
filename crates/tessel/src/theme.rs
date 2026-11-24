@@ -599,10 +599,18 @@ pub const R_CARD: f32 = 14.0;
 pub const R_CONTROL: f32 = 10.0;
 /// inner tiles: rows in a list, chips, segments in a tray.
 pub const R_TILE: f32 = 8.0;
-/// a floating menu's inset; its items are rounded `R_FLOAT - FLOAT_PAD`.
 pub const FLOAT_PAD: f32 = 4.0;
 /// a floating menu's corner: smaller than a pane's.
 pub const R_FLOAT: f32 = 12.0;
+pub const SQUIRCLE: f32 = 1.528;
+pub const R_FLOAT_ITEM: f32 = nested(R_CONTROL, FLOAT_PAD);
+pub const SIDE_INSET: f32 = 8.0;
+pub const SIDE_PAD: f32 = 8.0;
+
+pub const fn nested(outer: f32, inset: f32) -> f32 {
+    let r = outer - inset / SQUIRCLE;
+    if r > 0.0 { r } else { 0.0 }
+}
 /// a floating menu item: dense, as a developer tool's menus are.
 pub const FLOAT_ITEM_H: f32 = 28.0;
 
@@ -711,11 +719,10 @@ fn float_row(p: &Palette, id: impl Into<SharedString>, icon: Option<&str>, name:
         .px(z(8.))
         .py(z(if rich { 5. } else { 0. }))
         .gap(z(8.))
-        .rounded(z(R_FLOAT - FLOAT_PAD))
+        .rounded(z(R_FLOAT_ITEM))
         .font_weight(FontWeight::NORMAL)
         .text_color(ink)
-        .when(current, |d| d.bg(p.selection))
-        .hover(move |d| d.bg(if current { p.selection } else { wash }))
+        .hover(move |d| d.bg(wash))
         .children(icon.map(|i| div().flex_shrink_0().size(z(14.)).flex().items_center().justify_center().child(Icon::empty().path(format!("icons/{i}.svg")).size(z(14.)).text_color(icon_ink))))
         .child(
             gpui_kit::component::v_flex()
@@ -749,7 +756,7 @@ pub fn float_sep(p: &Palette) -> gpui_kit::Div {
 /// buttons, segmented trays, fields.
 pub const CONTROL_H: f32 = 28.0;
 /// the room between a tray and its segments.
-const TRAY_PAD: f32 = 2.0;
+pub const TRAY_PAD: f32 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -791,6 +798,22 @@ pub fn button(p: &Palette, id: impl Into<SharedString>, label: impl Into<SharedS
         .when(!label.is_empty(), |d| d.child(label))
 }
 
+pub fn side_row(p: &Palette, id: impl Into<SharedString>, on: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::component::h_flex;
+    use gpui_kit::prelude::FluentBuilder as _;
+    use gpui_kit::InteractiveElement as _;
+    let p = *p;
+    h_flex()
+        .id(id.into())
+        .mx(z(SIDE_INSET))
+        .px(z(SIDE_PAD))
+        .gap(z(10.))
+        .rounded(z(R_TILE))
+        .cursor_pointer()
+        .when(on, |d| d.bg(p.selection))
+        .when(!on, move |d| d.hover(move |d| d.bg(p.hover)))
+}
+
 /// the tray a set of segments sits in.
 pub fn tray(p: &Palette) -> gpui_kit::Div {
     use gpui_kit::component::h_flex;
@@ -807,7 +830,7 @@ pub fn segment(p: &Palette, id: impl Into<SharedString>, label: impl Into<Shared
         .id(id.into())
         .h_full()
         .px(z(10.))
-        .rounded(z(R_CONTROL - TRAY_PAD))
+        .rounded(z(nested(R_CONTROL, TRAY_PAD)))
         .set(Type::Callout)
         .cursor_pointer()
         .when(on, |d| d.bg(p.raised).shadow_sm().text_color(p.label).font_weight(FontWeight::MEDIUM))

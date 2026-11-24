@@ -615,7 +615,7 @@ impl Shell {
                         .h(px(32.))
                         .px(px(10.))
                         .gap(px(10.))
-                        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                        .rounded(theme::z(theme::R_FLOAT_ITEM))
                         .hover(|d| d.bg(p.hover))
                         .child(div().w(px(18.)).flex_shrink_0().set(Type::Callout).text_color(p.tertiary).child(initial))
                         .child(div().flex_1().min_w_0().truncate().set(Type::Body).child(m.name.clone()))

@@ -135,7 +135,7 @@ impl Shell {
                     .min_h(theme::z(32.))
                     .px(theme::z(10.))
                     .gap(theme::z(10.))
-                    .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                    .rounded(theme::z(theme::R_FLOAT_ITEM))
                     .cursor_pointer()
                     .when(i == sel, |d| d.bg(p.hover))
                     .on_click(cx.listener(move |this, _, window, cx| this.accept_mention(&pick, window, cx)))

@@ -1190,7 +1190,7 @@ impl Shell {
                 .top(px(y - o.1 + 4.0))
                 .w(px((w - 8.0).max(0.0)))
                 .h(px((h - 8.0).max(0.0)))
-                .rounded(px(theme::R_PANEL - 4.0))
+                .rounded(px(theme::nested(theme::R_PANEL, 4.0)))
                 .border_2()
                 .border_color(p.accent.opacity(0.6))
                 .bg(p.accent.opacity(0.08))

@@ -8,7 +8,6 @@ type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 const RAIL: f32 = 300.;
 const MAT: f32 = 34.;
 const MAT_PAD: f32 = 14.;
-const ROW: f32 = 14.;
 
 const BOTHER: [(&str, &str); 5] = [("me", "Bother me for anything"), ("agent", "Only critical decisions"), ("ui", "Only UI choices"), ("full", "Never bother me"), ("custom", "My own rule…")];
 
@@ -153,6 +152,7 @@ impl Shell {
         let needs = self.tasks.iter().filter(|t| t.state == TaskState::Review && !t.cleared).count();
         let seg = |id: &'static str, label: &'static str, on: bool, view: &'static str, badge: usize| {
             theme::segment(&p, id, label, on)
+                .rounded(theme::z(theme::nested(theme::R_TILE, theme::TRAY_PAD)))
                 .flex_1()
                 .justify_center()
                 .gap(theme::z(6.))
@@ -165,9 +165,9 @@ impl Shell {
                 .test_support()
         };
         div()
-            .px(theme::z(12.))
+            .px(theme::z(theme::SIDE_INSET))
             .pb(theme::z(10.))
-            .child(theme::tray(&p).w_full().h(theme::z(32.)).child(seg("view-chats", "Chats", !factory, "chats", 0)).child(seg("view-factory", "Factory", factory, "factory", if factory { 0 } else { needs })))
+            .child(theme::tray(&p).w_full().h(theme::z(32.)).rounded(theme::z(theme::R_TILE)).child(seg("view-chats", "Chats", !factory, "chats", 0)).child(seg("view-factory", "Factory", factory, "factory", if factory { 0 } else { needs })))
             .into_any_element()
     }
 
@@ -190,7 +190,7 @@ impl Shell {
         }
         let state = if paused { "Paused".to_owned() } else { facts.join(" · ") };
         let head = v_flex()
-            .px(theme::z(16.))
+            .px(theme::z(theme::SIDE_INSET))
             .pt(theme::z(4.))
             .pb(theme::z(14.))
             .gap(theme::z(10.))
@@ -202,22 +202,21 @@ impl Shell {
                         v_flex()
                             .flex_1()
                             .min_w_0()
-                            .pl(theme::z(4.))
+                            .pl(theme::z(theme::SIDE_PAD - 6.))
                             .child(h_flex().child(self.scope_picker(17., cx)))
-                            .child(div().text_size(theme::z(13.)).line_height(theme::z(18.)).text_color(if paused { p.blocked } else { p.secondary }).font_features(theme::tabular()).truncate().child(state)),
+                            .child(div().pl(theme::z(6.)).text_size(theme::z(13.)).line_height(theme::z(18.)).text_color(if paused { p.blocked } else { p.secondary }).font_features(theme::tabular()).truncate().child(state)),
                     )
                     .child(
                         h_flex()
                             .id("board-pause")
                             .aria_label(if paused { "Resume" } else { "Pause" })
-                            .size(theme::z(34.))
+                            .size(theme::z(32.))
                             .flex_shrink_0()
                             .justify_center()
-                            .rounded_full()
+                            .rounded(theme::z(theme::R_TILE))
                             .cursor_pointer()
-                            .bg(if paused { p.accent } else { p.fill })
-                            .text_color(if paused { p.on_accent } else { p.label })
-                            .hover(|d| d.opacity(0.85))
+                            .when(paused, |d| d.bg(p.accent).text_color(p.on_accent))
+                            .when(!paused, |d| d.text_color(p.secondary).hover(|d| d.bg(p.hover).text_color(p.label)))
                             .on_click(cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx)))
                             .test_support()
                             .child(Icon::empty().path(if paused { "icons/play.svg" } else { "icons/pause.svg" }).size(theme::z(14.))),
@@ -232,18 +231,9 @@ impl Shell {
         };
         let row = |id: String, pick: String, body: Div, cx: &mut Context<Self>| {
             let on = focus_id == pick;
-            h_flex()
-                .id(SharedString::from(id))
-                .test_support()
-                .mx(theme::z(8.))
-                .px(theme::z(12.))
-                .py(theme::z(9.))
-                .gap(theme::z(10.))
+            theme::side_row(&p, SharedString::from(id), on)
+                .py(theme::z(7.))
                 .items_start()
-                .rounded(theme::z(ROW))
-                .cursor_pointer()
-                .when(on, |d| d.bg(p.selection))
-                .when(!on, |d| d.hover(|d| d.bg(p.hover)))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.stage_pick_now(Some(pick.clone()));
                     match pick.as_str() {
@@ -253,9 +243,10 @@ impl Shell {
                     }
                     cx.notify();
                 }))
+                .test_support()
                 .child(body)
         };
-        let heading = |text: &str| div().px(theme::z(20.)).pt(theme::z(18.)).pb(theme::z(6.)).text_size(theme::z(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(text.to_owned());
+        let heading = |text: &str| div().px(theme::z(theme::SIDE_INSET + theme::SIDE_PAD)).pt(theme::z(18.)).pb(theme::z(6.)).text_size(theme::z(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(text.to_owned());
         let title = |t: &Task, color: Hsla| div().text_size(theme::z(14.5)).line_height(theme::z(20.)).text_color(color).truncate().child(t.title.clone());
         let sub = |text: String, color: Hsla| div().text_size(theme::z(12.5)).line_height(theme::z(17.)).text_color(color).truncate().child(text);
         let mut list = v_flex().pb(theme::z(12.));
@@ -304,7 +295,7 @@ impl Shell {
             let ids: Vec<String> = landed.iter().map(|t| t.id.clone()).collect();
             list = list.child(
                 h_flex()
-                    .pr(theme::z(14.))
+                    .pr(theme::z(theme::SIDE_INSET))
                     .items_center()
                     .child(heading("Landed").flex_1())
                     .child(
@@ -313,7 +304,7 @@ impl Shell {
                             .px(theme::z(10.))
                             .mt(theme::z(12.))
                             .text_size(theme::z(12.5))
-                            .rounded(theme::z(13.))
+                            .rounded(theme::z(theme::R_TILE))
                             .text_color(p.secondary)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 for id in &ids {
@@ -370,9 +361,9 @@ impl Shell {
             .trigger(
                 super::composer::tool_button("bother")
                     .w_full()
-                    .h(theme::z(36.))
-                    .px(theme::z(14.))
-                    .rounded(theme::z(18.))
+                    .h(theme::z(34.))
+                    .px(theme::z(theme::SIDE_PAD))
+                    .rounded(theme::z(theme::R_TILE))
                     .bg(p.fill)
                     .child(h_flex().w_full().gap(theme::z(8.)).items_center().child(div().flex_1().min_w_0().truncate().text_left().text_size(theme::z(14.)).text_color(p.label).child(label)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(13.)).text_color(p.secondary))),
             )
@@ -386,38 +377,25 @@ impl Shell {
                 for (i, (value, label)) in BOTHER.iter().enumerate() {
                     let on = current == *value;
                     let (me, popover) = (me.clone(), popover.clone());
-                    rows = rows.child(
-                        h_flex()
-                            .id(("bother-option", i))
-                            .test_support()
-                            .min_h(theme::z(38.))
-                            .px(theme::z(12.))
-                            .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(p.selection))
-                            .when(!on, |d| d.hover(|d| d.bg(p.hover)))
-                            .on_click(move |_, window, cx| {
-                                popover.update(cx, |st, cx| st.dismiss(window, cx));
-                                let _ = me.update(cx, |this, cx| {
-                                    if *value == "custom" {
-                                        this.editing_bother = true;
-                                        let rule = this.daemon_settings.as_ref().map(|d| d.bother.clone()).unwrap_or_default();
-                                        this.bother_input.update(cx, |s, cx| {
-                                            s.set_value(rule, window, cx);
-                                            s.focus(window, cx);
-                                        });
-                                    } else {
-                                        this.editing_bother = false;
-                                        if let Err(e) = this.exec("daemon.set", &serde_json::json!({"autonomy": value}), window, cx) {
-                                            this.error = Some(e);
-                                        }
-                                    }
-                                    cx.notify();
+                    rows = rows.child(theme::float_item(&p, format!("bother-option-{i}"), None, *label, None, on).on_click(move |_, window, cx| {
+                        popover.update(cx, |st, cx| st.dismiss(window, cx));
+                        let _ = me.update(cx, |this, cx| {
+                            if *value == "custom" {
+                                this.editing_bother = true;
+                                let rule = this.daemon_settings.as_ref().map(|d| d.bother.clone()).unwrap_or_default();
+                                this.bother_input.update(cx, |s, cx| {
+                                    s.set_value(rule, window, cx);
+                                    s.focus(window, cx);
                                 });
-                            })
-                            .child(div().flex_1().set(Type::Body).text_color(p.label).child(*label))
-                            .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
-                    );
+                            } else {
+                                this.editing_bother = false;
+                                if let Err(e) = this.exec("daemon.set", &serde_json::json!({"autonomy": value}), window, cx) {
+                                    this.error = Some(e);
+                                }
+                            }
+                            cx.notify();
+                        });
+                    }));
                 }
                 theme::float_list(&p).w(px(268.)).child(rows).into_any_element()
             });
@@ -429,22 +407,22 @@ impl Shell {
                 d.child(
                     h_flex()
                         .w_full()
-                        .h(theme::z(36.))
-                        .pl(theme::z(14.))
+                        .h(theme::z(34.))
+                        .pl(theme::z(theme::SIDE_PAD))
                         .pr(theme::z(4.))
                         .gap(theme::z(6.))
                         .items_center()
-                        .rounded(theme::z(18.))
+                        .rounded(theme::z(theme::R_TILE))
                         .border_1()
                         .border_color(p.separator)
                         .bg(p.window)
                         .child(div().flex_1().min_w_0().text_size(theme::z(14.)).child(Input::new(&self.bother_input).id("bother-rule").appearance(false)))
                         .child(
                             theme::button(&p, "bother-save", "Save", None, theme::ButtonKind::Primary)
-                                .h(theme::z(28.))
-                                .px(theme::z(12.))
+                                .h(theme::z(26.))
+                                .px(theme::z(10.))
                                 .text_size(theme::z(13.))
-                                .rounded(theme::z(14.))
+                                .rounded(theme::z(theme::nested(theme::R_TILE, 4.)))
                                 .on_click(cx.listener(|this, _, window, cx| this.save_bother(window, cx)))
                                 .test_support(),
                         ),
@@ -554,13 +532,13 @@ impl Shell {
                                 .flex_1()
                                 .min_w_0()
                                 .h_full()
-                                .rounded(theme::z(MAT - MAT_PAD))
+                                .rounded(theme::z(theme::nested(MAT, MAT_PAD)))
                                 .overflow_hidden()
                                 .bg(p.window)
                                 .shadow_lg()
                                 .when_some(shot, |d, src| d.child(img(src).size_full().object_fit(ObjectFit::Cover))),
                         )
-                        .when_some(evidence, |d, e| d.child(div().w(theme::z(340.)).flex_shrink_0().h_full().rounded(theme::z(MAT - MAT_PAD)).bg(p.window.opacity(0.94)).p(theme::z(18.)).overflow_hidden().child(e))),
+                        .when_some(evidence, |d, e| d.child(div().w(theme::z(340.)).flex_shrink_0().h_full().rounded(theme::z(theme::nested(MAT, MAT_PAD))).bg(p.window.opacity(0.94)).p(theme::z(18.)).overflow_hidden().child(e))),
                 );
             col = col.child(mat);
             if pictures.len() > 1 {
@@ -699,7 +677,7 @@ impl Shell {
                                 this.stage_shot = 0;
                                 cx.notify();
                             }))
-                            .child(div().w_full().h(theme::z(96.)).rounded(theme::z(16.)).overflow_hidden().bg(p.fill).when_some(thumb, |d, src| d.child(img(src).size_full().object_fit(ObjectFit::Cover))))
+                            .child(div().w_full().h(theme::z(96.)).rounded(theme::z(theme::nested(22., 6.))).overflow_hidden().bg(p.fill).when_some(thumb, |d, src| d.child(img(src).size_full().object_fit(ObjectFit::Cover))))
                             .child(div().px(theme::z(6.)).pb(theme::z(4.)).text_size(theme::z(14.)).font_weight(FontWeight::MEDIUM).text_color(if on { p.label } else { p.secondary }).truncate().child(o.label.clone())),
                     );
                 }

@@ -239,7 +239,7 @@ impl Shell {
                                 .min_h(theme::z(theme::FLOAT_ITEM_H))
                                 .px(theme::z(10.))
                                 .gap(theme::z(10.))
-                                .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                                .rounded(theme::z(theme::R_FLOAT_ITEM))
                                 .bg(p.fill)
                                 .child(div().flex_shrink_0().size(theme::z(15.)).flex().items_center().justify_center().child(Icon::empty().path("icons/pencil.svg").size(theme::z(15.)).text_color(p.secondary)))
                                 // the field's own inset off: the name starts where every item's label does.

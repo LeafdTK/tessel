@@ -319,10 +319,9 @@ impl Shell {
                         .h(theme::z(theme::FLOAT_ITEM_H))
                         .px(theme::z(8.))
                         .gap(theme::z(8.))
-                        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                        .rounded(theme::z(theme::R_FLOAT_ITEM))
                         .cursor_pointer()
-                        .when(on, |d| d.bg(p.selection))
-                        .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                        .hover(|d| d.bg(p.hover))
                         .on_drag(FavoriteDrag(i), move |_, _, _, cx| cx.new(|_| DragGhost(ghost.clone())))
                         .on_drop(move |from: &FavoriteDrag, _, cx| {
                             let _ = me1.update(cx, |this, cx| this.move_favorite(from.0, i, cx));
@@ -361,7 +360,7 @@ impl Shell {
                         .min_h(theme::z(theme::FLOAT_ITEM_H))
                         .px(theme::z(8.))
                         .gap(theme::z(10.))
-                        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                        .rounded(theme::z(theme::R_FLOAT_ITEM))
                         .cursor_pointer()
                         .hover(|d| d.bg(p.hover))
                         .on_click(move |_, window, cx| {
@@ -385,10 +384,9 @@ impl Shell {
                         .min_h(theme::z(theme::FLOAT_ITEM_H))
                         .px(theme::z(8.))
                         .gap(theme::z(10.))
-                        .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                        .rounded(theme::z(theme::R_FLOAT_ITEM))
                         .cursor_pointer()
-                        .when(on, |d| d.bg(p.selection))
-                        .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                        .hover(|d| d.bg(p.hover))
                         .on_click(move |_, window, cx| {
                             let _ = me.update(cx, |this, cx| this.set_model(value.clone(), cx));
                             dismiss(&pop, window, cx);

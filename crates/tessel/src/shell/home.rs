@@ -213,7 +213,7 @@ impl Shell {
                 .h_full()
                 .p(theme::z(12.))
                 .justify_between()
-                .rounded(theme::z(ROUND - 12.))
+                .rounded(theme::z(theme::nested(ROUND, 12.)))
                 .bg(white.opacity(0.2))
                 .cursor_pointer()
                 .hover(move |d| d.bg(white.opacity(0.3)))

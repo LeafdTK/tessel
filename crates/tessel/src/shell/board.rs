@@ -5,7 +5,7 @@ use tessel_proto::task::{Task, TaskAct, TaskState};
 use tessel_proto::{Request, Response};
 
 const GUTTER: f32 = 20.;
-const ROUND: f32 = theme::R_CONTROL + GUTTER;
+const ROUND: f32 = theme::R_CONTROL + GUTTER / theme::SQUIRCLE;
 
 impl Shell {
     pub(crate) fn task_updated(&mut self, task: Task) {
@@ -183,16 +183,7 @@ impl Shell {
                     let name = folder.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "All projects".into());
                     let (me, popover, pick) = (me.clone(), popover.clone(), folder.clone());
                     rows = rows.child(
-                        h_flex()
-                            .id(SharedString::from(format!("board-project-{i}")))
-                            .test_support()
-                            .min_h(theme::z(40.))
-                            .px(theme::z(12.))
-                            .gap(theme::z(10.))
-                            .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(p.selection))
-                            .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                        theme::float_item(&p, format!("board-project-{i}"), None, name, None, on)
                             .on_click(move |_, window, cx| {
                                 popover.update(cx, |st, cx| st.dismiss(window, cx));
                                 let _ = me.update(cx, |this, cx| {
@@ -202,8 +193,7 @@ impl Shell {
                                     cx.notify();
                                 });
                             })
-                            .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(p.label).child(name))
-                            .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
+                            .test_support(),
                     );
                 }
                 theme::float_list(&p).w(px(300.)).child(rows).into_any_element()
@@ -238,15 +228,7 @@ impl Shell {
                     let on = current == value;
                     let (me, popover) = (me.clone(), popover.clone());
                     rows = rows.child(
-                        h_flex()
-                            .id(("board-land-option", i))
-                            .test_support()
-                            .min_h(theme::z(38.))
-                            .px(theme::z(12.))
-                            .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
-                            .cursor_pointer()
-                            .when(on, |d| d.bg(p.selection))
-                            .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                        theme::float_item(&p, format!("board-land-option-{i}"), None, label, None, on)
                             .on_click(move |_, window, cx| {
                                 popover.update(cx, |st, cx| st.dismiss(window, cx));
                                 let _ = me.update(cx, |this, cx| {
@@ -254,8 +236,7 @@ impl Shell {
                                     cx.notify();
                                 });
                             })
-                            .child(div().flex_1().set(Type::Body).text_color(p.label).child(label))
-                            .when(on, |d| d.child(Icon::empty().path("icons/check.svg").size(theme::z(13.)).text_color(p.accent))),
+                            .test_support(),
                     );
                 }
                 theme::float_list(&p).w(px(240.)).child(rows).into_any_element()
@@ -386,7 +367,7 @@ impl Shell {
                             .py(theme::z(14.))
                             .gap(theme::z(16.))
                             .items_center()
-                            .rounded(theme::z(theme::R_CONTROL + 14.))
+                            .rounded(theme::z(theme::R_CONTROL + 14. / theme::SQUIRCLE))
                             .bg(p.raised)
                             .border_1()
                             .border_color(p.separator)
@@ -459,7 +440,7 @@ impl Shell {
                                 .py(theme::z(14.))
                                 .gap(theme::z(16.))
                                 .items_center()
-                                .rounded(theme::z(theme::R_CONTROL + 14.))
+                                .rounded(theme::z(theme::R_CONTROL + 14. / theme::SQUIRCLE))
                                 .bg(p.raised)
                                 .border_1()
                                 .border_color(p.separator)

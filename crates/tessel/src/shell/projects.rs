@@ -356,10 +356,9 @@ impl Shell {
                                 .min_h(theme::z(44.))
                                 .px(theme::z(10.))
                                 .gap(theme::z(10.))
-                                .rounded(theme::z(theme::R_FLOAT - theme::FLOAT_PAD))
+                                .rounded(theme::z(theme::R_FLOAT_ITEM))
                                 .cursor_pointer()
-                                .when(on, |d| d.bg(p.selection))
-                                .when(!on, |d| d.hover(|d| d.bg(p.hover)))
+                                .hover(|d| d.bg(p.hover))
                                 .on_click(move |_, window, cx| {
                                     popover.update(cx, |st, cx| st.dismiss(window, cx));
                                     let _ = me.update(cx, |this, cx| {
