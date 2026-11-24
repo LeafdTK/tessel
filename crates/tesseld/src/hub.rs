@@ -1873,8 +1873,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     if let Err(e) = save_settings(&self.cfg.paths.settings(), &next) {
                         return Some(Err(RpcError::new(ErrorCode::Internal, format!("couldn't save the settings: {e}"))));
                     }
+                    let pausing = (self.settings.paused != next.paused).then_some(next.paused);
                     self.settings = next;
                     self.tell_everyone(Event::Settings { settings: self.settings.clone() });
+                    if let Some(paused) = pausing {
+                        self.factory_paused(paused);
+                    }
                 }
                 Ok(Response::Settings { settings: self.settings.clone() })
             }

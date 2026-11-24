@@ -2206,3 +2206,26 @@ async fn a_checkup_runs_everything_on_main_and_files_a_task_for_each_thing_that_
     assert_eq!(git(&repo, &["worktree", "list"]).lines().count(), 1, "its scratch checkout is gone");
     assert!(d.cfg.paths.home.join("checkups/app.json").is_file());
 }
+
+#[tokio::test]
+async fn a_paused_factory_starts_nothing_until_it_resumes() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    let Response::Settings { settings } = c.request(Request::SetSettings { patch: serde_json::json!({"paused": true}) }).await.unwrap() else { panic!() };
+    assert!(settings.paused);
+    let make = Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Count higher".into(), spec: String::new(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![] };
+    let Response::Task { task } = c.request(make).await.unwrap() else { panic!() };
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let waiting = task_until(&c, &task.id, "waits", |t| t.state == TaskState::Ready).await;
+    assert!(waiting.session.is_none(), "nothing starts while paused");
+    c.request(Request::SetSettings { patch: serde_json::json!({"paused": false}) }).await.unwrap();
+    let going = task_until(&c, &task.id, "starts once resumed", |t| t.session.is_some()).await;
+    assert_ne!(going.state, TaskState::Ready);
+}

@@ -6,6 +6,9 @@ const NOBODY: ClientId = ClientId::MAX;
 
 pub const DEFAULT_PARALLEL: u32 = 3;
 
+const PAUSED: &str = "paused";
+const WAITING: &str = "finished while paused: it's checked when the factory resumes";
+
 impl Hub {
     fn task_saved(&mut self, id: &str) {
         let Some(t) = self.tasks.get_mut(id) else { return };
@@ -190,6 +193,9 @@ impl Hub {
     }
 
     pub(super) fn dispatch(&mut self) {
+        if self.settings.paused {
+            return;
+        }
         let parallel = self.settings.parallel.unwrap_or(DEFAULT_PARALLEL) as usize;
         let mut active = self.tasks.values().filter(|t| t.state.active()).count();
         for id in board::ready(&self.tasks) {
@@ -305,6 +311,14 @@ impl Hub {
             self.dispatch();
             return true;
         }
+        if self.settings.paused {
+            let interrupted = self.tasks[&id].notes.last().is_some_and(|n| n.by == "tessel" && n.text == PAUSED);
+            if !interrupted {
+                self.note(&id, "tessel", WAITING);
+                self.task_saved(&id);
+            }
+            return true;
+        }
         let errored = self.sessions.get(&session).and_then(|l| l.state.attention.as_ref()).is_some_and(|a| a.reason == tessel_proto::AttentionReason::Errored);
         if errored {
             self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
@@ -319,6 +333,48 @@ impl Hub {
             self.start_proof(session, false, false);
         }
         true
+    }
+
+    pub(super) fn factory_paused(&mut self, paused: bool) {
+        let running: Vec<(String, Option<SessionId>)> = self.tasks.values().filter(|t| t.state == TaskState::Running).map(|t| (t.id.clone(), t.session)).collect();
+        if paused {
+            for (id, session) in running {
+                let open = session.and_then(|s| self.sessions.get(&s)).is_some_and(|l| l.agent.is_some() && l.state.turn_open());
+                if open {
+                    if let Some(agent) = session.and_then(|s| self.sessions.get(&s)).and_then(|l| l.agent.as_ref()) {
+                        agent.interrupt();
+                    }
+                    self.note(&id, "tessel", PAUSED);
+                    self.task_saved(&id);
+                }
+            }
+            return;
+        }
+        for (id, session) in running {
+            let Some(s) = session else { continue };
+            let last = self.tasks[&id].notes.last().filter(|n| n.by == "tessel").map(|n| n.text.clone());
+            if self.sessions.get(&s).is_some_and(|l| l.state.turn_open()) {
+                continue;
+            }
+            match last.as_deref() {
+                Some(PAUSED) => {
+                    self.note(&id, "tessel", "resumed");
+                    if !self.tell_agent(s, "The factory was paused while you worked. Carry on with the task where you left off.".into()) {
+                        self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                    }
+                }
+                Some(WAITING) => {
+                    self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
+                    if !self.proving.contains(&s) {
+                        self.start_proof(s, false, false);
+                    }
+                }
+                _ => {}
+            }
+            self.task_saved(&id);
+        }
+        self.dispatch();
+        self.pump_land();
     }
 
     pub(super) fn task_proved(&mut self, session: SessionId, proof: &tessel_proto::proof::Proof) {
@@ -364,7 +420,7 @@ impl Hub {
     }
 
     pub(super) fn pump_land(&mut self) {
-        if self.landing.is_some() {
+        if self.landing.is_some() || self.settings.paused {
             return;
         }
         while let Some(id) = self.land_queue.pop_front() {
@@ -460,6 +516,9 @@ impl Hub {
     }
 
     fn poll_ci(&mut self) {
+        if self.settings.paused {
+            return;
+        }
         let due: Vec<(String, String, String)> = self
             .tasks
             .values()
@@ -641,6 +700,9 @@ impl Hub {
     }
 
     fn poll_issues(&mut self) {
+        if self.settings.paused {
+            return;
+        }
         if self.issues_polled.is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60)) {
             return;
         }

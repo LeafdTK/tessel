@@ -183,6 +183,7 @@ const SCREENS: &[Screen] = &[
     Screen { name: "board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
     Screen { name: "home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
+    Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
 ];
 
@@ -220,7 +221,8 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             .map_err(|e| format!("opening a window: {e:#}"))?;
         let _ = window.update(&mut cx, |s, _, _| s.hosts = crate::shell::hosts::HostsView::new(scratch.clone()));
         let shot = saved.first().map(PathBuf::as_path);
-        for ev in [UiEvent::Connected, UiEvent::On { host: None, via: "this Mac".into() }, UiEvent::Sessions(sessions(shot)), snapshot(shot)] {
+        let settings = DaemonSettings { paused: screen.name.ends_with("-paused"), ..DaemonSettings::default() };
+        for ev in [UiEvent::Connected, UiEvent::On { host: None, via: "this Mac".into() }, UiEvent::DaemonSettings(settings), UiEvent::Sessions(sessions(shot)), snapshot(shot)] {
             let _ = events.send(ev);
         }
         settle(&mut cx, &window);

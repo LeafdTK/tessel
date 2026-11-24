@@ -38,10 +38,29 @@ pub struct Ask {
     pub said: Vec<String>,
 }
 
+pub async fn base_of(ws: &Path, main: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(branch) = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+        candidates.push(crate::worktree::base_ref(&branch));
+    }
+    candidates.push(crate::ship::home(ws).await.upstream);
+    candidates.push(main.to_owned());
+    let mut best: Option<(u64, String)> = None;
+    for c in candidates {
+        let Ok(mb) = git(ws, &["merge-base", "HEAD", &c]).await else { continue };
+        let Ok(n) = git(ws, &["rev-list", "--count", &format!("{mb}..HEAD")]).await else { continue };
+        let n: u64 = n.trim().parse().unwrap_or(u64::MAX);
+        if best.as_ref().is_none_or(|(b, _)| n < *b) {
+            best = Some((n, mb));
+        }
+    }
+    best.map(|(_, mb)| mb)
+}
+
 pub async fn change(ws: &Path) -> Result<Change, String> {
     let main = crate::ship::main_branch(ws).await;
     let head = git(ws, &["rev-parse", "HEAD"]).await?;
-    let base = git(ws, &["merge-base", "HEAD", &main]).await.unwrap_or_else(|_| head.clone());
+    let base = base_of(ws, &main).await.unwrap_or_else(|| head.clone());
     let local = format!(":(exclude){}", crate::setup::LOCAL);
     let mut diff = git(ws, &["diff", "--no-color", "--no-ext-diff", "-U3", &base, "--", ".", &local]).await?;
     let mut paths: Vec<String> = git(ws, &["diff", "--name-only", &base, "--", ".", &local]).await?.lines().map(str::to_owned).collect();
@@ -958,6 +977,38 @@ mod tests {
         assert_eq!(model_for("auto", &full, Room { anyway: true, ..tight }), "sonnet");
         let w = |name: &str, used: f64, resets_at: Option<i64>| tessel_proto::UsageWindow { name: name.into(), used, resets_at, status: String::new() };
         assert_eq!(room(&[w("five_hour", 0.4, Some(100)), w("seven_day", 0.9, Some(50))], 60, false).used, 0.4, "a window that has started over doesn't count");
+    }
+
+    #[tokio::test]
+    async fn a_change_is_only_what_was_done_since_its_workspace_started_even_when_the_local_main_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |at: &Path, args: &[&str]| {
+            let o = std::process::Command::new("git").arg("-C").arg(at).args(args).output().unwrap();
+            assert!(o.status.success(), "{args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        };
+        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"]] {
+            sh(&root, a);
+        }
+        std::fs::write(root.join("a.txt"), "one\n").unwrap();
+        sh(&root, &["add", "-A"]);
+        sh(&root, &["commit", "-q", "-m", "start"]);
+        sh(&root, &["checkout", "-q", "-b", "feature"]);
+        for n in 0..3 {
+            std::fs::write(root.join(format!("old{n}.txt")), "AKIAABCDEFGHIJKLMNOP\n").unwrap();
+            sh(&root, &["add", "-A"]);
+            sh(&root, &["commit", "-q", "-m", &format!("Someone else's work {n}")]);
+        }
+        let spec = tessel_proto::WorktreeSpec { base: Some("feature".into()), name: Some("task".into()) };
+        let made = crate::worktree::create(root.to_str().unwrap(), &spec, &dir.path().join("wts"), "task").await.unwrap();
+        let ws = PathBuf::from(&made.path);
+        std::fs::write(ws.join("mine.txt"), "mine\n").unwrap();
+        sh(&ws, &["add", "-A"]);
+        sh(&ws, &["commit", "-q", "-m", "fix: mine"]);
+        let c = change(&ws).await.unwrap();
+        assert_eq!(c.paths, vec!["mine.txt".to_owned()], "not the 3 commits the stale main is missing");
+        assert_eq!(c.subjects, vec!["fix: mine".to_owned()]);
     }
 
     #[tokio::test]

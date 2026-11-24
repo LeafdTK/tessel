@@ -731,6 +731,9 @@ pub struct DaemonSettings {
     /// agents write no code comments, and proof flags any that are added.
     #[serde(default)]
     pub no_comments: bool,
+    /// the software factory is paused: nothing new starts, nothing lands, triggers wait.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 /// a model in the loadout, and how it runs when picked.
@@ -750,7 +753,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false }
     }
 }
 

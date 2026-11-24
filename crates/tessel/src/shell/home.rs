@@ -233,16 +233,15 @@ impl Shell {
                 this.prove(s, false, cx);
             }
         });
-        let views = cx.listener(|this, _, window, cx| {
-            let _ = this.exec("pane.show", &serde_json::json!({"module": "views"}), window, cx);
-        });
+        let paused = self.factory_paused();
+        let pause = cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx));
         let controls = tile("controls", false)
             .p(theme::z(12.))
             .gap(theme::z(10.))
             .bg(wash(0x7b68ff, 0x5e4ae3))
             .text_color(white)
             .child(h_flex().flex_1().gap(theme::z(10.)).child(shortcut("home-new", "square-pen", "New Chat").on_click(new_chat)).child(shortcut("home-board", "square-kanban", "Board").on_click(open_board)))
-            .child(h_flex().flex_1().gap(theme::z(10.)).child(shortcut("home-prove", "shield-check", "Prove").on_click(prove)).child(shortcut("home-views", "chart-column", "Views").on_click(views)));
+            .child(h_flex().flex_1().gap(theme::z(10.)).child(shortcut("home-prove", "shield-check", "Prove").on_click(prove)).child(shortcut("home-pause", if paused { "play" } else { "pause" }, if paused { "Resume" } else { "Pause" }).on_click(pause)));
 
         let date = {
             use chrono::TimeZone as _;

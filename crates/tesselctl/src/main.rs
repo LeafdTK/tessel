@@ -62,6 +62,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
                                             they never enter it
   tesselctl metrics [--json]                what the factory has landed, what it cost, what was reverted
+  tesselctl factory pause|resume|status     stop the factory spending: agents at work are interrupted, nothing
+                                            new starts, nothing lands; resume carries on where it was
   tesselctl checkup [REPO] [--nightly | --every CRON]   run every check, scenario and screenshot on main
                                             now, and file a task for each thing that broke (or every night)
   tesselctl shot URL OUT.png [--size 1280x800] [--wait MS]   a screenshot of a web page, with headless
@@ -752,6 +754,26 @@ async fn run() -> anyhow::Result<()> {
                     println!("  {:<12} found {:<4} refuted {:<4} fixed {:<4} landed anyway {}", g.lens, g.found, g.refuted, g.fixed, g.ignored);
                 }
             }
+        }
+        "factory" => {
+            let what = args.next("pause, resume or status")?;
+            let patch = match what.as_str() {
+                "pause" => Some(serde_json::json!({"paused": true})),
+                "resume" => Some(serde_json::json!({"paused": false})),
+                "status" => None,
+                other => bail!("factory {other}? pause, resume or status"),
+            };
+            let settings = match patch {
+                Some(patch) => match client.request(Request::SetSettings { patch }).await? {
+                    Response::Settings { settings } => settings,
+                    other => bail!("unexpected reply: {other:?}"),
+                },
+                None => match client.request(Request::Settings).await? {
+                    Response::Settings { settings } => settings,
+                    other => bail!("unexpected reply: {other:?}"),
+                },
+            };
+            println!("{}", if settings.paused { "paused: nothing new starts, nothing lands, triggers wait" } else { "running" });
         }
         "checkup" => {
             let every = args.opt("--every")?.or_else(|| args.flag("--nightly").then(|| "0 3 * * *".to_owned()));

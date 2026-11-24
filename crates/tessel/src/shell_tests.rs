@@ -1239,7 +1239,7 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false,
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, paused: false,
                 agent_tools: true,
                 models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
             }),
@@ -1304,7 +1304,7 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
         ],
     );
     rig.shell.update(cx, |s, cx| {
@@ -1946,7 +1946,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, agent_tools: true, ..Default::default() })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
@@ -3478,4 +3478,30 @@ fn pasted_text_becomes_one_task_a_task_per_item_or_a_plan() {
     }
     assert!(matches!(split(&"word ".repeat(60)), Split::Plan { .. }), "a long paragraph is planned too");
     assert_eq!(split("- just one"), Split::One("- just one".into()), "one bullet is just a task");
+}
+
+#[gpui_kit::test]
+fn the_factory_pauses_and_resumes_from_the_board(cx: &mut TestAppContext) {
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let dir = std::env::temp_dir().join(format!("tessel-pause-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut rig = Rig::with_sessions_launched(cx, a, vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    let settings = |paused: bool| tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, paused, agent_tools: true, models: vec![] };
+    rig.feed(cx, vec![UiEvent::DaemonSettings(settings(false)), UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![] }) }]);
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    exec(&mut rig, cx, "app.factory", serde_json::json!({"on": true})).unwrap();
+    rig.settle(cx);
+    let ls = exec(&mut rig, cx, "ui.ls", serde_json::Value::Null).unwrap();
+    let conv = ls["panes"].as_array().unwrap().iter().find(|p| p["module"] == "conversation").map(|p| p["id"].as_str().unwrap().to_owned()).unwrap();
+    let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": conv, "dir": "right"})).unwrap();
+    exec(&mut rig, cx, "pane.show", serde_json::json!({"pane": new["pane"], "module": "board"})).unwrap();
+    rig.settle(cx);
+    assert!(!rig.exists(cx, "board-paused"));
+    rig.asked();
+    rig.click(cx, "board-pause");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(v) if v["paused"] == serde_json::json!(true))), "Pause asks the daemon to pause");
+    rig.feed(cx, vec![UiEvent::DaemonSettings(settings(true))]);
+    assert!(rig.exists(cx, "board-paused"), "and the board says so");
+    rig.click(cx, "board-resume");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(v) if v["paused"] == serde_json::json!(false))));
 }

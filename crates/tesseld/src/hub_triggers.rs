@@ -160,6 +160,9 @@ impl Hub {
     }
 
     fn fire(&mut self, w: &Workflow, cwd: Option<String>, key: &str, event: serde_json::Value) {
+        if self.settings.paused {
+            return;
+        }
         let path = self.fired_path();
         let fired = self.triggers.fired.get_or_insert_with(Default::default);
         if !fired.first(key, now_ms()) {

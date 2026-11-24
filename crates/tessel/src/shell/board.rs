@@ -194,11 +194,13 @@ impl Shell {
         });
         let controls = h_flex()
             .w_full()
+            .flex_wrap()
             .gap(theme::z(8.))
             .items_center()
             .child(self.board_picker(cx))
             .child(self.rules_button(cx))
             .child(self.issues_button(cx))
+            .child(self.pause_button(cx))
             .child(div().flex_1())
             .child(big_button(&p, "task-draft", draft_label, theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
             .child(big_button(&p, "task-start", start_label, theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx))));
@@ -218,6 +220,29 @@ impl Shell {
             .when(has_chips, |d| d.child(div().px(theme::z(6.)).child(chips)))
             .child(controls);
         let mut body = v_flex().w_full().max_w(theme::z(920.)).mx_auto().px(theme::z(28.)).pt(theme::z(24.)).pb(theme::z(40.)).child(composer);
+        if self.factory_paused() {
+            body = body.child(
+                h_flex()
+                    .id("board-paused")
+                    .test_support()
+                    .mt(theme::z(18.))
+                    .px(theme::z(20.))
+                    .py(theme::z(16.))
+                    .gap(theme::z(14.))
+                    .items_center()
+                    .rounded(px(theme::R_CARD))
+                    .bg(p.blocked.opacity(0.12))
+                    .child(h_flex().size(theme::z(34.)).flex_shrink_0().justify_center().rounded_full().bg(p.blocked.opacity(0.2)).text_color(p.blocked).child(Icon::empty().path("icons/pause.svg").size(theme::z(16.))))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().text_size(theme::z(15.)).font_weight(FontWeight::SEMIBOLD).text_color(p.label).child("The factory is paused"))
+                            .child(div().text_size(theme::z(13.)).text_color(p.secondary).child("Nothing new starts, nothing lands, and triggers wait. Agents that were working carry on when you resume.")),
+                    )
+                    .child(big_button(&p, "board-resume", "Resume", theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.set_paused(false, window, cx)))),
+            );
+        }
         let mut any = false;
         for (title, states) in SECTIONS {
             let mut here: Vec<&Task> = self.tasks.iter().filter(|t| states.contains(&t.state) && self.board_project.as_ref().is_none_or(|p| &t.repo == p)).collect();
@@ -476,6 +501,35 @@ impl Shell {
             .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(14.)).text_color(p.secondary))
             .child(div().max_w(theme::z(220.)).truncate().text_size(theme::z(13.)).text_color(p.label).child(name))
             .child(h_flex().id(SharedString::from(id)).size(theme::z(24.)).justify_center().rounded_full().cursor_pointer().text_color(p.secondary).hover(|d| d.bg(p.hover)).on_click(remove).child(Icon::empty().path("icons/x.svg").size(theme::z(12.))))
+            .into_any_element()
+    }
+
+    pub(crate) fn factory_paused(&self) -> bool {
+        self.daemon_settings.as_ref().is_some_and(|d| d.paused)
+    }
+
+    pub(crate) fn set_paused(&mut self, paused: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(e) = self.exec("daemon.set", &serde_json::json!({"paused": paused}), window, cx) {
+            self.error = Some(e);
+        }
+        cx.notify();
+    }
+
+    fn pause_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let paused = self.factory_paused();
+        super::composer::tool_button("board-pause")
+            .flex_shrink_0()
+            .h(theme::z(34.))
+            .px(theme::z(12.))
+            .rounded(theme::z(theme::R_CONTROL))
+            .child(
+                h_flex()
+                    .gap(theme::z(7.))
+                    .items_center()
+                    .child(Icon::empty().path(if paused { "icons/play.svg" } else { "icons/pause.svg" }).size(theme::z(15.)))
+                    .child(div().text_size(theme::z(13.5)).font_weight(FontWeight::MEDIUM).child(if paused { "Resume" } else { "Pause" })),
+            )
+            .on_click(cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx)))
             .into_any_element()
     }
 

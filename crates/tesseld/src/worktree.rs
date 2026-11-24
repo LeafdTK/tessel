@@ -84,6 +84,9 @@ pub async fn create(cwd: &str, spec: &WorktreeSpec, root: &Path, hint: &str) -> 
     git(&repo_path, &["worktree", "add", "-b", &branch, &path_str, &base], Duration::from_secs(120))
         .await
         .map_err(|e| RpcError::new(ErrorCode::Invalid, format!("git worktree add failed: {e}")))?;
+    if let Ok(start) = git(&repo_path, &["rev-parse", &format!("{base}^{{commit}}")], QUICK).await {
+        let _ = git(&repo_path, &["update-ref", &base_ref(&branch), start.trim()], QUICK).await;
+    }
     Ok(Created { path: path_str, repo, branch })
 }
 
@@ -119,6 +122,10 @@ pub fn shared_build(ws: &Path, root: &Path) -> Vec<(String, String)> {
         return Vec::new();
     }
     vec![("CARGO_TARGET_DIR".into(), root.join("target").to_string_lossy().into_owned())]
+}
+
+pub fn base_ref(branch: &str) -> String {
+    format!("refs/tessel/base/{branch}")
 }
 
 pub fn slug(s: &str) -> String {
