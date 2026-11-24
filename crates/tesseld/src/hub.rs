@@ -1512,6 +1512,24 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
             Request::Triggers => Ok(self.triggers_response()),
+            Request::Views => Ok(Response::Views { views: crate::views::load(&self.cfg.paths.home) }),
+            Request::Metrics => {
+                let tasks: Vec<tessel_proto::task::Task> = self.tasks.values().cloned().collect();
+                let costs: HashMap<String, f64> = tasks.iter().map(|t| (t.id.clone(), t.proof_cost_usd + t.session.and_then(|s| self.sessions.get(&s)).map_or(0.0, |l| l.state.cost_usd()))).collect();
+                let tx = self.tx.clone();
+                tokio::spawn(async move {
+                    let mut repos: Vec<String> = tasks.iter().filter(|t| t.landed.is_some()).map(|t| t.repo.clone()).collect();
+                    repos.sort();
+                    repos.dedup();
+                    let mut reverted = Vec::new();
+                    for r in repos {
+                        reverted.extend(crate::views::reverted(Path::new(&r)).await);
+                    }
+                    let metrics = crate::views::metrics(&tasks, |t| costs.get(&t.id).copied().unwrap_or(0.0), &reverted);
+                    let _ = tx.send(HubMsg::Reply { client, id, result: Ok(Response::Metrics { metrics }) });
+                });
+                return None;
+            }
             Request::TriggerFire { workflow, event, cwd } => self.fire_by_hand(&workflow, event, cwd),
             Request::Keys => Ok(self.keys_response()),
             Request::KeySet { key, value } => self.key_set(key, value),

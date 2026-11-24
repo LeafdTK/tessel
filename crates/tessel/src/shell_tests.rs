@@ -173,7 +173,7 @@ impl Rig {
         let mut out = Vec::new();
         while let Ok(c) = self.cmds.try_recv() {
             // asking whether a folder is a repository is the form's own plumbing.
-            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list" | "workflows" | "tasks", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
+            if !matches!(c, Cmd::Ask { tag: "folder.info" | "usage" | "deleted.list" | "workflows" | "tasks" | "views" | "metrics", .. } | Cmd::Ask { req: tessel_proto::Request::Scripts { .. }, .. }) {
                 out.push(c);
             }
         }
@@ -3356,4 +3356,62 @@ fn keys_are_listed_added_with_a_hidden_secret_and_removed(cx: &mut TestAppContex
     assert!(rig.shell.read_with(cx, |s, cx| s.key_inputs.secret.read(cx).value().is_empty()), "the secret doesn't linger in the form");
     rig.click(cx, "key-rm-github");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "keys", req: tessel_proto::Request::KeyRemove { name } } if name == "github")));
+}
+
+#[gpui_kit::test]
+fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: &mut TestAppContext) {
+    use serde_json::json;
+    use tessel_proto::task::{Task, TaskState};
+    let mut a = session(1, "Fix login", RunState::Working, None);
+    a.cost_usd = 1.5;
+    a.updated_ms = crate::shell::now_ms();
+    let dir = layout_dir("views");
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("app.factory", &json!({"on": true}), window, cx))).unwrap().unwrap();
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let ls = exec(&mut rig, cx, "ui.ls", serde_json::Value::Null).unwrap();
+    let conv = ls["panes"].as_array().unwrap().iter().find(|p| p["module"] == "conversation").map(|p| p["id"].as_str().unwrap().to_owned()).unwrap();
+    let new = exec(&mut rig, cx, "pane.split", json!({"pane": conv, "dir": "right"})).unwrap()["pane"].as_str().unwrap().to_owned();
+    exec(&mut rig, cx, "pane.show", json!({"pane": new, "module": "views"})).unwrap();
+    rig.settle(cx);
+    assert!(rig.exists(cx, "views") && rig.exists(cx, "view-tab-factory"));
+    let built_in = crate::shell::views::factory_view();
+    assert!(tessel_proto::surface::validate(&built_in).is_empty(), "the built-in view is a valid surface");
+    assert!(built_in.to_string().matches("\"bind\"").count() >= 8);
+
+    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1 };
+    rig.feed(cx, vec![
+        UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
+        UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, ..Default::default() } }) },
+    ]);
+    let bound = |rig: &mut Rig, kind: &str, bind: &str| rig.shell.read_with(cx, |s, _| s.bound_props(kind, json!({"bind": bind, "label": "x"})));
+    assert_eq!(bound(&mut rig, "table", "tasks.review")["rows"], json!([["Task t1", "review", "$0.25"]]));
+    assert_eq!(bound(&mut rig, "metric", "tasks.running")["value"], json!(1), "running covers everything being worked on");
+    assert_eq!(bound(&mut rig, "metric", "factory.cost_per_landed")["value"], "$0.42");
+    let escaped = bound(&mut rig, "metric", "factory.escaped");
+    assert_eq!((escaped["value"].clone(), escaped["tone"].clone()), (json!(1), json!("error")), "a revert is flagged");
+    assert_eq!(bound(&mut rig, "bars", "cost.daily")["items"].as_array().unwrap().last().unwrap()["value"], 1.5, "today's spend lands on today");
+    assert_eq!(bound(&mut rig, "metric", "chats")["value"], 1);
+    assert_eq!(bound(&mut rig, "metric", "nothing")["value"], serde_json::Value::Null, "an unknown source leaves the props alone");
+
+    let good = tessel_proto::views::View { id: "deploys".into(), title: "Deploys".into(), icon: None, node: json!({"k": "metric", "p": {"label": "Landed", "bind": "factory.landed"}}), path: String::new(), problems: vec![] };
+    let bad = tessel_proto::views::View { id: "broken".into(), title: "Broken".into(), problems: vec!["\"weather\" isn't a source".into()], ..Default::default() };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "views", result: Ok(Response::Views { views: vec![good, bad] }) }]);
+    rig.click(cx, "view-tab-deploys");
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.view_shown.clone()), "deploys");
+    rig.click(cx, "view-tab-broken");
+    assert!(rig.exists(cx, "views-body"));
+
+    rig.click(cx, "views-new");
+    assert!(rig.exists(cx, "view-chip"));
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.new_prompt.update(cx, |p, cx| p.set_value("what my agents cost per repo", window, cx)))).unwrap();
+    rig.asked();
+    rig.click(cx, "create");
+    let made = rig.asked().into_iter().find_map(|c| match c {
+        Cmd::Create { prompt, worktree, model, .. } => Some((prompt, worktree, model)),
+        _ => None,
+    });
+    let (prompt, worktree, model) = made.expect("a chat to make it");
+    assert!(prompt.contains("what my agents cost per repo") && prompt.contains("~/.tessel/views/") && prompt.contains("cost.daily"));
+    assert_eq!((worktree, model.as_deref()), (false, Some("sonnet")));
 }

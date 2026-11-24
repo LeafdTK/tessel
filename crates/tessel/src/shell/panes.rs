@@ -709,6 +709,7 @@ impl Shell {
             // nor does a cluster.
             Module::Kube => self.kube_el(cx),
             Module::Board => self.board_el(cx),
+            Module::Views => self.views_el(cx),
             Module::Processes => self.procs_el(cx),
             _ if session.is_none() => quiet("Open a session to see this."),
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),
@@ -864,7 +865,7 @@ impl Shell {
     /// whether a module there can only be one of is already in the window,
     /// in another pane or outside the panes (the sidebar's session list).
     pub(crate) fn shown_elsewhere(&self, m: Module, pane: Option<&str>) -> bool {
-        if m == Module::Board && !self.factory_on() {
+        if matches!(m, Module::Board | Module::Views) && !self.factory_on() {
             return true;
         }
         // conversations come in any number: a new one shows the chat you're in.

@@ -274,6 +274,8 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    Views,
+    Metrics,
     Triggers,
     TriggerFire {
         workflow: String,
@@ -878,6 +880,12 @@ pub enum Response {
     },
     Triggers {
         triggers: Vec<crate::workflow::TriggerInfo>,
+    },
+    Views {
+        views: Vec<crate::views::View>,
+    },
+    Metrics {
+        metrics: crate::views::Metrics,
     },
     Keys {
         keys: Vec<crate::keys::KeyInfo>,

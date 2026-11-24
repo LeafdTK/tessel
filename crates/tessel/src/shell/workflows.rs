@@ -750,6 +750,9 @@ impl Shell {
         if std::mem::take(&mut self.teaching) {
             return super::proof::teach_prompt(&typed);
         }
+        if let Some(p) = self.view_prompt(&typed) {
+            return p;
+        }
         if std::mem::take(&mut self.authoring) { format!("{DESCRIBED}\n\n{typed}\n\n{}", tessel_proto::workflow::FORMAT) } else { typed }
     }
 

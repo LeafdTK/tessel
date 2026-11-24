@@ -290,11 +290,11 @@ impl Shell {
         }
     }
 
-    fn element(&self, surface: &str, session: SessionId, node: &Value, cx: &App) -> AnyElement {
+    pub(crate) fn element(&self, surface: &str, session: SessionId, node: &Value, cx: &App) -> AnyElement {
         let pal = self.palette.get();
         let k = s(node, "k").unwrap_or("");
         let id = s(node, "id").unwrap_or("").to_owned();
-        let p = node.get("p").cloned().unwrap_or(Value::Null);
+        let p = self.bound_props(k, node.get("p").cloned().unwrap_or(Value::Null));
         let kids = || -> Vec<AnyElement> { node.get("c").and_then(Value::as_array).into_iter().flatten().map(|c| self.element(surface, session, c, cx)).collect() };
         let gap = |default: f32| z(p.get("gap").and_then(Value::as_f64).map_or(default, |g| g.clamp(0.0, 32.0) as f32));
         let ev = |element: String, act: &'static str, value: Value| {
@@ -519,6 +519,49 @@ impl Shell {
                     );
                 }
                 col.into_any_element()
+            }
+            "table" => {
+                let columns: Vec<String> = p.get("columns").and_then(Value::as_array).into_iter().flatten().map(|c| shown(Some(c))).collect();
+                let mut col = v_flex().w_full().gap(px(1.));
+                if !columns.is_empty() {
+                    col = col.child(h_flex().gap_3().px(z(6.)).pb(z(4.)).border_b_1().border_color(pal.separator).children(columns.iter().map(|c| div().flex_1().min_w_0().set(Type::Subheadline).text_color(pal.tertiary).truncate().child(c.clone()))));
+                }
+                let rows: Vec<&Value> = p.get("rows").and_then(Value::as_array).into_iter().flatten().take(60).collect();
+                if rows.is_empty() {
+                    col = col.child(div().px(z(6.)).py(z(6.)).set(Type::Subheadline).text_color(pal.tertiary).child("Nothing yet"));
+                }
+                for row in rows {
+                    let cells: Vec<String> = row.as_array().into_iter().flatten().map(|c| shown(Some(c))).collect();
+                    col = col.child(h_flex().gap_3().px(z(6.)).min_h(z(26.)).children(cells.into_iter().map(|c| div().flex_1().min_w_0().set(Type::Callout).text_color(pal.label).truncate().child(c))));
+                }
+                col.into_any_element()
+            }
+            "bars" => {
+                let items: Vec<(String, f64)> = p.get("items").and_then(Value::as_array).into_iter().flatten().map(|i| (s(i, "label").unwrap_or("").to_owned(), i.get("value").and_then(Value::as_f64).unwrap_or(0.0))).collect();
+                let most = items.iter().map(|(_, v)| *v).fold(0.0, f64::max).max(f64::EPSILON);
+                let unit = s(&p, "unit").unwrap_or("").to_owned();
+                let mut col = v_flex().w_full().gap(z(4.));
+                for (label, v) in items {
+                    let shown_v = if unit == "$" { format!("${v:.2}") } else { format!("{}{unit}", if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") }) };
+                    col = col.child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().w(z(72.)).flex_shrink_0().set(Type::Subheadline).text_color(pal.secondary).truncate().child(label))
+                            .child(div().flex_1().h(z(10.)).rounded(z(3.)).bg(pal.fill).child(div().h_full().rounded(z(3.)).bg(pal.accent).w(relative((v / most).clamp(0.0, 1.0) as f32))))
+                            .child(div().w(z(56.)).flex_shrink_0().set(Type::Subheadline).text_color(pal.label).font_features(crate::theme::tabular()).child(shown_v)),
+                    );
+                }
+                col.into_any_element()
+            }
+            "line" => {
+                let points: Vec<f64> = p.get("points").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_f64).collect();
+                let (lo, hi) = points.iter().fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+                let span = (hi - lo).max(f64::EPSILON);
+                v_flex()
+                    .gap(z(4.))
+                    .children(s(&p, "label").map(|l| div().set(Type::Subheadline).text_color(pal.secondary).child(l.to_owned())))
+                    .child(h_flex().items_end().gap(px(2.)).h(z(40.)).children(points.iter().map(|v| div().w(z(6.)).rounded_t(z(2.)).bg(pal.accent).h(relative((0.15 + 0.85 * ((v - lo) / span)) as f32)))))
+                    .into_any_element()
             }
             "icon" => Icon::empty().path(format!("icons/{}.svg", s(&p, "name").unwrap_or("circle"))).size(z(16.)).text_color(self.tone(&p, pal.secondary)).into_any_element(),
             "divider" => div().h(px(1.)).w_full().bg(pal.separator).into_any_element(),

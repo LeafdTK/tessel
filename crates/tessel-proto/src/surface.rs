@@ -99,6 +99,9 @@ pub const KINDS: &[(&str, &str)] = &[
     ("metric", "p: label, value, delta, tone (a status tone puts a dot by the label; error reddens the value)"),
     ("list", "p: items (list of {title, note, icon}). with an id, a click sends act=click value=<index>"),
     ("kv", "p: rows (list of [key, value])"),
+    ("table", "p: columns (list), rows (list of lists)"),
+    ("bars", "p: items (list of {label, value}), unit"),
+    ("line", "p: points (list of numbers), label"),
     ("icon", "p: name (lucide), tone"),
     ("divider", ""),
     ("spacer", ""),
@@ -152,6 +155,23 @@ fn walk(node: &Value, at: &str, depth: usize, count: &mut usize, problems: &mut 
             None => problems.push(format!("{at} ({k}): \"c\" is a list of elements")),
         }
     }
+}
+
+pub const SOURCES: &[(&str, &str)] = &[
+    ("tasks", "the board's tasks; tasks.review, tasks.running, tasks.ready, tasks.landed for one state"),
+    ("chats", "every chat, busiest first"),
+    ("proofs", "chats with a proof, and their verdicts"),
+    ("cost.daily", "what agents cost each of the last 7 days"),
+    ("factory.landed", "tasks landed"),
+    ("factory.review", "tasks waiting on you"),
+    ("factory.working", "tasks being worked on"),
+    ("factory.cost_per_landed", "what a landed task cost, on average"),
+    ("factory.waste", "spent on tasks that were dropped"),
+    ("factory.escaped", "landed tasks that were reverted later"),
+];
+
+pub fn source_known(bind: &str) -> bool {
+    SOURCES.iter().any(|(s, _)| *s == bind) || bind.strip_prefix("tasks.").is_some()
 }
 
 /// the message an agent receives when someone acts on its surface.

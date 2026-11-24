@@ -23,6 +23,7 @@ pub mod state;
 pub mod surface;
 pub mod task;
 pub mod term;
+pub mod views;
 pub mod voice;
 pub mod workspace;
 pub mod workflow;

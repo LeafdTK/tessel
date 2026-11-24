@@ -33,6 +33,7 @@ mod panel;
 mod proof;
 mod board;
 mod keys;
+pub(crate) mod views;
 mod workflows;
 mod panes;
 mod projects;
@@ -326,6 +327,10 @@ pub struct Shell {
     pub(crate) task_change: Entity<InputState>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
+    pub(crate) saved_views: Vec<tessel_proto::views::View>,
+    pub(crate) metrics: Option<tessel_proto::views::Metrics>,
+    pub(crate) view_shown: String,
+    pub(crate) making_view: bool,
     /// a folder on a dev box, being browsed: where, its folders, whether it's a repository.
     pub(crate) host_folders: Option<Result<(String, Vec<String>, bool), String>>,
     github_repo: Entity<InputState>,
@@ -840,6 +845,10 @@ impl Shell {
             task_change,
             tasks: Vec::new(),
             changing_task: None,
+            saved_views: Vec::new(),
+            metrics: None,
+            view_shown: "factory".into(),
+            making_view: false,
             host_folders: None,
             github_repo,
             template: projects::Template::default(),
@@ -1025,6 +1034,7 @@ impl Shell {
                 self.ask_deleted();
                 self.ask_workflows();
                 self.cmd(Cmd::Ask { tag: "tasks", req: tessel_proto::Request::TaskList });
+                self.refresh_views();
                 if self.models.is_empty() {
                     self.cmd(Cmd::Models);
                 }
@@ -1267,9 +1277,17 @@ impl Shell {
                 }
             }
             UiEvent::Usage(windows) => self.usage = windows,
-            UiEvent::Task(task) => self.task_updated(task),
+            UiEvent::Task(task) => {
+                let settled = matches!(task.state, tessel_proto::task::TaskState::Landed | tessel_proto::task::TaskState::Dropped | tessel_proto::task::TaskState::Review);
+                self.task_updated(task);
+                if settled {
+                    self.cmd(Cmd::Ask { tag: "metrics", req: tessel_proto::Request::Metrics });
+                }
+            }
             UiEvent::Answer { tag: "tasks", result } => self.tasks_answer(result),
             UiEvent::Answer { tag: "keys", result } => self.keys_answer(result),
+            UiEvent::Answer { tag: "views", result } => self.views_answer(result),
+            UiEvent::Answer { tag: "metrics", result } => self.metrics_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),
@@ -1604,7 +1622,7 @@ impl Shell {
         if self.creating.is_some() {
             return;
         }
-        let teaching = self.teaching;
+        let teaching = self.teaching || self.making_view;
         let worktree = !authoring && !teaching && self.new_worktree && self.folder_is_git(&cwd) != Some(false);
         let prompt = self.authoring_prompt(prompt);
         let model = teaching.then(|| "sonnet".to_owned());
@@ -2091,7 +2109,7 @@ impl Shell {
         let picker = self.project_picker(cx);
         let chips = self.attachment_chips(cx);
         let workflow_chip = self.workflow_chip(cx);
-        let authoring_chip = self.authoring_chip(cx).or_else(|| self.teaching_chip(cx));
+        let authoring_chip = self.authoring_chip(cx).or_else(|| self.teaching_chip(cx)).or_else(|| self.making_view_chip(cx));
         let workflow_cards = self.workflow_cards(cx);
         let paste = cx.entity().downgrade();
         let segment = |id: &'static str, label: &'static str, on: bool, set: bool| {
