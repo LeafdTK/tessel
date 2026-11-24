@@ -50,7 +50,7 @@ pub fn metrics(tasks: &[tessel_proto::task::Task], cost_of: impl Fn(&tessel_prot
     use tessel_proto::task::TaskState;
     let count = |s: &[TaskState]| tasks.iter().filter(|t| s.contains(&t.state)).count() as u32;
     let landed: Vec<&tessel_proto::task::Task> = tasks.iter().filter(|t| t.state == TaskState::Landed).collect();
-    let cost_landed: f64 = landed.iter().map(|t| cost_of(t)).sum();
+    let cost_landed: f64 = landed.iter().map(|t| cost_of(t)).sum::<f64>() + 0.0;
     tessel_proto::views::Metrics {
         landed: landed.len() as u32,
         review: count(&[TaskState::Review]),
@@ -58,7 +58,7 @@ pub fn metrics(tasks: &[tessel_proto::task::Task], cost_of: impl Fn(&tessel_prot
         ready: count(&[TaskState::Ready]),
         dropped: count(&[TaskState::Dropped]),
         cost_per_landed: if landed.is_empty() { 0.0 } else { cost_landed / landed.len() as f64 },
-        waste: tasks.iter().filter(|t| t.state == TaskState::Dropped).map(&cost_of).sum(),
+        waste: tasks.iter().filter(|t| t.state == TaskState::Dropped).map(&cost_of).sum::<f64>() + 0.0,
         escaped: landed.iter().filter(|t| t.landed.as_ref().is_some_and(|sha| reverted.iter().any(|r| r.starts_with(sha.as_str()) || sha.starts_with(r.as_str())))).count() as u32,
     }
 }

@@ -716,7 +716,8 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         "tidy" => {
-            let repo = std::fs::canonicalize(args.next("a repository")?)?;
+            let given = std::path::PathBuf::from(args.next("a repository")?);
+            let repo = if given.is_absolute() { given } else { std::fs::canonicalize(given)? };
             let every = args.opt("--every")?.unwrap_or_else(|| "0 9 * * 1".into());
             let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let yaml = tidy_workflow(&name, &repo.to_string_lossy(), &every);
