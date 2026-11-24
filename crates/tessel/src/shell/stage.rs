@@ -170,13 +170,6 @@ impl Shell {
     pub(crate) fn stage_rail_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
         let paused = self.factory_paused();
-        let now = super::now_ms();
-        let plan = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r * 1000 > now as i64)).map(|w| w.used).fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.max(u))));
-        let today = super::views::spend_by_day(&self.metrics.as_ref().map(|m| m.spend.clone()).unwrap_or_default(), now, 1).last().map_or(0.0, |d| d.1);
-        let usage = match plan {
-            Some(used) => format!("{:.0}% of plan", used * 100.0),
-            None => format!("${today:.2} today"),
-        };
         let focus_id = match self.stage_focus() {
             Focus::Task(t) => t.id.clone(),
             Focus::New => "new".into(),
@@ -215,7 +208,7 @@ impl Shell {
             .child(nav_row("board-tab-rules", "book-open", "Rules".into(), focus_id == "rules").on_click(pick("rules", cx)).test_support())
             .child(
                 nav_row("board-pause", if paused { "play" } else { "pause" }, if paused { "Resume".into() } else { "Pause".into() }, false)
-                    .child(div().flex_shrink_0().set(Type::Subheadline).font_features(theme::tabular()).text_color(if paused { p.blocked } else { p.tertiary }).child(if paused { "Paused".to_owned() } else { usage }))
+                    .when(paused, |d| d.child(div().flex_shrink_0().set(Type::Subheadline).text_color(p.blocked).child("Paused")))
                     .on_click(cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx)))
                     .test_support(),
             );
@@ -318,8 +311,38 @@ impl Shell {
             .child(nav)
             .child(controls)
             .child(div().id("stage-rail-list").flex_1().min_h_0().overflow_y_scroll().child(list))
+            .children(self.usage_block())
             .test_support()
             .into_any_element()
+    }
+
+    fn usage_block(&self) -> Option<AnyElement> {
+        let p = self.palette.get();
+        let now = (super::now_ms() / 1000) as i64;
+        let mut windows: Vec<&tessel_proto::UsageWindow> = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r > now)).collect();
+        if windows.is_empty() {
+            return None;
+        }
+        windows.sort_by_key(|w| (w.name != "five_hour", w.name.clone()));
+        let mut col = v_flex().id("usage-limits").test_support().flex_shrink_0().mx(theme::z(theme::SIDE_INSET)).px(theme::z(theme::SIDE_PAD)).pt(theme::z(12.)).pb(theme::z(10.)).gap(theme::z(10.)).border_t_1().border_color(p.separator);
+        for w in windows {
+            let pct = (w.used * 100.0).round().clamp(0.0, 100.0) as u32;
+            let tone = if w.status == "rejected" || pct >= 95 { p.failed } else if pct >= 70 { p.blocked } else { p.label };
+            col = col.child(
+                v_flex()
+                    .gap(theme::z(5.))
+                    .child(
+                        h_flex()
+                            .items_baseline()
+                            .gap(theme::z(8.))
+                            .child(div().flex_1().min_w_0().truncate().set(Type::Subheadline).font_weight(FontWeight::MEDIUM).text_color(p.label).child(super::composer::usage_name(&w.name)))
+                            .child(div().flex_shrink_0().set(Type::Subheadline).font_features(theme::tabular()).text_color(if pct >= 70 { tone } else { p.secondary }).child(format!("{pct}%"))),
+                    )
+                    .child(div().h(theme::z(5.)).w_full().rounded_full().bg(p.fill).child(div().h_full().rounded_full().bg(tone).w(relative(pct as f32 / 100.0))))
+                    .children(w.resets_at.map(|t| div().set(Type::Subheadline).text_color(p.tertiary).child(format!("Resets {}", super::composer::resets(t))))),
+            );
+        }
+        Some(col.into_any_element())
     }
 
     fn bother_picker(&self, cx: &mut Context<Self>) -> AnyElement {

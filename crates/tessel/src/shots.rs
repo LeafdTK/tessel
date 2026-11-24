@@ -259,7 +259,7 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
         for ev in [
             UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: if screen.name.ends_with("-empty") { Vec::new() } else { tasks(screen.name == "board-swatches") } }) },
             UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: metrics() }) },
-            UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }]),
+            UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }, UsageWindow { name: "seven_day".into(), used: 0.76, resets_at: Some((now() / 1000) as i64 + 3 * 86400), status: "allowed_warning".into() }]),
         ] {
             let _ = events.send(ev);
         }
