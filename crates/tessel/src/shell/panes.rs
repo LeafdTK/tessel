@@ -710,6 +710,7 @@ impl Shell {
             Module::Kube => self.kube_el(cx),
             Module::Board => self.board_el(cx),
             Module::Views => self.views_el(cx),
+            Module::Home => self.home_el(cx),
             Module::Processes => self.procs_el(cx),
             _ if session.is_none() => quiet("Open a session to see this."),
             Module::Changes => div().size_full().child(self.changes_tab(cx)).into_any_element(),

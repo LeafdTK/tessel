@@ -32,6 +32,7 @@ mod palette;
 mod panel;
 mod proof;
 mod board;
+mod home;
 mod keys;
 pub(crate) mod views;
 mod workflows;

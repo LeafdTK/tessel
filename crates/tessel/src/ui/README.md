@@ -98,6 +98,7 @@ Modules:
 | `doc`          | the doc a workflow made, rendered, to read, copy and save |
 | `views`        | live numbers, charts and tables (the factory's, and ones made for you), bound to your work (with the software factory on) |
 | `board`        | tasks agents work on in workspaces of their own, proved, then landed (with the software factory on) |
+| `home`         | what's working, what's waiting on you, what it cost and your plan's usage, as big tiles, with the latest proof's screenshot |
 | `editor`       | the file picked in `files`, in a pane of its own: the tree keeps its height and files open here |
 | `checks`       | the branch, its pull request and CI                                   |
 | `artifacts`    | plans and files the agent made                                        |

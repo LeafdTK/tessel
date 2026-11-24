@@ -27,6 +27,18 @@ fn state_word(s: TaskState) -> String {
     serde_json::to_value(s).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
+pub(crate) fn spend_by_day(sessions: &[tessel_proto::SessionSummary], now: u64, days: usize) -> Vec<(String, f64)> {
+    let today = day_of(now).0;
+    let mut by_day: Vec<(String, f64)> = (0..days).rev().map(|back| (day_of(now.saturating_sub(back as u64 * 86_400_000)).1, 0.0)).collect();
+    for s in sessions {
+        let back = today - day_of(s.updated_ms.max(s.created_ms)).0;
+        if (0..days as i64).contains(&back) {
+            by_day[days - 1 - back as usize].1 += s.cost_usd;
+        }
+    }
+    by_day
+}
+
 fn day_of(ms: u64) -> (i64, String) {
     use chrono::{Datelike as _, TimeZone as _};
     match chrono::Local.timestamp_millis_opt(ms as i64).single() {
@@ -103,16 +115,7 @@ impl Shell {
                 }
             }
             "cost.daily" => {
-                let today = day_of(super::now_ms()).0;
-                let now = super::now_ms();
-                let mut by_day: Vec<(String, f64)> = (0..7).rev().map(|back| (day_of(now.saturating_sub(back as u64 * 86_400_000)).1, 0.0)).collect();
-                for s in &self.model.sessions {
-                    let (d, _) = day_of(s.updated_ms.max(s.created_ms));
-                    let back = today - d;
-                    if (0..7).contains(&back) {
-                        by_day[(6 - back) as usize].1 += s.cost_usd;
-                    }
-                }
+                let by_day = spend_by_day(&self.model.sessions, super::now_ms(), 7);
                 match kind {
                     "metric" => put("value", json!(money(by_day.last().map_or(0.0, |d| d.1)))),
                     "line" => put("points", json!(by_day.iter().map(|d| d.1).collect::<Vec<_>>())),
