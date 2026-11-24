@@ -2260,3 +2260,23 @@ async fn a_finished_task_is_landed_sent_back_or_brought_to_you_by_the_final_revi
     assert_eq!(git(&repo, &["log", "-1", "--format=%s", "main"]), "feat: start");
     assert!(d.backend.asked.lock().unwrap().iter().any(|(q, m)| q.contains("final reviewer") && m == "opus"), "on the review model");
 }
+
+#[tokio::test]
+async fn dropping_a_task_turns_what_waited_for_it_into_a_draft_instead_of_waiting_forever() {
+    use tessel_proto::task::{TaskAct, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    let make = |title: &str, deps: Vec<String>, ready: bool| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: String::new(), deps, parent: None, ready, budget_usd: None, plan: false, from: None, attachments: vec![], land: None };
+    let Response::Task { task: first } = c.request(make("First", vec![], false)).await.unwrap() else { panic!() };
+    let Response::Task { task: second } = c.request(make("Second", vec![first.id.clone()], true)).await.unwrap() else { panic!() };
+    c.request(Request::TaskAct { id: first.id.clone(), act: TaskAct::Drop }).await.unwrap();
+    let after = task_until(&c, &second.id, "a draft", |t| t.state == TaskState::Draft).await;
+    assert!(after.deps.is_empty() && after.session.is_none(), "it doesn't start by itself, and nothing holds it");
+    assert!(after.notes.iter().any(|n| n.text.contains("“First”, which it waited for, was dropped")));
+}

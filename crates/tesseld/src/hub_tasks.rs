@@ -200,6 +200,14 @@ impl Hub {
                 }
                 self.land_queue.retain(|x| x != id);
                 self.tasks.get_mut(id).unwrap().state = TaskState::Dropped;
+                let waiting: Vec<String> = self.tasks.values().filter(|x| x.deps.iter().any(|d| d == id) && matches!(x.state, TaskState::Ready | TaskState::Draft)).map(|x| x.id.clone()).collect();
+                for w in waiting {
+                    let x = self.tasks.get_mut(&w).unwrap();
+                    x.deps.retain(|d| d != id);
+                    x.state = TaskState::Draft;
+                    self.note(&w, "tessel", format!("“{}”, which it waited for, was dropped", t.title));
+                    self.task_saved(&w);
+                }
                 if let Some(p) = t.parent.clone() {
                     self.task_saved(id);
                     self.parent_progress(&p);

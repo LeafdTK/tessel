@@ -70,14 +70,14 @@ pub fn repo_root(path: &Path) -> std::path::PathBuf {
 pub fn ready(tasks: &BTreeMap<String, Task>) -> Vec<String> {
     let mut out: Vec<&Task> = tasks
         .values()
-        .filter(|t| t.state == TaskState::Ready && t.deps.iter().all(|d| tasks.get(d).is_some_and(|x| x.state == TaskState::Landed)))
+        .filter(|t| t.state == TaskState::Ready && t.deps.iter().all(|d| tasks.get(d).is_some_and(|x| matches!(x.state, TaskState::Landed | TaskState::Dropped))))
         .collect();
     out.sort_by_key(|t| t.created_ms);
     out.into_iter().map(|t| t.id.clone()).collect()
 }
 
 pub fn blocked_by<'a>(task: &Task, tasks: &'a BTreeMap<String, Task>) -> Vec<&'a Task> {
-    task.deps.iter().filter_map(|d| tasks.get(d)).filter(|x| x.state != TaskState::Landed).collect()
+    task.deps.iter().filter_map(|d| tasks.get(d)).filter(|x| !matches!(x.state, TaskState::Landed | TaskState::Dropped)).collect()
 }
 
 pub fn risk(p: &Proof) -> Risk {
