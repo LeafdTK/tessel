@@ -50,6 +50,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
                                             --plan: an agent splits it into small tasks first
                                             a task for the board; ready ones are worked on in workspaces of
                                             their own, proved, and wait for you to land them
+  tesselctl task issues [--repo DIR]         the project's open GitHub issues
   tesselctl task solve ISSUE [--draft] [--repo DIR]   a GitHub issue (42, #42 or its link) becomes a task,
                                             started at once; landing it closes the issue
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
@@ -629,6 +630,16 @@ async fn run() -> anyhow::Result<()> {
                     let title = args.rest.join(" ");
                     let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None, attachments: Vec::new() }).await?)?;
                     println!("{}", line(&t));
+                }
+                "issues" => {
+                    let repo = match args.opt("--repo")? {
+                        Some(r) => r,
+                        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+                    };
+                    let Response::IssueList { issues } = client.request(Request::IssueList { repo }).await? else { bail!("unexpected reply") };
+                    for i in issues {
+                        println!("#{:<6} {}{}", i.number, i.title, if i.labels.is_empty() { String::new() } else { format!("  [{}]", i.labels.join(", ")) });
+                    }
                 }
                 "solve" => {
                     let repo = match args.opt("--repo")? {
