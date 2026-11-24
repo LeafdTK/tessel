@@ -14,6 +14,7 @@ pub enum TaskState {
     Landing,
     Landed,
     Dropped,
+    Planned,
     #[serde(other)]
     Unknown,
 }
@@ -60,6 +61,8 @@ pub struct Task {
     pub session: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<TaskNote>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub plan: bool,
     #[serde(default)]
     pub attempts: u32,
     #[serde(default)]
@@ -81,6 +84,7 @@ pub enum TaskAct {
     Draft,
     Land,
     Change { text: String },
+    Plan,
     Drop,
     #[serde(other)]
     Unknown,

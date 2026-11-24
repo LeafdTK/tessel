@@ -46,7 +46,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl voice tidy TEXT… [--session S]  dictation as it was meant (what talking in the message box does)
   tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
                                             vercel makes dev boxes in vercel sandboxes
-  tesselctl task add TITLE… [--spec TEXT] [--after ID]… [--ready] [--budget USD] [--repo DIR]
+  tesselctl task add TITLE… [--spec TEXT] [--after ID]… [--ready] [--plan] [--budget USD] [--repo DIR]
+                                            --plan: an agent splits it into small tasks first
                                             a task for the board; ready ones are worked on in workspaces of
                                             their own, proved, and wait for you to land them
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
@@ -57,6 +58,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl key ls|rm NAME|uses             your keys, and what used them
   tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
                                             they never enter it
+  tesselctl tidy REPO [--every CRON]        once a week (or as often as you say), an agent files up to 3 small
+                                            cleanups for that repository as drafts on the board
   tesselctl fire WORKFLOW [--title T] [--event JSON]   run a workflow as its trigger would (from a webhook,
                                             a script, anything that can run a command)
   tesselctl triggers [--json]               workflows that run by themselves, and when they last did
@@ -607,17 +610,19 @@ async fn run() -> anyhow::Result<()> {
                         deps.push(d);
                     }
                     let ready = args.flag("--ready");
+                    let plan = args.flag("--plan");
                     let title = args.rest.join(" ");
-                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd }).await?)?;
+                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None }).await?)?;
                     println!("{}", line(&t));
                 }
-                "ready" | "draft" | "land" | "drop" | "change" => {
+                "ready" | "draft" | "land" | "drop" | "change" | "plan" => {
                     let id = args.next("a task")?;
                     let act = match sub.as_str() {
                         "ready" => TaskAct::Ready,
                         "draft" => TaskAct::Draft,
                         "land" => TaskAct::Land,
                         "drop" => TaskAct::Drop,
+                        "plan" => TaskAct::Plan,
                         _ => TaskAct::Change { text: args.rest.join(" ") },
                     };
                     let t = one(client.request(Request::TaskAct { id, act }).await?)?;
@@ -698,6 +703,17 @@ async fn run() -> anyhow::Result<()> {
                     show(&keys.into_iter().filter(|k| k.name == name).collect::<Vec<_>>());
                 }
                 other => bail!("key {other}? ls, add, rm or uses"),
+            }
+        }
+        "tidy" => {
+            let repo = std::fs::canonicalize(args.next("a repository")?)?;
+            let every = args.opt("--every")?.unwrap_or_else(|| "0 9 * * 1".into());
+            let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let yaml = tidy_workflow(&name, &repo.to_string_lossy(), &every);
+            match client.request(Request::WorkflowSave { name: format!("Tidy {name}"), yaml, cwd: None }).await? {
+                Response::WorkflowSaved { workflow } if workflow.problems.is_empty() => println!("{} runs {}: it files up to 3 small cleanups as drafts on the board", workflow.name, workflow.on.iter().map(|t| t.describe()).collect::<Vec<_>>().join(", ")),
+                Response::WorkflowSaved { workflow } => bail!("{}", workflow.problems.join("; ")),
+                other => bail!("unexpected reply: {other:?}"),
             }
         }
         "fire" => {
@@ -1467,4 +1483,16 @@ pub(crate) fn service_file(home: &std::path::Path, bin: &std::path::Path) -> (st
         let text = format!("[Unit]\nDescription=tessel daemon\n\n[Service]\nExecStart={bin}\nEnvironment=TESSEL_HOME={home}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n");
         (path, text)
     }
+}
+
+pub(crate) fn tidy_workflow(name: &str, repo: &str, every: &str) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    format!(
+        "name: {}\nicon: sparkles\ndescription: {}\nfolder: {}\nmodel: sonnet\non:\n  cron: {}\nsteps:\n  - {}\n",
+        q(&format!("Tidy {name}")),
+        q(&format!("A few small cleanups for {name}, filed as drafts for you to approve")),
+        q(repo),
+        q(every),
+        q("Look over this repository for what's piling up: dead code, duplicated helpers, stale TODOs, skipped or flaky tests, docs that no longer match the code. File at most 3 small tasks with tessel_task (op add, ready: false), the most worthwhile first, each with a spec that says what done looks like. Change nothing yourself. Then stop with one line listing what you filed.")
+    )
 }

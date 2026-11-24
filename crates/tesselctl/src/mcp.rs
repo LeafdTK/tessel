@@ -347,7 +347,7 @@ impl Server {
                         let repo = std::env::current_dir()?.to_string_lossy().into_owned();
                         let deps = args.get("after").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
                         let ready = args.get("ready").and_then(Value::as_bool).unwrap_or(false);
-                        match self.ask(Request::TaskCreate { repo, title: s("title"), spec: s("spec"), deps, parent: None, ready, budget_usd: None }).await? {
+                        match self.ask(Request::TaskCreate { repo, title: s("title"), spec: s("spec"), deps, parent: None, ready, budget_usd: None, plan: false, from: self.session }).await? {
                             Response::Task { task } => format!("added {}", line(&task)),
                             other => anyhow::bail!("unexpected reply: {other:?}"),
                         }

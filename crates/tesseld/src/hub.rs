@@ -1507,7 +1507,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 self.start_proof(session, anyway, false);
                 Ok(Response::Ack)
             }
-            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd } => self.task_create(repo, title, spec, deps, parent, ready, budget_usd),
+            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd, plan, from } => self.task_create_from(repo, title, spec, deps, parent, ready, budget_usd, plan, from),
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
@@ -2716,7 +2716,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             StepDoes::Task(title) => {
                 let repo = step.repo.as_deref().map(render).unwrap_or_default();
                 let spec = step.spec.as_deref().map(render).unwrap_or_default();
-                match self.task_create(repo, render(title), spec, Vec::new(), None, true, None) {
+                match self.task_create(repo, render(title), spec, Vec::new(), None, true, None, false) {
                     Ok(Response::Task { task }) => filed = Some(format!("Filed {}: {}", task.id, task.title)),
                     Ok(_) => {}
                     Err(e) => problem = Some(e.message),

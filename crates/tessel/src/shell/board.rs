@@ -5,7 +5,7 @@ use tessel_proto::{Request, Response};
 
 const SECTIONS: [(&str, &[TaskState]); 5] = [
     ("Review", &[TaskState::Review]),
-    ("Working", &[TaskState::Running, TaskState::Proving, TaskState::Landing]),
+    ("Working", &[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Planned]),
     ("Up Next", &[TaskState::Ready]),
     ("Drafts", &[TaskState::Draft]),
     ("Landed", &[TaskState::Landed]),
@@ -50,7 +50,7 @@ impl Shell {
             cx.notify();
             return;
         };
-        self.cmd(Cmd::Ask { tag: "task", req: Request::TaskCreate { repo, title, spec: String::new(), deps: Vec::new(), parent: None, ready, budget_usd: None } });
+        self.cmd(Cmd::Ask { tag: "task", req: Request::TaskCreate { repo, title, spec: String::new(), deps: Vec::new(), parent: None, ready, budget_usd: None, plan: false, from: None } });
         self.task_title.update(cx, |s, cx| s.set_value("", window, cx));
         cx.notify();
     }
@@ -69,6 +69,15 @@ impl Shell {
             self.act_task(&id, TaskAct::Change { text }, cx);
         }
         cx.notify();
+    }
+
+    pub(crate) fn change_task_and_teach(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.task_change.read(cx).value().trim().to_owned();
+        let repo = self.changing_task.as_ref().and_then(|id| self.tasks.iter().find(|t| &t.id == id)).map(|t| t.repo.clone());
+        self.change_task(window, cx);
+        if let (false, Some(repo)) = (text.is_empty(), repo) {
+            self.teach_from_review(repo, text, cx);
+        }
     }
 
     fn task_cost(&self, t: &Task) -> f64 {
@@ -116,6 +125,12 @@ impl Shell {
         let working = matches!(t.state, TaskState::Running | TaskState::Proving | TaskState::Landing);
         let status = match t.state {
             TaskState::Proving => "Proving".to_owned(),
+            TaskState::Planned => {
+                let kids: Vec<&Task> = self.tasks.iter().filter(|x| x.parent.as_deref() == Some(t.id.as_str())).collect();
+                let done = kids.iter().filter(|k| k.state == TaskState::Landed).count();
+                format!("Split into {}: {done} landed", kids.len())
+            }
+            TaskState::Running if t.plan => "Planning".to_owned(),
             TaskState::Landing => "Landing".to_owned(),
             TaskState::Running => summary.and_then(|s| s.activity.clone()).unwrap_or_else(|| "Working".into()),
             TaskState::Review => t.notes.last().map(|n| super::sentence(&n.text)).unwrap_or_else(|| "Ready for you".into()),
@@ -132,8 +147,10 @@ impl Shell {
         let mut actions = h_flex().gap_1();
         match t.state {
             TaskState::Draft => {
-                let i = id.clone();
-                actions = actions.child(button("ready").outline().label("Ready").on_click(cx.listener(move |this, _, _, cx| this.act_task(&i, TaskAct::Ready, cx))));
+                let (i, j) = (id.clone(), id.clone());
+                actions = actions
+                    .child(button("plan").ghost().label("Plan").on_click(cx.listener(move |this, _, _, cx| this.act_task(&j, TaskAct::Plan, cx))))
+                    .child(button("ready").outline().label("Ready").on_click(cx.listener(move |this, _, _, cx| this.act_task(&i, TaskAct::Ready, cx))));
             }
             TaskState::Review => {
                 let (i, j) = (id.clone(), id.clone());
@@ -195,9 +212,14 @@ impl Shell {
                     .when(!status.is_empty(), |d| d.child(div().flex_1().min_w_0().truncate().text_color(p.secondary).child(status))),
             )
             .when(changing, |d| {
-                d.child(h_flex().pt_1().gap_2().child(div().flex_1().child(Input::new(&self.task_change).id("task-change").small())).child(
-                    Button::new("task-change-send").xsmall().outline().label("Send").on_click(cx.listener(|this, _, window, cx| this.change_task(window, cx))),
-                ))
+                d.child(
+                    h_flex()
+                        .pt_1()
+                        .gap_2()
+                        .child(div().flex_1().child(Input::new(&self.task_change).id("task-change").small()))
+                        .child(Button::new("task-change-rule").xsmall().ghost().label("Send + Rule").on_click(cx.listener(|this, _, window, cx| this.change_task_and_teach(window, cx))))
+                        .child(Button::new("task-change-send").xsmall().outline().label("Send").on_click(cx.listener(|this, _, window, cx| this.change_task(window, cx)))),
+                )
             })
             .into_any_element()
     }

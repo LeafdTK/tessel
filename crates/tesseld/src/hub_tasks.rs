@@ -32,7 +32,21 @@ impl Hub {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn task_create(&mut self, repo: String, title: String, spec: String, deps: Vec<String>, parent: Option<String>, ready: bool, budget_usd: Option<f64>) -> Result<Response, RpcError> {
+    pub(super) fn task_create_from(&mut self, repo: String, title: String, spec: String, deps: Vec<String>, parent: Option<String>, ready: bool, budget_usd: Option<f64>, plan: bool, from: Option<SessionId>) -> Result<Response, RpcError> {
+        let planner = from.and_then(|s| self.tasks.values().find(|t| t.plan && t.session == Some(s) && matches!(t.state, TaskState::Running | TaskState::Review | TaskState::Planned)).cloned());
+        let Some(p) = planner else {
+            return self.task_create(repo, title, spec, deps, parent, ready, budget_usd, plan);
+        };
+        let r = self.task_create(p.repo.clone(), title, spec, deps, Some(p.id.clone()), true, budget_usd, false)?;
+        if p.state == TaskState::Review {
+            self.tasks.get_mut(&p.id).unwrap().state = TaskState::Planned;
+            self.task_saved(&p.id);
+        }
+        Ok(r)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn task_create(&mut self, repo: String, title: String, spec: String, deps: Vec<String>, parent: Option<String>, ready: bool, budget_usd: Option<f64>, plan: bool) -> Result<Response, RpcError> {
         let title = title.trim().to_owned();
         if title.is_empty() {
             return Err(RpcError::new(ErrorCode::Invalid, "a task needs a title"));
@@ -57,6 +71,7 @@ impl Hub {
             parent,
             session: None,
             notes: Vec::new(),
+            plan,
             attempts: 0,
             proof_cost_usd: 0.0,
             budget_usd,
@@ -105,6 +120,14 @@ impl Hub {
                 }
                 self.tasks.get_mut(id).unwrap().state = TaskState::Ready;
             }
+            TaskAct::Plan => {
+                if !matches!(t.state, TaskState::Draft | TaskState::Ready) {
+                    return refuse("only a task that hasn't started can be planned");
+                }
+                let task = self.tasks.get_mut(id).unwrap();
+                task.plan = true;
+                task.state = TaskState::Ready;
+            }
             TaskAct::Draft => {
                 if t.state != TaskState::Ready {
                     return refuse("only a ready task goes back to draft");
@@ -141,6 +164,10 @@ impl Hub {
                 }
                 self.land_queue.retain(|x| x != id);
                 self.tasks.get_mut(id).unwrap().state = TaskState::Dropped;
+                if let Some(p) = t.parent.clone() {
+                    self.task_saved(id);
+                    self.parent_progress(&p);
+                }
             }
             TaskAct::Unknown => return Err(RpcError::new(ErrorCode::Invalid, "tessel doesn't know that")),
         }
@@ -163,6 +190,10 @@ impl Hub {
     }
 
     fn start_task(&mut self, id: &str) {
+        if self.tasks.get(id).is_some_and(|t| t.plan) {
+            self.start_planner(id);
+            return;
+        }
         let Some(t) = self.tasks.get_mut(id) else { return };
         t.state = TaskState::Running;
         let (repo, title, prompt) = (t.repo.clone(), t.title.clone(), board::task_prompt(t));
@@ -181,6 +212,47 @@ impl Hub {
         };
         let name = format!("{id}-{}", crate::workflow::slug(&title).chars().take(30).collect::<String>());
         self.make_worktree(NOBODY, 0, create, WorktreeSpec { base: None, name: Some(name) });
+    }
+
+    fn start_planner(&mut self, id: &str) {
+        let Some(t) = self.tasks.get_mut(id) else { return };
+        t.state = TaskState::Running;
+        let (repo, title, prompt) = (t.repo.clone(), t.title.clone(), board::plan_prompt(t));
+        let f = board::factory(std::path::Path::new(&repo), std::path::Path::new(&repo));
+        let create = Create {
+            cmd_id: Uuid::new_v4(),
+            cwd: repo.clone(),
+            goal: Some(format!("Plan: {title}")),
+            prompt: Some(prompt),
+            attachments: Vec::new(),
+            model: Some(f.model),
+            parent: None,
+            fork: None,
+            task: Some(id.to_owned()),
+        };
+        let result = self.create_session(create, repo, None);
+        self.task_started(id, &result);
+    }
+
+    fn parent_progress(&mut self, parent: &str) {
+        if self.tasks.get(parent).is_none_or(|p| p.state != TaskState::Planned) {
+            return;
+        }
+        let kids: Vec<TaskState> = self.tasks.values().filter(|t| t.parent.as_deref() == Some(parent)).map(|t| t.state).collect();
+        if kids.is_empty() || !kids.iter().all(|s| s.finished()) {
+            return;
+        }
+        let landed = kids.iter().filter(|s| **s == TaskState::Landed).count();
+        let p = self.tasks.get_mut(parent).unwrap();
+        if landed == kids.len() {
+            p.state = TaskState::Landed;
+            p.landed = Some(format!("{landed} tasks"));
+            self.note(parent, "tessel", format!("all {landed} of its tasks landed"));
+        } else {
+            p.state = TaskState::Review;
+            self.note(parent, "tessel", format!("{landed} of its {} tasks landed; the rest were dropped", kids.len()));
+        }
+        self.task_saved(parent);
     }
 
     pub(super) fn task_started(&mut self, id: &str, result: &Result<Response, RpcError>) {
@@ -204,6 +276,20 @@ impl Hub {
     pub(super) fn task_turn_ended(&mut self, session: SessionId) -> bool {
         let Some(id) = self.task_of(session) else { return false };
         if self.tasks[&id].state != TaskState::Running {
+            return true;
+        }
+        if self.tasks[&id].plan {
+            let filed = self.tasks.values().filter(|t| t.parent.as_deref() == Some(id.as_str())).count();
+            let t = self.tasks.get_mut(&id).unwrap();
+            if filed == 0 {
+                t.state = TaskState::Review;
+                self.note(&id, "tessel", "the planner filed no tasks");
+            } else {
+                t.state = TaskState::Planned;
+                self.note(&id, "tessel", format!("split into {filed} tasks"));
+            }
+            self.task_saved(&id);
+            self.dispatch();
             return true;
         }
         let errored = self.sessions.get(&session).and_then(|l| l.state.attention.as_ref()).is_some_and(|a| a.reason == tessel_proto::AttentionReason::Errored);
@@ -292,6 +378,7 @@ impl Hub {
     pub(super) fn task_landed(&mut self, id: String, result: Result<crate::land::Landed, crate::land::Stuck>) {
         use crate::land::{Landed, Stuck};
         self.landing = None;
+        let parent = self.tasks.get(&id).and_then(|t| t.parent.clone());
         let session = self.tasks.get(&id).and_then(|t| t.session);
         match result {
             Ok(Landed::Merged { sha, said }) => {
@@ -327,6 +414,9 @@ impl Hub {
             }
         }
         self.task_saved(&id);
+        if let Some(p) = parent {
+            self.parent_progress(&p);
+        }
         self.dispatch();
         self.pump_land();
     }

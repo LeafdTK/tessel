@@ -1957,7 +1957,7 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
         git(&repo, args);
     }
     let (c, _) = d.client().await;
-    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None };
+    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None };
     let Response::Task { task: first } = c.request(make("Count higher", vec![])).await.unwrap() else { panic!() };
     let Response::Task { task: second } = c.request(make("Then count lower", vec![first.id.clone()])).await.unwrap() else { panic!() };
 
@@ -2080,4 +2080,46 @@ async fn a_triggered_workflow_changes_code_only_by_filing_a_task() {
     let Response::Workflows { workflows } = c.request(Request::Workflows { cwd: None }).await.unwrap() else { panic!() };
     let broken = workflows.iter().find(|w| w.name == "Broken").unwrap();
     assert!(broken.problems.iter().any(|p| p.contains("\"who\" needs a default")), "{:?}", broken.problems);
+}
+
+#[tokio::test]
+async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
+    use tessel_proto::task::{TaskAct, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("app");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("a.txt"), "a\n").unwrap();
+    std::fs::write(repo.join("b.txt"), "b\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    let Response::Task { task: big } = c.request(Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Add billing".into(), spec: "Stripe".into(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: true, from: None }).await.unwrap() else { panic!() };
+    let reviewed = task_until(&c, &big.id, "the planner ran", |t| t.state == TaskState::Review).await;
+    let planner = reviewed.session.expect("a planner chat");
+    let summary = list(&c).await.into_iter().find(|s| s.id == planner).unwrap();
+    assert!(summary.worktree.is_none(), "planning needs no workspace of its own: {:?} {}", summary.worktree, summary.cwd);
+    assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("Plan this task, don't do it") && l.contains("Add billing")));
+    assert!(reviewed.notes.iter().any(|n| n.text.contains("filed no tasks")));
+
+    let file = |title: &str, after: Vec<String>| Request::TaskCreate { repo: "/ignored".into(), title: title.into(), spec: String::new(), deps: after, parent: None, ready: false, budget_usd: None, plan: false, from: Some(planner) };
+    let Response::Task { task: one } = c.request(file("Add the plans table", vec![])).await.unwrap() else { panic!() };
+    let Response::Task { task: two } = c.request(file("Charge monthly", vec![one.id.clone()])).await.unwrap() else { panic!() };
+    assert_eq!((one.parent.as_deref(), one.repo.clone()), (Some(big.id.as_str()), big.repo.clone()), "the planner's tasks are the big one's, in its repository");
+    assert_ne!(two.state, TaskState::Draft, "ready, as the planner filed them");
+    assert_eq!(task_until(&c, &big.id, "waiting on its tasks", |t| t.state == TaskState::Planned).await.state, TaskState::Planned);
+
+    for (t, f) in [(&one, "a.txt"), (&two, "b.txt")] {
+        let t = task_until(&c, &t.id, "worked", |x| x.state == TaskState::Review).await;
+        let ws = PathBuf::from(list(&c).await.into_iter().find(|s| Some(s.id) == t.session).unwrap().cwd);
+        std::fs::write(ws.join(f), format!("{} changed\n", t.title)).unwrap();
+        git(&ws, &["commit", "-q", "-am", &format!("feat: {}", t.title.to_lowercase())]);
+        c.request(Request::TaskAct { id: t.id.clone(), act: TaskAct::Land }).await.unwrap();
+        let landed = task_until(&c, &t.id, "landed", |x| x.state.finished()).await;
+        assert_eq!(landed.state, TaskState::Landed, "{:?}", landed.notes);
+    }
+    let done = task_until(&c, &big.id, "done when they all are", |t| t.state.finished()).await;
+    assert_eq!(done.state, TaskState::Landed);
+    assert!(done.notes.iter().any(|n| n.text == "all 2 of its tasks landed"));
+    assert_eq!(git(&repo, &["log", "--format=%s", "-n", "2"]), "feat: charge monthly\nfeat: add the plans table");
 }

@@ -13,6 +13,8 @@ const TEACH: &str = "Teach this repository something to hold every change to, fr
 
 const FROM_FINDING: &str = "A review of a change found the problem below. Make it a house rule for this repository, so every change is checked for it from now on: say it more generally than this one case, and give a short good and bad example. Write it under .tessel/rules/, then tell me in a line what you added.";
 
+const FROM_REVIEW: &str = "In a review of an agent's change I asked for the change below. If it says something every change in this repository should follow, make it a house rule: say it generally, with a short good and bad example, and write it under .tessel/rules/. If it was only about that one change, write nothing and say so in a line. Otherwise tell me in a line what you added.";
+
 const SET_UP: &str = "Set up house rules for this repository, so tessel can prove changes against them. Read what's here first: AGENTS.md, CLAUDE.md, .cursor/rules, the CI config, the build and test scripts, and the last 50 commit subjects. Then work out: verify commands for .tessel/settings.toml that are fast and reliable (a lint, a type check, the quick tests), the 3 to 8 rules that matter most here, and knowledge files for anything a reviewer couldn't guess. Show me the list with tessel_ask (one multiselect, everything ticked) before writing anything. Write what I keep, then tell me in a line what you added.";
 
 pub(crate) fn teach_prompt(typed: &str) -> String {
@@ -76,6 +78,12 @@ impl Shell {
         };
         let prompt = format!("{FROM_FINDING}\n\nThe finding{at}: {}\n{}\n\n{}", finding.title, finding.why, tessel_proto::proof::RULE_FORMAT);
         self.cmd(Cmd::Create { cwd, worktree: false, prompt, attachments: Vec::new(), model: Some("sonnet".into()) });
+        cx.notify();
+    }
+
+    pub(crate) fn teach_from_review(&mut self, repo: String, said: String, cx: &mut Context<Self>) {
+        let prompt = format!("{FROM_REVIEW}\n\nWhat I asked for in review: {said}\n\n{}", tessel_proto::proof::RULE_FORMAT);
+        self.cmd(Cmd::Create { cwd: repo, worktree: false, prompt, attachments: Vec::new(), model: Some("sonnet".into()) });
         cx.notify();
     }
 

@@ -257,6 +257,10 @@ pub enum Request {
         ready: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget_usd: Option<f64>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        plan: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<SessionId>,
     },
     TaskEdit {
         id: String,

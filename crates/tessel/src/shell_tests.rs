@@ -3292,7 +3292,7 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     rig.settle(cx);
     let t = |id: &str, state: TaskState, deps: &[&str], session: Option<SessionId>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: deps.iter().map(|d| (*d).to_owned()).collect(),
-        parent: None, session, notes: vec![], attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1,
+        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("t1", TaskState::Review, &[], Some(a.id)),
@@ -3379,7 +3379,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     assert!(tessel_proto::surface::validate(&built_in).is_empty(), "the built-in view is a valid surface");
     assert!(built_in.to_string().matches("\"bind\"").count() >= 8);
 
-    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1 };
+    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1 };
     rig.feed(cx, vec![
         UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
         UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, ..Default::default() } }) },
@@ -3414,4 +3414,38 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     let (prompt, worktree, model) = made.expect("a chat to make it");
     assert!(prompt.contains("what my agents cost per repo") && prompt.contains("~/.tessel/views/") && prompt.contains("cost.daily"));
     assert_eq!((worktree, model.as_deref()), (false, Some("sonnet")));
+}
+
+#[gpui_kit::test]
+fn big_tasks_are_planned_from_the_board_and_a_review_can_become_a_rule(cx: &mut TestAppContext) {
+    use tessel_proto::task::{Task, TaskAct, TaskState};
+    let a = session(1, "Fix login", RunState::Idle, None);
+    let dir = layout_dir("plan");
+    let mut rig = Rig::with_sessions_launched(cx, a.clone(), vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec("app.factory", &serde_json::json!({"on": true}), window, cx))).unwrap().unwrap();
+    let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
+    let ls = exec(&mut rig, cx, "ui.ls", serde_json::Value::Null).unwrap();
+    let conv = ls["panes"].as_array().unwrap().iter().find(|p| p["module"] == "conversation").map(|p| p["id"].as_str().unwrap().to_owned()).unwrap();
+    let new = exec(&mut rig, cx, "pane.split", serde_json::json!({"pane": conv, "dir": "right"})).unwrap()["pane"].as_str().unwrap().to_owned();
+    exec(&mut rig, cx, "pane.show", serde_json::json!({"pane": new, "module": "board"})).unwrap();
+    rig.settle(cx);
+    let t = |id: &str, state: TaskState, parent: Option<&str>| Task {
+        id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: parent.map(str::to_owned), session: Some(a.id),
+        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, created_ms: 1, updated_ms: 1,
+    };
+    rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
+        t("big", TaskState::Planned, None), t("k1", TaskState::Landed, Some("big")), t("k2", TaskState::Running, Some("big")),
+        t("draft", TaskState::Draft, None), t("rev", TaskState::Review, None),
+    ] }) }]);
+    assert!(rig.exists(cx, "task-big"));
+    assert_eq!(rig.shell.read_with(cx, |s, _| s.tasks.iter().filter(|x| x.parent.as_deref() == Some("big")).count()), 2);
+    rig.asked();
+    rig.click(cx, "task-plan-draft");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskAct { id, act: TaskAct::Plan } } if id == "draft")));
+    rig.click(cx, "task-change-rev");
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_change.update(cx, |i, cx| i.set_value("never log tokens", window, cx)))).unwrap();
+    rig.click(cx, "task-change-rule");
+    let asked = rig.asked();
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskAct { id, act: TaskAct::Change { text } } } if id == "rev" && text == "never log tokens")), "the change goes to the agent");
+    assert!(asked.iter().any(|c| matches!(c, Cmd::Create { cwd, prompt, worktree: false, .. } if cwd == "/work/api" && prompt.contains("never log tokens") && prompt.contains("House rules live in"))), "and may become a house rule: {asked:?}");
 }

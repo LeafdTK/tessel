@@ -92,7 +92,7 @@ mod tests {
     }
 
     fn task(id: &str, state: TaskState, landed: Option<&str>) -> Task {
-        Task { id: id.into(), title: id.into(), spec: String::new(), repo: "/r".into(), state, deps: vec![], parent: None, session: None, notes: vec![], attempts: 0, proof_cost_usd: 0.1, budget_usd: None, risk: None, landed: landed.map(str::to_owned), created_ms: 0, updated_ms: 0 }
+        Task { id: id.into(), title: id.into(), spec: String::new(), repo: "/r".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.1, budget_usd: None, risk: None, landed: landed.map(str::to_owned), created_ms: 0, updated_ms: 0 }
     }
 
     #[tokio::test]

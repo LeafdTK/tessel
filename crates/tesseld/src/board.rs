@@ -96,6 +96,20 @@ pub fn after_proof(task: &Task, p: &Proof, f: &Factory) -> Next {
     }
 }
 
+pub fn plan_prompt(t: &Task) -> String {
+    let mut p = format!(
+        "Plan this task, don't do it: split it into 2 to 6 small tasks that each make one change and can be checked on their own. Read only what you need to plan well. \
+File them in order with tessel_task (op add, ready: true, and after: the ids of tasks each one needs done first), each with a title and a spec that says what done looks like. \
+Don't change any files. Then stop with one line listing what you filed.\n\n{}",
+        t.title
+    );
+    if !t.spec.trim().is_empty() {
+        p.push_str("\n\n");
+        p.push_str(t.spec.trim());
+    }
+    p
+}
+
 pub fn task_prompt(t: &Task) -> String {
     let mut p = t.title.clone();
     if !t.spec.trim().is_empty() {
@@ -131,6 +145,7 @@ mod tests {
             parent: None,
             session: None,
             notes: vec![],
+            plan: false,
             attempts: 0,
             proof_cost_usd: 0.0,
             budget_usd: None,
@@ -139,6 +154,16 @@ mod tests {
             created_ms: at,
             updated_ms: at,
         }
+    }
+
+    #[test]
+    fn a_planner_is_told_to_file_tasks_not_to_write_code() {
+        let mut t = task("a", TaskState::Ready, &[], 0);
+        t.title = "Add billing".into();
+        t.spec = "Stripe, monthly plans.".into();
+        let p = plan_prompt(&t);
+        assert!(p.contains("don't do it") && p.contains("tessel_task") && p.contains("after:") && p.contains("Don't change any files"));
+        assert!(p.ends_with("Add billing\n\nStripe, monthly plans."));
     }
 
     #[test]
