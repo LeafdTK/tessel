@@ -148,6 +148,7 @@ fn metrics() -> Metrics {
         waste: 0.22,
         escaped: 0,
         lenses: vec![g("correctness", 23, 4, 15, 2), g("scope", 17, 6, 8, 3), g("look", 9, 1, 7, 1), g("edge-cases", 8, 2, 5, 0), g("security", 3, 1, 2, 0)],
+        spend: (0..6u64).map(|d| (now() - d * 86_400_000 - 3_600_000, [1.49, 2.1, 0.8, 3.4, 0.0, 1.2][d as usize])).collect(),
     }
 }
 

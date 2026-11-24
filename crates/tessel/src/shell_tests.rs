@@ -3397,7 +3397,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, created_ms: 1, updated_ms: 1 };
     rig.feed(cx, vec![
         UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
-        UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, ..Default::default() } }) },
+        UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, spend: vec![(crate::shell::now_ms() - 60_000, 1.5), (crate::shell::now_ms() - 40 * 86_400_000, 900.0)], ..Default::default() } }) },
     ]);
     let bound = |rig: &mut Rig, kind: &str, bind: &str| rig.shell.read_with(cx, |s, _| s.bound_props(kind, json!({"bind": bind, "label": "x"})));
     assert_eq!(bound(&mut rig, "table", "tasks.review")["rows"], json!([["Task t1", "review", "$0.25"]]));
@@ -3405,7 +3405,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     assert_eq!(bound(&mut rig, "metric", "factory.cost_per_landed")["value"], "$0.42");
     let escaped = bound(&mut rig, "metric", "factory.escaped");
     assert_eq!((escaped["value"].clone(), escaped["tone"].clone()), (json!(1), json!("error")), "a revert is flagged");
-    assert_eq!(bound(&mut rig, "bars", "cost.daily")["items"].as_array().unwrap().last().unwrap()["value"], 1.5, "today's spend lands on today");
+    assert_eq!(bound(&mut rig, "bars", "cost.daily")["items"].as_array().unwrap().last().unwrap()["value"], 1.5, "today's spend lands on today, and a chat's old spending doesn't");
     assert_eq!(bound(&mut rig, "metric", "chats")["value"], 1);
     assert_eq!(bound(&mut rig, "metric", "nothing")["value"], serde_json::Value::Null, "an unknown source leaves the props alone");
 

@@ -1583,7 +1583,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::Metrics => {
                 let tasks: Vec<tessel_proto::task::Task> = self.tasks.values().cloned().collect();
                 let costs: HashMap<String, f64> = tasks.iter().map(|t| (t.id.clone(), t.proof_cost_usd + t.session.and_then(|s| self.sessions.get(&s)).map_or(0.0, |l| l.state.cost_usd()))).collect();
-                let (tx, home) = (self.tx.clone(), self.cfg.paths.home.clone());
+                let (tx, home, store) = (self.tx.clone(), self.cfg.paths.home.clone(), self.store.clone());
                 tokio::spawn(async move {
                     let mut repos: Vec<String> = tasks.iter().filter(|t| t.landed.is_some()).map(|t| t.repo.clone()).collect();
                     repos.sort();
@@ -1594,6 +1594,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     }
                     let mut metrics = crate::views::metrics(&tasks, |t| costs.get(&t.id).copied().unwrap_or(0.0), &reverted);
                     metrics.lenses = crate::grades::all(&crate::grades::load(&home));
+                    metrics.spend = store.spend_by_hour(now_ms().saturating_sub(8 * 86_400_000)).await.unwrap_or_default();
                     let _ = tx.send(HubMsg::Reply { client, id, result: Ok(Response::Metrics { metrics }) });
                 });
                 return None;

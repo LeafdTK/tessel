@@ -178,11 +178,12 @@ impl Shell {
         let paused = self.factory_paused();
         let working = self.tasks.iter().filter(|t| matches!(t.state, TaskState::Running | TaskState::Proving | TaskState::Landing | TaskState::Checking)).count();
         let now = super::now_ms();
-        let today = super::views::spend_by_day(&self.model.sessions, now, 1).last().map_or(0.0, |d| d.1);
-        let used = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r * 1000 > now as i64)).map(|w| w.used).fold(0.0, f64::max);
-        let mut facts = vec![format!("{working} working"), format!("${today:.2} today")];
-        if used > 0.0 {
-            facts.push(format!("{:.0}% of plan", used * 100.0));
+        let today = super::views::spend_by_day(&self.metrics.as_ref().map(|m| m.spend.clone()).unwrap_or_default(), now, 1).last().map_or(0.0, |d| d.1);
+        let plan = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r * 1000 > now as i64)).map(|w| w.used).fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.max(u))));
+        let mut facts = vec![format!("{working} working")];
+        match plan {
+            Some(used) => facts.push(format!("{:.0}% of plan", used * 100.0)),
+            None => facts.push(format!("${today:.2} today")),
         }
         h_flex()
             .id("factory-bar")

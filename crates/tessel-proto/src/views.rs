@@ -25,6 +25,8 @@ pub struct Metrics {
     pub escaped: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lenses: Vec<Graded>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spend: Vec<(u64, f64)>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

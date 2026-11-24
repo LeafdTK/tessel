@@ -31,6 +31,7 @@ enum Job {
     LoadTasks { reply: oneshot::Sender<anyhow::Result<Vec<String>>> },
     LoadSessions { reply: oneshot::Sender<anyhow::Result<Vec<Persisted>>> },
     LoadItems { id: SessionId, reply: oneshot::Sender<anyhow::Result<Vec<Item>>> },
+    Spend { since: u64, reply: oneshot::Sender<anyhow::Result<Vec<(u64, f64)>>> },
     /// resolves once everything queued before it is on disk.
     Flush { reply: oneshot::Sender<()> },
 }
@@ -110,6 +111,12 @@ impl Store {
 
     pub fn save_proof(&self, id: SessionId, body: String) {
         let _ = self.tx.send(Job::SaveRun { table: "proofs", id, body });
+    }
+
+    pub async fn spend_by_hour(&self, since: u64) -> anyhow::Result<Vec<(u64, f64)>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::Spend { since, reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
     }
 
     pub async fn load_proofs(&self) -> anyhow::Result<Vec<(SessionId, String)>> {
@@ -336,6 +343,18 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
             Job::LoadSessions { reply } => {
                 let _ = reply.send(load_sessions(&conn));
             }
+            Job::Spend { since, reply } => {
+                let load = || -> anyhow::Result<Vec<(u64, f64)>> {
+                    let mut stmt = conn.prepare(
+                        "SELECT (CAST(json_extract(body, '$.finished_ms') AS INTEGER) / 3600000) * 3600000 AS hour, SUM(json_extract(body, '$.cost_usd')) \
+                         FROM items WHERE body LIKE '%\"kind\":\"turn\"%' AND json_extract(body, '$.finished_ms') >= ?1 AND json_extract(body, '$.cost_usd') IS NOT NULL \
+                         GROUP BY hour ORDER BY hour",
+                    )?;
+                    let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, f64>(1)?)))?.collect::<Result<_, _>>()?;
+                    Ok(rows)
+                };
+                let _ = reply.send(load());
+            }
             Job::LoadItems { id, reply } => {
                 let _ = reply.send(load_items(&conn, id));
             }
@@ -557,6 +576,27 @@ mod tests {
 
     fn item(id: &str, order: u64, text: &str) -> Item {
         Item { id: ItemId::from(id), parent: None, seq: order, order, created_ms: 1, body: ItemBody::Text { text: text.into(), streaming: false } }
+    }
+
+    #[tokio::test]
+    async fn what_was_spent_is_counted_by_the_hour_each_turn_finished_in_not_by_the_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("p.db")).unwrap();
+        let hour = 3_600_000u64;
+        let turn = |id: &str, at: u64, cost: Option<f64>| -> Item {
+            let mut v = serde_json::json!({"id": id, "seq": 1, "order": 1, "created_ms": at, "kind": "turn", "started_ms": at - 10, "finished_ms": at});
+            if let Some(c) = cost {
+                v["cost_usd"] = serde_json::json!(c);
+            }
+            serde_json::from_value(v).unwrap()
+        };
+        let old = SessionId::new();
+        let mut p = persisted(old);
+        p.cost_usd = 900.0;
+        store.save(p, vec![turn("a", 100 * hour + 5, Some(800.0)), turn("b", 200 * hour + 5, Some(1.5)), turn("c", 200 * hour + 900, Some(0.5)), turn("d", 201 * hour, None)]);
+        store.save(persisted(SessionId::new()), vec![item("x", 1, "hello"), turn("e", 201 * hour + 1, Some(0.25))]);
+        store.flush().await;
+        assert_eq!(store.spend_by_hour(150 * hour).await.unwrap(), vec![(200 * hour, 2.0), (201 * hour, 0.25)], "a chat's old turns don't count today, however much it cost over its life");
     }
 
     #[tokio::test]

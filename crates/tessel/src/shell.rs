@@ -723,6 +723,9 @@ impl Shell {
                     this.workspace_tick();
                     this.kube_tick();
                     this.procs_tick();
+                    if now_ms() / 1000 % 60 == 0 {
+                        this.metrics_tick();
+                    }
                     this.poll_ui(window, cx);
                     cx.notify();
                 });

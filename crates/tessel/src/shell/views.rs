@@ -13,11 +13,11 @@ pub(crate) fn factory_view() -> Value {
             metric("Landed", "factory.landed"),
             metric("Waiting on you", "factory.review"),
             metric("Working", "factory.working"),
-            metric("Per landed task", "factory.cost_per_landed"),
+            metric("Per landed task, at API prices", "factory.cost_per_landed"),
             metric("Wasted", "factory.waste"),
             metric("Reverted later", "factory.escaped")
         ]},
-        {"k": "card", "p": {"title": "Spent each day"}, "c": [{"k": "bars", "p": {"bind": "cost.daily", "unit": "$"}}]},
+        {"k": "card", "p": {"title": "Each day, at API prices"}, "c": [{"k": "bars", "p": {"bind": "cost.daily", "unit": "$"}}]},
         {"k": "card", "p": {"title": "Waiting on you"}, "c": [{"k": "table", "p": {"bind": "tasks.review"}}]},
         {"k": "card", "p": {"title": "Reviewers"}, "c": [{"k": "table", "p": {"bind": "factory.reviewers"}}]}
     ]})
@@ -27,13 +27,13 @@ fn state_word(s: TaskState) -> String {
     serde_json::to_value(s).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
-pub(crate) fn spend_by_day(sessions: &[tessel_proto::SessionSummary], now: u64, days: usize) -> Vec<(String, f64)> {
+pub(crate) fn spend_by_day(hours: &[(u64, f64)], now: u64, days: usize) -> Vec<(String, f64)> {
     let today = day_of(now).0;
     let mut by_day: Vec<(String, f64)> = (0..days).rev().map(|back| (day_of(now.saturating_sub(back as u64 * 86_400_000)).1, 0.0)).collect();
-    for s in sessions {
-        let back = today - day_of(s.updated_ms.max(s.created_ms)).0;
+    for (at, cost) in hours {
+        let back = today - day_of(*at).0;
         if (0..days as i64).contains(&back) {
-            by_day[days - 1 - back as usize].1 += s.cost_usd;
+            by_day[days - 1 - back as usize].1 += cost;
         }
     }
     by_day
@@ -51,6 +51,12 @@ impl Shell {
     pub(crate) fn views_answer(&mut self, result: Result<Response, String>) {
         if let Ok(Response::Views { views }) = result {
             self.saved_views = views;
+        }
+    }
+
+    pub(crate) fn metrics_tick(&mut self) {
+        if self.factory_on() {
+            self.cmd(Cmd::Ask { tag: "metrics", req: Request::Metrics });
         }
     }
 
@@ -115,7 +121,7 @@ impl Shell {
                 }
             }
             "cost.daily" => {
-                let by_day = spend_by_day(&self.model.sessions, super::now_ms(), 7);
+                let by_day = spend_by_day(&self.metrics.as_ref().map(|m| m.spend.clone()).unwrap_or_default(), super::now_ms(), 7);
                 match kind {
                     "metric" => put("value", json!(money(by_day.last().map_or(0.0, |d| d.1)))),
                     "line" => put("points", json!(by_day.iter().map(|d| d.1).collect::<Vec<_>>())),
@@ -237,5 +243,16 @@ impl Shell {
             }))
             .child(title.to_owned())
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod spend_days {
+    #[test]
+    fn spend_lands_on_the_local_day_each_hour_belongs_to() {
+        use chrono::TimeZone as _;
+        let noon = chrono::Local.with_ymd_and_hms(2026, 11, 24, 12, 0, 0).single().unwrap().timestamp_millis() as u64;
+        let days = super::spend_by_day(&[(noon - 3_600_000, 1.5), (noon - 86_400_000, 2.0), (noon - 30 * 86_400_000, 900.0)], noon, 3);
+        assert_eq!(days.iter().map(|d| d.1).collect::<Vec<_>>(), vec![0.0, 2.0, 1.5], "yesterday, today, and nothing from a month ago");
     }
 }

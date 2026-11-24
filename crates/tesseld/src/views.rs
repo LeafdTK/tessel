@@ -61,6 +61,7 @@ pub fn metrics(tasks: &[tessel_proto::task::Task], cost_of: impl Fn(&tessel_prot
         waste: tasks.iter().filter(|t| t.state == TaskState::Dropped).map(&cost_of).sum::<f64>() + 0.0,
         escaped: landed.iter().filter(|t| t.landed.as_ref().is_some_and(|sha| reverted.iter().any(|r| r.starts_with(sha.as_str()) || sha.starts_with(r.as_str())))).count() as u32,
         lenses: Vec::new(),
+        spend: Vec::new(),
     }
 }
 

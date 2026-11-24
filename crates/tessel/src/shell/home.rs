@@ -114,7 +114,7 @@ impl Shell {
             );
         }
 
-        let days = super::views::spend_by_day(&self.model.sessions, now, 4);
+        let days = super::views::spend_by_day(&self.metrics.as_ref().map(|m| m.spend.clone()).unwrap_or_default(), now, 4);
         let today = days.last().map_or(0.0, |d| d.1);
         let mut row = h_flex().w_full().justify_between();
         for (label, v) in &days {
@@ -129,7 +129,7 @@ impl Shell {
         let spend = tile("spend", false)
             .bg(wash(0x4a9df8, 0x9ccbf7))
             .text_color(white)
-            .child(words(15., FontWeight::SEMIBOLD).opacity(0.9).child("Spent today"))
+            .child(words(15., FontWeight::SEMIBOLD).opacity(0.9).child("Today, at API prices"))
             .child(face(if today >= 100.0 { 40. } else if today >= 10.0 { 46. } else { 54. }).mt(theme::z(8.)).whitespace_nowrap().child(money(today)))
             .child(div().flex_1())
             .child(row);
