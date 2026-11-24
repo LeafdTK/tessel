@@ -3316,8 +3316,11 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     assert_eq!(acted(&mut rig), Some(("t1".into(), TaskAct::Change { text: "keep the old shortcut".into() })));
 
     cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_title.update(cx, |i, cx| i.set_value("Add dark mode", window, cx)))).unwrap();
-    rig.click(cx, "task-add");
+    rig.click(cx, "task-draft");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskCreate { repo, title, ready: false, .. } } if repo == "/work/api" && title == "Add dark mode")));
+    cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.task_title.update(cx, |i, cx| i.set_value("Add light mode", window, cx)))).unwrap();
+    rig.click(cx, "task-start");
+    assert!(rig.asked().iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskCreate { title, ready: true, .. } } if title == "Add light mode")), "Start hands it to an agent at once");
 
     rig.feed(cx, vec![UiEvent::Task(t("t1", TaskState::Landed, &[], Some(a.id)))]);
     assert!(rig.shell.read_with(cx, |s, _| s.tasks.iter().any(|x| x.id == "t1" && x.state == TaskState::Landed)), "live updates land in place");

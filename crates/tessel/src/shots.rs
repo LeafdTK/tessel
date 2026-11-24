@@ -180,6 +180,7 @@ const SCREENS: &[Screen] = &[
     },
     Screen { name: "board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
+    Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
 ];
 
 fn settle(cx: &mut VisualTestAppContext, window: &WindowHandle<Shell>) {
@@ -230,7 +231,7 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             settle(&mut cx, &window);
         }
         for ev in [
-            UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: tasks() }) },
+            UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: if screen.name.ends_with("-empty") { Vec::new() } else { tasks() } }) },
             UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: metrics() }) },
         ] {
             let _ = events.send(ev);

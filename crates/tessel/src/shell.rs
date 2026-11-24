@@ -499,7 +499,7 @@ impl Shell {
         let projects_home = std::env::var("TESSEL_PROJECTS").unwrap_or_else(|_| "~/tessel/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
-        let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("A task for an agent…"));
+        let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("Describe a change for an agent to make…"));
         let key_inputs = keys::KeyForm::new(window, cx);
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
 
