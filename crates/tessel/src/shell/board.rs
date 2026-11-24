@@ -419,7 +419,7 @@ impl Shell {
         let working = by(&[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Checking, TaskState::Planned]);
         let queued = by(&[TaskState::Ready]);
         let drafts = by(&[TaskState::Draft]);
-        let done: Vec<&Task> = by(&[TaskState::Landed]).into_iter().take(12).collect();
+        let done: Vec<&Task> = by(&[TaskState::Landed]).into_iter().filter(|t| !t.cleared).take(12).collect();
 
         let mut col = v_flex().w_full().gap(theme::z(12.)).child(composer);
         if !working.is_empty() || !queued.is_empty() {
@@ -441,7 +441,13 @@ impl Shell {
             }
         }
         if !done.is_empty() {
-            col = col.child(heading("Done", done.len()));
+            let ids: Vec<String> = done.iter().map(|t| t.id.clone()).collect();
+            col = col.child(heading("Done", done.len()).child(div().flex_1()).child(big_button(&p, "board-clear-done", "Clear", theme::ButtonKind::Ghost, cx.listener(move |this, _, _, cx| {
+                for id in &ids {
+                    this.cmd(Cmd::Ask { tag: "task", req: Request::TaskAct { id: id.clone(), act: TaskAct::Clear } });
+                }
+                cx.notify();
+            }))));
             for t in done {
                 col = col.child(self.task_card(t, cx));
             }

@@ -245,6 +245,7 @@ mod tests {
             summary: None,
             changes: vec![],
             review: None,
+            cleared: false,
             created_ms: at,
             updated_ms: at,
         }

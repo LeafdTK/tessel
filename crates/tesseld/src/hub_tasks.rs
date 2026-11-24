@@ -104,6 +104,7 @@ impl Hub {
             summary: None,
             changes: Vec::new(),
             review: None,
+            cleared: false,
             created_ms: now,
             updated_ms: now,
         };
@@ -212,6 +213,12 @@ impl Hub {
                     self.task_saved(id);
                     self.parent_progress(&p);
                 }
+            }
+            TaskAct::Clear => {
+                if !t.state.finished() {
+                    return refuse("only finished work is cleared");
+                }
+                self.tasks.get_mut(id).unwrap().cleared = true;
             }
             TaskAct::Unknown => return Err(RpcError::new(ErrorCode::Invalid, "tessel doesn't know that")),
         }

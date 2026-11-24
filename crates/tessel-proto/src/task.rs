@@ -90,6 +90,8 @@ pub struct Task {
     pub changes: Vec<FileStat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleared: bool,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }
@@ -103,6 +105,7 @@ pub enum TaskAct {
     Change { text: String },
     Plan,
     Drop,
+    Clear,
     #[serde(other)]
     Unknown,
 }

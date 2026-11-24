@@ -55,6 +55,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl task solve ISSUE [--draft] [--repo DIR]   a GitHub issue (42, #42 or its link) becomes a task,
                                             started at once; landing it closes the issue
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
+  tesselctl task clear                      take finished work off the board (it stays in your history)
   tesselctl key add NAME [--preset github|github-git] [--for HOST]… [--env VAR] [--method M]… [--path P]…
              [--from 'gh auth token']       a key agents use without ever seeing it: kept in the keychain, added
                                             by tessel on the way out, only for those hosts, methods and paths
@@ -654,6 +655,15 @@ async fn run() -> anyhow::Result<()> {
                     let issue = args.next("an issue: its number, like 42, or its link")?;
                     let t = one(client.request(Request::TaskFromIssue { repo, issue, ready }).await?)?;
                     println!("{}", line(&t));
+                }
+                "clear" => {
+                    let Response::Tasks { tasks } = client.request(Request::TaskList).await? else { bail!("unexpected reply") };
+                    let mut n = 0;
+                    for t in tasks.into_iter().filter(|t| t.state.finished() && !t.cleared) {
+                        client.request(Request::TaskAct { id: t.id, act: TaskAct::Clear }).await?;
+                        n += 1;
+                    }
+                    println!("cleared {n} finished task(s) from the board");
                 }
                 "ready" | "draft" | "land" | "drop" | "change" | "plan" => {
                     let id = args.next("a task")?;

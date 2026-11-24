@@ -119,6 +119,7 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         summary: Some("Added a coupon field to the cart. Codes are checked on the server; percent and fixed discounts apply before tax, and expired codes are refused with a message under the field.".to_owned()),
         changes: vec![tessel_proto::task::FileStat { path: "src/cart/coupon.rs".into(), added: 84, removed: 3 }, tessel_proto::task::FileStat { path: "src/cart/view.rs".into(), added: 22, removed: 9 }, tessel_proto::task::FileStat { path: "tests/coupon.rs".into(), added: 61, removed: 0 }],
         review: (state == TaskState::Landed).then(|| "Does what was asked, and the tests cover both kinds of discount.".to_owned()),
+        cleared: false,
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }
