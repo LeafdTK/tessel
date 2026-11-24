@@ -111,6 +111,18 @@ impl Shell {
 
     pub(crate) fn stage_main(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
+        if matches!(self.stage_focus(), Focus::New)
+            && let Some(repo) = self.board_repo()
+            && self.board_issues.as_ref().is_none_or(|(r, _)| *r != repo)
+        {
+            let me = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = me.update(cx, |this, cx| {
+                    this.ask_issues();
+                    cx.notify();
+                });
+            });
+        }
         if let Focus::Task(t) = self.stage_focus()
             && self.stage_diff_for.as_deref() != Some(t.id.as_str())
         {
@@ -124,7 +136,7 @@ impl Shell {
         }
         let main = match self.stage_focus() {
             Focus::Task(t) => self.stage_task(t, cx),
-            Focus::New => v_flex().w_full().max_w(theme::z(760.)).mx_auto().px(theme::z(48.)).pt(theme::z(48.)).child(self.task_composer(cx)).into_any_element(),
+            Focus::New => v_flex().w_full().max_w(theme::z(820.)).mx_auto().px(theme::z(48.)).pt(theme::z(56.)).pb(theme::z(48.)).gap(theme::z(36.)).child(self.task_composer(cx)).children(self.task_starts(cx)).into_any_element(),
             Focus::Issues => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.issues_tab(cx)).into_any_element(),
             Focus::Rules => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.rules_tab(cx)).into_any_element(),
         };
@@ -320,11 +332,19 @@ impl Shell {
         let p = self.palette.get();
         let now = (super::now_ms() / 1000) as i64;
         let mut windows: Vec<&tessel_proto::UsageWindow> = self.usage.iter().collect();
-        if windows.is_empty() {
+        if windows.is_empty() && self.account.is_none() {
             return None;
         }
         windows.sort_by_key(|w| (w.name != "five_hour", w.name.clone()));
         let mut col = v_flex().id("usage-limits").test_support().flex_shrink_0().mx(theme::z(theme::SIDE_INSET)).px(theme::z(theme::SIDE_PAD)).pt(theme::z(12.)).pb(theme::z(10.)).gap(theme::z(10.)).border_t_1().border_color(p.separator);
+        if let Some(a) = &self.account {
+            col = col.child(
+                v_flex()
+                    .id("usage-account")
+                    .child(h_flex().gap(theme::z(6.)).items_baseline().child(div().set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(p.label).child(if a.plan.is_empty() { "Claude".to_owned() } else { format!("Claude {}", a.plan) })))
+                    .child(div().truncate().set(Type::Subheadline).text_color(p.secondary).child(a.email.clone())),
+            );
+        }
         for w in windows {
             let over = w.resets_at.is_some_and(|r| r <= now);
             let pct = if over { 0 } else { (w.used * 100.0).round().clamp(0.0, 100.0) as u32 };

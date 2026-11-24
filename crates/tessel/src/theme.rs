@@ -613,6 +613,10 @@ pub const fn by_height(h: f32) -> f32 {
     h * 0.3
 }
 
+pub const fn outer(inner: f32, inset: f32) -> f32 {
+    inner + inset / SQUIRCLE
+}
+
 pub const fn nested(outer: f32, inset: f32) -> f32 {
     let r = outer - inset / SQUIRCLE;
     if r > 0.0 { r } else { 0.0 }

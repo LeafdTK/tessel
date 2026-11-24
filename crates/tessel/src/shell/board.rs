@@ -4,6 +4,8 @@ use tessel_proto::task::{Task, TaskAct, TaskState};
 use tessel_proto::{Request, Response};
 
 const GUTTER: f32 = 20.;
+const CONTROL: f32 = 36.;
+const ROW: f32 = 40.;
 const ROUND: f32 = theme::R_CONTROL + GUTTER / theme::SQUIRCLE;
 
 impl Shell {
@@ -28,7 +30,7 @@ impl Shell {
         }
     }
 
-    fn board_repo(&self) -> Option<String> {
+    pub(crate) fn board_repo(&self) -> Option<String> {
         if let Some(p) = &self.board_project {
             return Some(p.clone());
         }
@@ -166,8 +168,8 @@ impl Shell {
                 label,
                 options: [("main", "Land on main"), ("pr", "Open a pull request"), ("branch", "Merge into a branch"), ("keep", "Keep the branch")].iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect(),
                 current: chosen.clone(),
-                width: Some(210.),
-                height: 36.,
+                width: Some(176.),
+                height: CONTROL,
                 up: false,
             },
             std::rc::Rc::new(|this: &mut Shell, value: &str, _: &mut Window, _: &mut Context<Shell>| this.board_land = Some(value.to_owned())),
@@ -211,33 +213,162 @@ impl Shell {
             })));
         }
         let has_chips = !self.board_attachments.is_empty() || !self.board_files.is_empty();
+        let repo = self.board_repo();
+        let projects: Vec<(String, String)> = self.board_projects().into_iter().map(|f| (f.clone(), super::projects::folder_name(&f))).collect();
+        let project = self.select(
+            super::select::Select {
+                id: "task-project",
+                label: repo.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "Choose a project".into()),
+                options: projects,
+                current: repo.clone().unwrap_or_default(),
+                width: Some(150.),
+                height: CONTROL,
+                up: false,
+            },
+            std::rc::Rc::new(|this: &mut Shell, value: &str, _: &mut Window, _: &mut Context<Shell>| {
+                this.board_project = Some(value.to_owned());
+                this.board_issues = None;
+                this.board_rules = None;
+            }),
+            cx,
+        );
+        let attach = h_flex()
+            .id("task-attach")
+            .size(theme::z(CONTROL))
+            .flex_shrink_0()
+            .justify_center()
+            .rounded(theme::z(theme::by_height(CONTROL)))
+            .cursor_pointer()
+            .text_color(p.secondary)
+            .hover(|d| d.bg(p.hover).text_color(p.label))
+            .on_click(cx.listener(|_, _, window, cx| {
+                let pick = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Attach".into()) });
+                cx.spawn_in(window, async move |this, cx| {
+                    let Ok(Ok(Some(paths))) = pick.await else { return };
+                    let _ = this.update(cx, |this, cx| this.board_attach_paths(paths, cx));
+                })
+                .detach();
+            }))
+            .test_support()
+            .child(Icon::empty().path("icons/paperclip.svg").size(theme::z(16.)));
+        let pad = 20.;
         let composer = v_flex()
             .w_full()
-            .p(theme::z(GUTTER))
-            .gap(theme::z(16.))
-            .rounded(theme::z(ROUND))
+            .p(theme::z(pad))
+            .gap(theme::z(14.))
+            .rounded(theme::z(theme::outer(theme::by_height(CONTROL), pad)))
             .border_1()
             .border_color(p.separator)
             .when(!glass, |d| d.bg(p.raised).shadow_md())
-            .when(glass, |d| d.relative().child(super::glass_spot(ROUND)))
+            .when(glass, |d| d.relative().child(super::glass_spot(theme::outer(theme::by_height(CONTROL), pad))))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.board_attach_paths(paths.paths().to_vec(), cx)))
-            .child(div().w_full().ml(theme::z(-12.)).text_size(theme::z(17.)).line_height(theme::z(24.)).child({
+            .child(div().w_full().min_h(theme::z(84.)).ml(theme::z(-12.)).text_size(theme::z(19.)).line_height(theme::z(27.)).child({
                 let me = cx.entity().downgrade();
-                gpui_kit::component::input::Textarea::new(&self.task_title).appearance(false).on_paste(move |item, window, cx| me.update(cx, |this, cx| this.board_paste(item, window, cx)).unwrap_or(false))
+                gpui_kit::component::input::Textarea::new(&self.task_title).appearance(false).text_size(theme::z(19.)).line_height(theme::z(27.)).on_paste(move |item, window, cx| me.update(cx, |this, cx| this.board_paste(item, window, cx)).unwrap_or(false))
             }))
             .when(has_chips, |d| d.child(chips))
             .child(
                 h_flex()
                     .w_full()
                     .flex_wrap()
-                    .gap(theme::z(10.))
+                    .gap(theme::z(8.))
                     .items_center()
-                    .child(div().ml(theme::z(-2.)).child(self.when_done(cx)))
+                    .child(project)
+                    .child(self.when_done(cx))
+                    .child(attach)
                     .child(div().flex_1())
-                    .child(big_button(&p, "task-draft", &draft_label, theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
+                    .child(big_button(&p, "task-draft", &draft_label, theme::ButtonKind::Ghost, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
                     .child(big_button(&p, "task-start", &start_label, theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx)))),
             );
         composer.into_any_element()
+    }
+
+    pub(crate) fn task_starts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let p = self.palette.get();
+        let repo = self.board_repo()?;
+        let name = super::projects::folder_name(&repo);
+        let heading = |text: String| div().pb(theme::z(6.)).px(theme::z(theme::SIDE_PAD)).set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(text);
+        let row = |id: SharedString| {
+            h_flex()
+                .id(id)
+                .w_full()
+                .h(theme::z(ROW))
+                .px(theme::z(theme::SIDE_PAD))
+                .gap(theme::z(12.))
+                .items_center()
+                .rounded(theme::z(theme::by_height(ROW)))
+                .hover(|d| d.bg(p.hover))
+        };
+        let mut col = v_flex().w_full().gap(theme::z(28.));
+        if let Some((for_repo, Ok(issues))) = &self.board_issues
+            && *for_repo == repo
+            && !issues.is_empty()
+        {
+            let mut group = v_flex().w_full().child(heading(format!("Open issues in {name}")));
+            for (i, issue) in issues.iter().take(5).enumerate() {
+                let filed = self.tasks.iter().any(|t| t.issue.as_deref() == Some(issue.url.as_str()) && t.state != TaskState::Dropped);
+                let (url, r) = (issue.url.clone(), repo.clone());
+                group = group.child(
+                    row(SharedString::from(format!("start-issue-{i}")))
+                        .child(div().w(theme::z(40.)).flex_shrink_0().font_features(theme::tabular()).text_color(p.tertiary).set(Type::Body).child(format!("#{}", issue.number)))
+                        .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(p.label).child(issue.title.clone()))
+                        .child(if filed {
+                            div().flex_shrink_0().set(Type::Subheadline).text_color(p.tertiary).child("In the queue").into_any_element()
+                        } else {
+                            small_button(&p, format!("start-issue-go-{i}"), "Start", cx.listener(move |this, _, _, cx| {
+                                this.cmd(Cmd::Ask { tag: "task", req: Request::TaskFromIssue { repo: r.clone(), issue: url.clone(), ready: true } });
+                                cx.notify();
+                            }))
+                            .into_any_element()
+                        }),
+                );
+            }
+            if issues.len() > 5 {
+                group = group.child(
+                    row(SharedString::from("start-issues-all"))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.stage_pick = Some("issues".into());
+                            cx.notify();
+                        }))
+                        .child(div().flex_1().set(Type::Body).text_color(p.secondary).child(format!("All {} issues", issues.len()))),
+                );
+            }
+            col = col.child(group);
+        }
+        let checking = self.checkup.as_ref().filter(|(r, _)| *r == repo).map(|(_, got)| got.clone());
+        let (line, action) = match &checking {
+            Some(None) => (format!("Looking through {name} for bugs and rough edges"), None),
+            Some(Some(Ok(0))) => (format!("Looked through {name} and found nothing to fix"), Some("Check Again")),
+            Some(Some(Ok(n))) => (format!("Looked through {name} and filed {n} task{}", if *n == 1 { "" } else { "s" }), Some("Check Again")),
+            Some(Some(Err(e))) => (e.clone(), Some("Try Again")),
+            None => (format!("Look through {name} for bugs and rough edges"), Some("Check")),
+        };
+        let r = repo.clone();
+        col = col.child(
+            v_flex().w_full().child(heading("Find work".into())).child(
+                row(SharedString::from("start-checkup"))
+                    .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(if matches!(checking, Some(Some(Err(_)))) { p.failed } else { p.label }).child(line))
+                    .when(matches!(checking, Some(None)), |d| d.child(super::live_dot(p.info, &p)))
+                    .when_some(action, |d, a| {
+                        d.child(small_button(&p, "start-checkup-go", a, cx.listener(move |this, _, _, cx| {
+                            this.checkup = Some((r.clone(), None));
+                            this.cmd(Cmd::Ask { tag: "checkup", req: Request::Checkup { repo: r.clone() } });
+                            cx.notify();
+                        })))
+                    }),
+            ),
+        );
+        Some(col.into_any_element())
+    }
+
+    pub(crate) fn checkup_answer(&mut self, result: Result<Response, String>) {
+        let Some((_, got)) = self.checkup.as_mut() else { return };
+        *got = Some(match result {
+            Ok(Response::Checkup { filed, .. }) => Ok(filed.len()),
+            Ok(_) => Ok(0),
+            Err(e) => Err(e),
+        });
     }
 
     pub(crate) fn doing(&self, t: &Task) -> String {
@@ -532,5 +663,9 @@ fn is_issue(text: &str) -> bool {
 
 
 fn big_button(p: &Palette, id: impl Into<SharedString>, label: &str, kind: theme::ButtonKind, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {
-    theme::button(p, id, label.to_owned(), None, kind).h(theme::z(36.)).px(theme::z(16.)).text_size(theme::z(14.)).rounded(theme::z(theme::R_CONTROL)).on_click(on_click).test_support()
+    theme::button(p, id, label.to_owned(), None, kind).h(theme::z(CONTROL)).px(theme::z(16.)).text_size(theme::z(14.)).rounded(theme::z(theme::by_height(CONTROL))).on_click(on_click).test_support()
+}
+
+fn small_button(p: &Palette, id: impl Into<SharedString>, label: &str, on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> impl IntoElement {
+    theme::button(p, id, label.to_owned(), None, theme::ButtonKind::Secondary).h(theme::z(28.)).px(theme::z(12.)).text_size(theme::z(13.)).rounded(theme::z(theme::by_height(28.))).on_click(on_click).test_support()
 }

@@ -1312,7 +1312,7 @@ async fn follow_events(events: &mut Events, json: bool) {
             Event::TermOutput { .. } => {}
             Event::BrowserActivity { session, what, .. } => println!("{session} browser: {what}"),
             Event::BrowserPicked { session, picked } => println!("{session} browser: picked {} on {}", picked.selector, picked.url),
-            Event::Usage { windows } => {
+            Event::Usage { windows, .. } => {
                 for w in windows {
                     println!("usage: {} {:.0}% ({})", w.name, w.used * 100.0, w.status);
                 }

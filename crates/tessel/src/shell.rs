@@ -348,6 +348,8 @@ pub struct Shell {
     pub(crate) task_change: Entity<InputState>,
     pub(crate) bother_input: Entity<InputState>,
     pub(crate) editing_bother: bool,
+    pub(crate) checkup: Option<(String, Option<Result<usize, String>>)>,
+    pub(crate) account: Option<tessel_proto::Account>,
     pub(crate) select_w: std::cell::RefCell<std::collections::HashMap<&'static str, std::rc::Rc<std::cell::Cell<f32>>>>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
@@ -884,6 +886,8 @@ impl Shell {
             task_change,
             bother_input,
             editing_bother: false,
+            checkup: None,
+            account: None,
             select_w: Default::default(),
             tasks: Vec::new(),
             changing_task: None,
@@ -1330,11 +1334,15 @@ impl Shell {
             UiEvent::Answer { tag: "proof.run", result } => self.proof_answer(result),
             UiEvent::Answer { tag: "rules", result } => self.rules_answer(result),
             UiEvent::Answer { tag: "usage", result } => {
-                if let Ok(tessel_proto::Response::Usage { windows }) = result {
+                if let Ok(tessel_proto::Response::Usage { windows, account }) = result {
                     self.usage = windows;
+                    self.account = account;
                 }
             }
-            UiEvent::Usage(windows) => self.usage = windows,
+            UiEvent::Usage(windows, account) => {
+                self.usage = windows;
+                self.account = account;
+            }
             UiEvent::Task(task) => {
                 let settled = matches!(task.state, tessel_proto::task::TaskState::Landed | tessel_proto::task::TaskState::Dropped | tessel_proto::task::TaskState::Review);
                 self.task_updated(task);
@@ -1348,6 +1356,7 @@ impl Shell {
             UiEvent::Answer { tag: "metrics", result } => self.metrics_answer(result),
             UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
             UiEvent::Answer { tag: "stage.diff", result } => self.stage_diff_answer(result, cx),
+            UiEvent::Answer { tag: "checkup", result } => self.checkup_answer(result),
             UiEvent::Answer { tag: "issues", result } => self.issues_answer(result),
             UiEvent::Answer { tag: "board.rules", result } => self.board_rules_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),

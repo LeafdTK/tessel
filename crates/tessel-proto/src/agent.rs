@@ -163,6 +163,15 @@ pub struct PermissionRequest {
     pub suggestions: Vec<Value>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Account {
+    pub email: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub plan: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub org: String,
+}
+
 /// one of the account's usage limits, and how much of it is used.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageWindow {

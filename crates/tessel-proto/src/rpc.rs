@@ -976,6 +976,8 @@ pub enum Response {
     },
     Usage {
         windows: Vec<crate::UsageWindow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<crate::Account>,
     },
     Followed {
         /// the sessions newly followed, as they are now.
@@ -1243,6 +1245,8 @@ pub enum Event {
     /// the account's usage changed (to everyone).
     Usage {
         windows: Vec<crate::UsageWindow>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<crate::Account>,
     },
     TaskUpdated {
         task: crate::task::Task,

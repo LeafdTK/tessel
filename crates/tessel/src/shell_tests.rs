@@ -2565,7 +2565,7 @@ fn the_tightest_usage_limit_shows_beside_the_message_box(cx: &mut TestAppContext
     let mut rig = Rig::with_sessions(cx, a, vec![]);
     assert!(!rig.exists(cx, "usage"), "nothing heard yet: nothing shown");
     let w = |name: &str, used: f64, status: &str| tessel_proto::UsageWindow { name: name.into(), used, resets_at: Some(1_800_000_000), status: status.into() };
-    rig.feed(cx, vec![UiEvent::Usage(vec![w("five_hour", 0.42, "allowed"), w("seven_day", 0.85, "allowed_warning")])]);
+    rig.feed(cx, vec![UiEvent::Usage(vec![w("five_hour", 0.42, "allowed"), w("seven_day", 0.85, "allowed_warning")], None)]);
     assert!(rig.exists(cx, "usage"));
     assert_eq!(crate::shell::composer::usage_name("five_hour"), "5-hour limit");
     assert_eq!(crate::shell::composer::usage_name("seven_day_opus"), "Weekly Opus limit");

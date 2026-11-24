@@ -76,6 +76,7 @@ impl Config {
 
 pub enum HubMsg {
     Connected { client: ClientId, tx: mpsc::Sender<Out> },
+    Account(Option<tessel_proto::Account>),
     Request { client: ClientId, id: u64, req: Request },
     Disconnected { client: ClientId },
     Agent { session: SessionId, generation: u64, output: AgentOutput },
@@ -270,6 +271,7 @@ pub struct Hub {
     ports: crate::setup::Ports,
     /// the account's usage limits, as an agent last said them.
     usage: Vec<tessel_proto::UsageWindow>,
+    account: Option<tessel_proto::Account>,
     /// the browser, and who's watching each session's page.
     browser: Arc<crate::browser::Browser>,
     browser_watch: HashMap<SessionId, std::collections::HashSet<ClientId>>,
@@ -372,6 +374,7 @@ impl Hub {
             browser,
             browser_watch: HashMap::new(),
             usage: Vec::new(),
+            account: None,
         };
         hub.usage = std::fs::read_to_string(hub.cfg.paths.home.join("usage.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
         hub.settings = load_settings(&hub.cfg.paths.settings());
@@ -462,6 +465,15 @@ impl Hub {
     }
 
     pub async fn run(mut self, mut rx: mpsc::UnboundedReceiver<HubMsg>) {
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            loop {
+                if tx.send(HubMsg::Account(read_account().await)).is_err() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1800)).await;
+            }
+        });
         let mut tick = tokio::time::interval(self.cfg.tick);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
@@ -731,6 +743,12 @@ impl Hub {
             HubMsg::Reviewed { task, result } => self.task_reviewed(task, result),
             HubMsg::Swatch { task, index, result } => self.swatch_shot(task, index, result),
             HubMsg::Issue { repo, result, ready, reply } => self.issue_fetched(repo, result, ready, reply),
+            HubMsg::Account(account) => {
+                if account != self.account {
+                    self.account = account;
+                    self.tell_everyone(Event::Usage { windows: self.usage.clone(), account: self.account.clone() });
+                }
+            }
             HubMsg::Issues { repo, issues } => {
                 for i in issues {
                     let _ = self.task_from(repo.clone(), i, true);
@@ -1741,7 +1759,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 Ok(Response::Ack)
             }
             Request::BrowserEngine => Ok(Response::BrowserEngine { engine: self.browser.engine() }),
-            Request::Usage => Ok(Response::Usage { windows: self.usage.clone() }),
+            Request::Usage => Ok(Response::Usage { windows: self.usage.clone(), account: self.account.clone() }),
             Request::BrowserInstall => {
                 let (b, tx) = (self.browser.clone(), self.tx.clone());
                 tokio::spawn(async move {
@@ -2456,7 +2474,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                         if let Ok(text) = serde_json::to_string(&self.usage) {
                             let _ = std::fs::write(self.cfg.paths.home.join("usage.json"), text);
                         }
-                        self.tell_everyone(Event::Usage { windows: self.usage.clone() });
+                        self.tell_everyone(Event::Usage { windows: self.usage.clone(), account: self.account.clone() });
                     }
                     // its tool servers are still connecting as it starts: ask again in a bit.
                     if let AgentEvent::Init { mcp_servers, .. } = &ev
@@ -3458,6 +3476,29 @@ mod on_disk_tests {
     }
 }
 
+async fn read_account() -> Option<tessel_proto::Account> {
+    let out = tokio::process::Command::new("claude").args(["auth", "status"]).stdin(std::process::Stdio::null()).output().await.ok()?;
+    account_from(&String::from_utf8_lossy(&out.stdout))
+}
+
+pub(crate) fn account_from(json: &str) -> Option<tessel_proto::Account> {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
+    if !v.get("loggedIn").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or("").to_owned();
+    let plan = match (s("subscriptionType").as_str(), s("planTier").as_str()) {
+        (_, t) if t.starts_with("max_") => format!("Max {}", t.trim_start_matches("max_")),
+        ("", _) if s("authMethod") != "claude.ai" => "API key".to_owned(),
+        (sub, _) if !sub.is_empty() => {
+            let mut c = sub.chars();
+            c.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + c.as_str())
+        }
+        _ => String::new(),
+    };
+    Some(tessel_proto::Account { email: s("email"), plan, org: s("orgName") })
+}
+
 pub(crate) fn merge_usage(known: &[tessel_proto::UsageWindow], heard: &[tessel_proto::UsageWindow]) -> Vec<tessel_proto::UsageWindow> {
     let mut out = known.to_vec();
     for w in heard {
@@ -3478,5 +3519,14 @@ mod usage_tests {
         let merged = super::merge_usage(&[w("five_hour", 0.4), w("seven_day", 0.1)], &[w("seven_day", 0.2)]);
         assert_eq!(merged, vec![w("five_hour", 0.4), w("seven_day", 0.2)]);
         assert_eq!(super::merge_usage(&[], &[w("five_hour", 0.3)]), vec![w("five_hour", 0.3)]);
+    }
+
+    #[test]
+    fn the_account_comes_from_auth_status() {
+        let a = super::account_from(r#"{"loggedIn": true, "authMethod": "claude.ai", "email": "a@b.co", "orgName": "Org", "subscriptionType": "max", "planTier": "max_20x"}"#).unwrap();
+        assert_eq!((a.email.as_str(), a.plan.as_str(), a.org.as_str()), ("a@b.co", "Max 20x", "Org"));
+        assert_eq!(super::account_from(r#"{"loggedIn": true, "authMethod": "claude.ai", "email": "a@b.co", "subscriptionType": "pro"}"#).unwrap().plan, "Pro");
+        assert!(super::account_from(r#"{"loggedIn": false}"#).is_none());
+        assert!(super::account_from("not json").is_none());
     }
 }

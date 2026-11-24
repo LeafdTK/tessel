@@ -259,7 +259,7 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
         for ev in [
             UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: if screen.name.ends_with("-empty") { Vec::new() } else { tasks(screen.name == "board-swatches") } }) },
             UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: metrics() }) },
-            UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }, UsageWindow { name: "seven_day".into(), used: 0.76, resets_at: Some((now() / 1000) as i64 + 3 * 86400), status: "allowed_warning".into() }]),
+            UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }, UsageWindow { name: "seven_day".into(), used: 0.76, resets_at: Some((now() / 1000) as i64 + 3 * 86400), status: "allowed_warning".into() }], Some(tessel_proto::Account { email: "you@example.com".into(), plan: "Max 20x".into(), org: String::new() })),
         ] {
             let _ = events.send(ev);
         }
@@ -275,7 +275,13 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             let _ = cx.update_window(window.into(), |_, window, cx| window.click(id, cx));
         }
         if screen.name == "board-new" {
-            let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("new".into()));
+            let _ = window.update(&mut cx, |s, _, _| {
+                s.stage_pick = Some("new".into());
+                s.board_project = Some("/Users/you/code/shop".into());
+            });
+            settle(&mut cx, &window);
+            let issue = |n: u64, title: &str| tessel_proto::task::IssueInfo { number: n, title: title.into(), url: format!("https://github.com/you/shop/issues/{n}"), labels: vec![] };
+            let _ = events.send(UiEvent::Answer { tag: "issues", result: Ok(Response::IssueList { issues: vec![issue(57, "Search field clips its placeholder"), issue(61, "Cart badge doesn't update after removing an item"), issue(64, "Add Apple Pay at checkout"), issue(66, "Product images load slowly on 3G")] }) });
         }
         settle(&mut cx, &window);
         let mut answered = false;

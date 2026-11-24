@@ -130,7 +130,7 @@ pub enum UiEvent {
     /// do this to a session's page and answer `call` (the window shows pages itself).
     BrowserCall { call: u64, session: SessionId, act: tessel_proto::BrowserAct, agent: bool, first: String },
     /// the account's usage limits.
-    Usage(Vec<tessel_proto::UsageWindow>),
+    Usage(Vec<tessel_proto::UsageWindow>, Option<tessel_proto::Account>),
     Task(tessel_proto::task::Task),
     Answer { tag: &'static str, result: Result<Response, String> },
     Choices { workflow: String, input: String, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -554,7 +554,7 @@ async fn session(
                     Event::BrowserActivity { session, what, x, y } => UiEvent::BrowserActivity { session, what, at: x.zip(y) },
                     Event::BrowserEngine { engine } => UiEvent::BrowserEngine(engine),
                     Event::BrowserCall { call, session, act, agent, first } => UiEvent::BrowserCall { call, session, act, agent, first },
-                    Event::Usage { windows } => UiEvent::Usage(windows),
+                    Event::Usage { windows, account } => UiEvent::Usage(windows, account),
                     Event::TaskUpdated { task } => UiEvent::Task(task),
                     Event::UiCall { call, cmd, args } => UiEvent::Call { call, cmd, args },
                     Event::UiWatched { watched } => UiEvent::Watched(watched),
