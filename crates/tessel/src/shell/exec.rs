@@ -384,9 +384,9 @@ impl Shell {
                 done
             }
             "theme.material" => {
-                let m = arg(args, "material").ok_or("material: solid, glass or felt")?;
-                if !matches!(m, "solid" | "glass" | "felt") {
-                    return Err(format!("\"{m}\" isn't a material. use solid, glass or felt"));
+                let m = arg(args, "material").ok_or("material: solid, glass, felt or field")?;
+                if !matches!(m, "solid" | "glass" | "felt" | "field") {
+                    return Err(format!("\"{m}\" isn't a material. use solid, glass, felt or field"));
                 }
                 let v = (m != "solid").then(|| json!(m));
                 self.edit_ui(|f| Self::set_in(f, "theme", "material", v), window, cx);
@@ -682,8 +682,8 @@ impl Shell {
 
             "theme.set" => {
                 let base = need(args, "base", cmd)?;
-                if !["tessel", "orchard"].contains(&base) {
-                    return Err(format!("\"{base}\" isn't a theme. themes: tessel, orchard"));
+                if !["tessel", "orchard", "field"].contains(&base) {
+                    return Err(format!("\"{base}\" isn't a theme. themes: tessel, orchard, field"));
                 }
                 let b = base.to_owned();
                 self.edit_ui(|f| Self::set_in(f, "theme", "base", Some(json!(b))), window, cx);
@@ -803,7 +803,7 @@ impl Shell {
             "panes": panes,
             "drawers": drawers,
             "theme": {
-                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard" },
+                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard", crate::ui::Base::Field => "field" },
                 "dark": self.palette.get().dark,
                 "size": t.scale.unwrap_or(1.0),
             },

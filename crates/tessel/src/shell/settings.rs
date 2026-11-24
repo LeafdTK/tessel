@@ -178,6 +178,7 @@ impl Shell {
         let base = match theme.base.unwrap_or_default() {
             crate::ui::Base::Tessel => "tessel",
             crate::ui::Base::Orchard => "orchard",
+            crate::ui::Base::Field => "field",
         };
         let appearance = match theme.dark.flatten() {
             None => "system",
@@ -196,6 +197,8 @@ impl Shell {
             "glass"
         } else if theme.felt.unwrap_or(false) {
             "felt"
+        } else if theme.field.unwrap_or(false) {
+            "field"
         } else {
             "solid"
         };
@@ -204,7 +207,7 @@ impl Shell {
             .child(self.picture_row(
                 "Material",
                 "",
-                self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt)], material, cx, |this, v, w, cx| {
+                self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt), ("field", "Field", pic_field)], material, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
                 }),
             ))
@@ -898,6 +901,18 @@ fn pic_glass(p: &theme::Palette) -> Div {
 
 fn pic_felt(p: &theme::Palette) -> Div {
     mini_window(p, frame_of(p), true, None, true)
+}
+
+fn pic_field(p: &theme::Palette) -> Div {
+    let ramp = [0x16393d, 0x2c6262, 0x4f8d86, 0x86b9a2, 0xc4d8ad];
+    let mut dots = div().size_full().relative().bg(gpui_kit::rgb(0x0b1d22));
+    for y in 0..20u32 {
+        for x in 0..32u32 {
+            let v = (((x as f32) * 0.35 + (y as f32) * 0.22).sin() * 0.5 + 0.5) * 4.0 + ((x * 7 + y * 13) % 5) as f32 * 0.2;
+            dots = dots.child(div().absolute().left(px(x as f32 * 4.)).top(px(y as f32 * 4.)).size(px(3.)).bg(gpui_kit::rgb(ramp[(v as usize).min(4)])));
+        }
+    }
+    dots.child(div().absolute().left(px(10.)).top(px(10.)).right(px(10.)).bottom(px(10.)).rounded(px(6.)).bg(p.window))
 }
 
 fn pic_no_backdrop(p: &theme::Palette) -> Div {

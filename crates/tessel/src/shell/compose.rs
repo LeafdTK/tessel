@@ -415,6 +415,21 @@ impl Shell {
             Kind::ModePicker => self.styled(div().child(self.mode_menu(cx)), s).into_any_element(),
             Kind::Context => self.styled(div().child(self.context_meter_el(cx)?), s).into_any_element(),
             Kind::Panes => {
+                let framed;
+                let s = if self.field_on() {
+                    let mut t = s.clone();
+                    t.p = Some(8.0);
+                    t.pt = None;
+                    t.pb = None;
+                    t.pl = Some(0.0);
+                    t.pr = None;
+                    t.px = None;
+                    t.py = None;
+                    framed = t;
+                    &framed
+                } else {
+                    s
+                };
                 // the frame above the panes is title bar: dragging it moves the window.
                 let top = s.pt.or(s.py).or(s.p).unwrap_or(0.0);
                 let strip = (top > 0.0).then(|| {
@@ -522,12 +537,17 @@ impl Shell {
                 inner = inner.child(el);
             }
         }
+        let floating = self.field_on() && id == "sidebar";
+        if floating {
+            inner = inner.w(px(d.size.max(w) - 8.)).rounded(px(theme::R_PANEL)).bg(p.window).border_1().border_color(p.separator).shadow_lg();
+        }
         let clip = div()
             .id(eid(format!("{id}-clip")))
             .w(px(w))
             .h_full()
             .flex_shrink_0()
             .overflow_hidden()
+            .when(floating, |d| d.pl(px(8.)).py(px(8.)))
             // two fingers sideways across the sidebar: the next desktop, or the last.
             .when(id == "sidebar", |d| d.on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| this.sidebar_swipe(ev, window, cx))))
             .child(inner);

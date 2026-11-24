@@ -584,7 +584,8 @@ impl Shell {
             .when(!compact && !open_sky, |d| d.rounded(px(theme::R_PANEL)).border_1())
             // on felt a pane is set into the cloth: a dark rim and a hairline of light
             // under its lower edge, where the cloth turns up to meet it.
-            .when(!compact && !open_sky && !felt, |d| d.shadow_sm())
+            .when(!compact && !open_sky && !felt && !self.field_on(), |d| d.shadow_sm())
+            .when(!compact && !open_sky && self.field_on(), |d| d.shadow_lg())
             .when(!compact && !open_sky && felt, |d| {
                 d.shadow(vec![
                     gpui_kit::BoxShadow {

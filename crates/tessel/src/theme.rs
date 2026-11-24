@@ -41,6 +41,7 @@ pub struct Palette {
     pub blocked: Hsla,
     pub failed: Hsla,
     pub finished: Hsla,
+    pub info: Hsla,
 }
 
 fn ink(hex: u32, alpha: f32) -> Hsla {
@@ -72,6 +73,7 @@ impl Palette {
             blocked: ink(0xff8d28, 1.0),
             failed: ink(0xff383c, 1.0),
             finished: ink(0x34c759, 1.0),
+            info: ink(0x2f6fdb, 1.0),
         }
     }
 
@@ -95,6 +97,7 @@ impl Palette {
             blocked: ink(0xff9230, 1.0),
             failed: ink(0xff4245, 1.0),
             finished: ink(0x30d158, 1.0),
+            info: ink(0x6ea8ff, 1.0),
         }
     }
 
@@ -121,6 +124,53 @@ impl Palette {
             blocked: ink(0xf6ae36, 1.0),
             failed: ink(0xe42933, 1.0),
             finished: ink(0x279753, 1.0),
+            info: ink(0x2f6fdb, 1.0),
+        }
+    }
+
+    pub fn ink() -> Self {
+        Self {
+            dark: true,
+            window: ink(0x0f1113, 1.0),
+            sidebar: ink(0x07080a, 1.0),
+            separator: ink(0xece6db, 0.09),
+            label: ink(0xece6db, 1.0),
+            secondary: ink(0x8d8981, 1.0),
+            tertiary: ink(0x6a6761, 1.0),
+            quaternary: ink(0xece6db, 0.10),
+            selection: ink(0xece6db, 0.10),
+            hover: ink(0xece6db, 0.05),
+            fill: ink(0xece6db, 0.06),
+            raised: ink(0x16191b, 1.0),
+            accent: ink(0xece6db, 1.0),
+            on_accent: ink(0x07080a, 1.0),
+            blocked: ink(0xef9f6c, 1.0),
+            failed: ink(0xef7f70, 1.0),
+            finished: ink(0x9fd49a, 1.0),
+            info: ink(0x93a6f2, 1.0),
+        }
+    }
+
+    pub fn paper() -> Self {
+        Self {
+            dark: false,
+            window: ink(0xfbf8f2, 1.0),
+            sidebar: ink(0xefe9de, 1.0),
+            separator: ink(0x17150f, 0.09),
+            label: ink(0x17150f, 1.0),
+            secondary: ink(0x5c574f, 1.0),
+            tertiary: ink(0x8d8981, 1.0),
+            quaternary: ink(0x17150f, 0.10),
+            selection: ink(0x17150f, 0.08),
+            hover: ink(0x17150f, 0.045),
+            fill: ink(0x17150f, 0.05),
+            raised: ink(0xfffdf9, 1.0),
+            accent: ink(0x17150f, 1.0),
+            on_accent: ink(0xece6db, 1.0),
+            blocked: ink(0xc0703c, 1.0),
+            failed: ink(0xc4463a, 1.0),
+            finished: ink(0x3f8f4e, 1.0),
+            info: ink(0x4a5bb3, 1.0),
         }
     }
 
@@ -143,6 +193,7 @@ impl Palette {
             blocked: ink(0xf2af48, 1.0),
             failed: ink(0xee4848, 1.0),
             finished: ink(0x3aa460, 1.0),
+            info: ink(0x6ea8ff, 1.0),
         }
     }
 
@@ -329,7 +380,7 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     }
     // felt: the frame's colour is drawn as cloth underneath (see `shell::backdrop`),
     // so the frame itself is left clear over it.
-    if spec.felt.unwrap_or(false) && !glass {
+    if (spec.felt.unwrap_or(false) || spec.field.unwrap_or(false)) && !glass {
         palette.sidebar = palette.sidebar.opacity(0.0);
     }
     set_mono(spec.mono.as_deref().unwrap_or(MONO));
@@ -570,7 +621,7 @@ pub fn float_list(_p: &Palette) -> gpui_kit::Div {
 
 /// blue: waiting on someone (you, or a queue). orchard's status colour for it.
 pub fn info(p: &Palette) -> Hsla {
-    if p.dark { gpui_kit::rgb(0x6ea8ff).into() } else { gpui_kit::rgb(0x2f6fdb).into() }
+    p.info
 }
 
 /// a count beside a row's name: a small pill, so a number never just floats.

@@ -375,6 +375,7 @@ pub struct Shell {
     pub(crate) backdrop: backdrop::Shared,
     /// the felt under the window, once drawn.
     pub(crate) felt: backdrop::Shared,
+    pub(crate) field_img: backdrop::Shared,
     /// the space backdrop's photo.
     pub(crate) space: space::Shared,
     /// pasted and attached pictures, decoded once: by where their bytes live.
@@ -899,6 +900,7 @@ impl Shell {
             changes_search,
             backdrop: Default::default(),
             felt: Default::default(),
+            field_img: Default::default(),
             space: Default::default(),
             thumbs: Default::default(),
             pasted: 0,
@@ -3012,11 +3014,13 @@ impl Render for Shell {
         // felt: the cloth is drawn under everything, and the frame is clear over it.
         let glass = self.ui.theme.glass.unwrap_or(false);
         let felt = self.felt_on();
+        let field = self.field_on();
         div()
             .id("shell")
             .relative()
             .size_full()
-            .when(!glass, |d| d.bg(p.window))
+            .when(!glass && !field, |d| d.bg(p.window))
+            .when(field, |d| d.bg(Hsla { a: 1., ..p.sidebar }))
             .when(felt, |d| d.child(self.felt_el(cx)))
             .text_color(p.label)
             .set(Type::Body)

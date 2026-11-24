@@ -4,8 +4,8 @@ use gpui_kit::component::popover::Popover;
 use tessel_proto::task::{Task, TaskAct, TaskState};
 use tessel_proto::{Request, Response};
 
-const ROUND: f32 = 22.;
-const GUTTER: f32 = 24.;
+const GUTTER: f32 = 20.;
+const ROUND: f32 = theme::R_CONTROL + GUTTER;
 
 impl Shell {
     pub(crate) fn task_updated(&mut self, task: Task) {
@@ -385,7 +385,7 @@ impl Shell {
         let has_chips = !self.board_attachments.is_empty() || !self.board_files.is_empty();
         let composer = v_flex()
             .w_full()
-            .p(theme::z(20.))
+            .p(theme::z(GUTTER))
             .gap(theme::z(16.))
             .rounded(theme::z(ROUND))
             .border_1()
@@ -472,13 +472,16 @@ impl Shell {
         if !queued.is_empty() {
             words.push(format!("{} queued", queued.len()));
         }
+        let texture = self.field_on() && !working.is_empty();
         let mut col = v_flex()
             .w_full()
-            .rounded(theme::z(ROUND))
+            .rounded(theme::z(26.))
             .bg(p.fill)
             .child(
                 h_flex()
                     .id("board-working")
+                    .relative()
+                    .when(texture, |d| d.child(div().absolute().inset_0().child(self.field_el(cx))))
                     .test_support()
                     .h(theme::z(52.))
                     .px(theme::z(20.))
@@ -597,7 +600,7 @@ impl Shell {
                 v_flex()
                     .id(SharedString::from(format!("task-head-{id}")))
                     .px(theme::z(GUTTER))
-                    .py(theme::z(18.))
+                    .py(theme::z(GUTTER))
                     .gap(theme::z(4.))
                     .cursor_pointer()
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -610,9 +613,9 @@ impl Shell {
         if open {
             card = card.child(self.task_details(t, cx));
         } else if t.state == TaskState::Review {
-            card = card.child(self.task_actions(t, cx).px(theme::z(GUTTER)).pb(theme::z(18.)));
+            card = card.child(self.task_actions(t, cx).px(theme::z(GUTTER)).pb(theme::z(GUTTER)));
         } else if t.state == TaskState::Draft {
-            card = card.child(self.task_actions(t, cx).px(theme::z(GUTTER)).pb(theme::z(18.)));
+            card = card.child(self.task_actions(t, cx).px(theme::z(GUTTER)).pb(theme::z(GUTTER)));
         }
         card.into_any_element()
     }
@@ -752,11 +755,12 @@ impl Shell {
                         h_flex()
                             .id(SharedString::from(format!("board-issue-row-{i}")))
                             .w_full()
-                            .px(theme::z(GUTTER))
+                            .pl(theme::z(GUTTER))
+                            .pr(theme::z(14.))
                             .py(theme::z(14.))
                             .gap(theme::z(16.))
                             .items_center()
-                            .rounded(theme::z(ROUND))
+                            .rounded(theme::z(theme::R_CONTROL + 14.))
                             .bg(p.raised)
                             .border_1()
                             .border_color(p.separator)
@@ -829,7 +833,7 @@ impl Shell {
                                 .py(theme::z(14.))
                                 .gap(theme::z(16.))
                                 .items_center()
-                                .rounded(theme::z(ROUND))
+                                .rounded(theme::z(theme::R_CONTROL + 14.))
                                 .bg(p.raised)
                                 .border_1()
                                 .border_color(p.separator)

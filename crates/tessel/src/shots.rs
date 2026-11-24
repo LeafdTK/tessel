@@ -193,6 +193,9 @@ const SCREENS: &[Screen] = &[
     Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "settings-factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.settings", r#"{"section": "factory"}"#)] },
+    Screen { name: "field-board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
+    Screen { name: "field-chat", launch: || Launch { open: Some("00000000-0000-0000-0000-000000000001".into()), ..Default::default() }, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#)] },
+    Screen { name: "field-home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
     Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
 ];
 
