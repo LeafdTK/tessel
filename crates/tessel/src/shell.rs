@@ -1892,14 +1892,8 @@ impl Shell {
         // the list scrolls; above it, the two places you always go.
         let needing = self.model.attention_queue().len();
         let nav_row = |id: &'static str, icon: &'static str, label: &'static str, trailing: AnyElement| {
-            h_flex()
-                .id(id)
-                .h(px(NAV_ROW_H))
-                .mx_2()
-                .px(px(8.))
-                .gap(px(8.))
-                .rounded(px(theme::R_TILE))
-                .hover(|d| d.bg(p.hover))
+            theme::side_row(&p, id, false, NAV_ROW_H)
+                .items_center()
                 .child(gpui_kit::component::Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(15.)).text_color(p.secondary))
                 .child(div().flex_1().set(Type::Body).text_color(p.label).child(label))
                 .child(trailing)
@@ -1958,7 +1952,7 @@ impl Shell {
             .mx_2()
             .pl(px(SESSION_INDENT))
             .pr_2()
-            .rounded(px(theme::R_TILE))
+            .rounded(theme::z(theme::by_height(crate::model::ROW_H - 3.)))
             // liquid: the chat you're in is a bead of glass tinted with the accent;
             // one that's working (or wants you) glows under its glass.
             .map(|d| match (crate::glass::liquid(), if self.glow_on() { glow_of(s, &p, now, self.done_at.get(&s.id).copied()) } else { None }) {
@@ -3154,7 +3148,7 @@ impl Render for Shell {
 }
 
 /// the sidebar's fixed rows above the list.
-const NAV_ROW_H: f32 = 30.0;
+const NAV_ROW_H: f32 = theme::SIDE_ROW_H;
 const NAV_PAD: f32 = 8.0;
 /// how far the list starts below the top of the sidebar's content.
 const PICKER_GAP: f32 = 6.0;

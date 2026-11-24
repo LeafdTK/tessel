@@ -672,7 +672,7 @@ impl Shell {
                     .w_full()
                     .h(px(PICKER_H))
                     .px(px(8.))
-                    .rounded(px(theme::R_CARD))
+                    .rounded(theme::z(theme::by_height(PICKER_H)))
                     .when(!crate::glass::liquid(), |b| b.bg(p.fill.opacity(0.6)))
                     .border_1()
                     .border_color(p.separator)
@@ -681,7 +681,7 @@ impl Shell {
                             .w_full()
                             .min_w_0()
                             .gap(px(10.))
-                            .child(super::avatar::machine(icon, 28., 7., &p))
+                            .child(super::avatar::machine(icon, 28., theme::nested(theme::by_height(PICKER_H), (PICKER_H - 28.) / 2.), &p))
                             .child(
                                 v_flex()
                                     .flex_1()

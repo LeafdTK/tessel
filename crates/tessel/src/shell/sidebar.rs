@@ -88,7 +88,7 @@ impl Shell {
             // the name starts where the chats' titles do: one line down the list.
             .gap(px(4.))
             .items_center()
-            .rounded(px(theme::R_TILE))
+            .rounded(theme::z(theme::by_height(crate::model::HEADER_H - 3.)))
             // liquid: each project's header is a strip of glass over the desktop.
             .when(crate::glass::liquid(), |d| d.relative().child(super::glass_spot(theme::R_TILE)))
             .when(!queue, |d| {

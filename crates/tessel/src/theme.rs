@@ -604,7 +604,8 @@ pub const FLOAT_PAD: f32 = 5.0;
 pub const R_FLOAT: f32 = 14.0;
 pub const SQUIRCLE: f32 = 1.528;
 pub const R_FLOAT_ITEM: f32 = nested(R_FLOAT, FLOAT_PAD);
-pub const SIDE_ROW_H: f32 = 34.0;
+pub const SIDE_ROW_H: f32 = 30.0;
+pub const SIDE_TWO_H: f32 = 39.0;
 pub const SIDE_INSET: f32 = 8.0;
 pub const SIDE_PAD: f32 = 8.0;
 
@@ -803,7 +804,7 @@ pub fn button(p: &Palette, id: impl Into<SharedString>, label: impl Into<SharedS
         .when(!label.is_empty(), |d| d.child(label))
 }
 
-pub fn side_row(p: &Palette, id: impl Into<SharedString>, on: bool) -> gpui_kit::Stateful<gpui_kit::Div> {
+pub fn side_row(p: &Palette, id: impl Into<SharedString>, on: bool, h: f32) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::component::h_flex;
     use gpui_kit::prelude::FluentBuilder as _;
     use gpui_kit::InteractiveElement as _;
@@ -813,8 +814,8 @@ pub fn side_row(p: &Palette, id: impl Into<SharedString>, on: bool) -> gpui_kit:
         .mx(z(SIDE_INSET))
         .px(z(SIDE_PAD))
         .gap(z(10.))
-        .min_h(z(SIDE_ROW_H))
-        .rounded(z(by_height(SIDE_ROW_H)))
+        .h(z(h))
+        .rounded(z(by_height(h)))
         .cursor_pointer()
         .when(on, |d| d.bg(p.selection))
         .when(!on, move |d| d.hover(move |d| d.bg(p.hover)))

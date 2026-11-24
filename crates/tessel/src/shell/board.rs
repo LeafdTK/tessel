@@ -1,6 +1,5 @@
 use super::*;
 use gpui_kit::component::Icon;
-use gpui_kit::component::popover::Popover;
 use tessel_proto::task::{Task, TaskAct, TaskState};
 use tessel_proto::{Request, Response};
 
@@ -155,51 +154,6 @@ impl Shell {
         t.proof_cost_usd + t.session.and_then(|s| self.model.sessions.iter().find(|x| x.id == s)).map_or(0.0, |s| s.cost_usd)
     }
 
-
-    pub(crate) fn scope_picker(&self, size: f32, cx: &mut Context<Self>) -> AnyElement {
-        let name = self.board_project.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "All projects".into());
-        let me = cx.entity().downgrade();
-        Popover::new("board-project-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
-            .p_0()
-            .anchor(Anchor::TopLeft)
-            .trigger(
-                super::composer::tool_button("board-project")
-                    .h(theme::z(44.))
-                    .px(theme::z(6.))
-                    .ml(theme::z(-6.))
-                    .child(h_flex().gap(theme::z(8.)).items_center().child(div().font_family(theme::DEFAULT_FONT).font_weight(FontWeight::BOLD).text_size(theme::z(size)).truncate().child(name)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(16.)))),
-            )
-            .content(move |_, _, cx| {
-                let popover = cx.entity();
-                let Some(shell) = me.upgrade() else { return div().into_any_element() };
-                let this = shell.read(cx);
-                let p = this.palette.get();
-                let current = this.board_project.clone();
-                let mut rows = v_flex().id("board-project-list").max_h(px(360.)).overflow_y_scroll();
-                let mut options: Vec<Option<String>> = vec![None];
-                options.extend(this.board_projects().into_iter().map(Some));
-                for (i, folder) in options.into_iter().enumerate() {
-                    let on = current == folder;
-                    let name = folder.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "All projects".into());
-                    let (me, popover, pick) = (me.clone(), popover.clone(), folder.clone());
-                    rows = rows.child(
-                        theme::float_item(&p, format!("board-project-{i}"), None, name, None, on)
-                            .on_click(move |_, window, cx| {
-                                popover.update(cx, |st, cx| st.dismiss(window, cx));
-                                let _ = me.update(cx, |this, cx| {
-                                    this.board_project = pick.clone();
-                                    this.board_issues = None;
-                                    this.board_rules = None;
-                                    cx.notify();
-                                });
-                            })
-                            .test_support(),
-                    );
-                }
-                theme::float_list(&p).w(px(300.)).child(rows).into_any_element()
-            })
-            .into_any_element()
-    }
 
     fn when_done(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
@@ -515,7 +469,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn board_projects(&self) -> Vec<String> {
+    pub(crate) fn board_projects(&self) -> Vec<String> {
         let mut all = self.project_list();
         for t in &self.tasks {
             if !all.contains(&t.repo) {

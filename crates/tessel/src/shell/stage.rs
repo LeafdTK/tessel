@@ -6,7 +6,6 @@ use tessel_proto::task::{Task, TaskAct, TaskState};
 type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 const RAIL: f32 = 300.;
-const TWO_LINES: f32 = 48.;
 const MAT: f32 = 34.;
 const MAT_PAD: f32 = 14.;
 
@@ -17,10 +16,6 @@ pub(crate) enum Focus<'a> {
     New,
     Issues,
     Rules,
-}
-
-fn working(s: TaskState) -> bool {
-    matches!(s, TaskState::Running | TaskState::Proving | TaskState::Landing | TaskState::Checking | TaskState::Planned)
 }
 
 impl Shell {
@@ -176,125 +171,111 @@ impl Shell {
         let p = self.palette.get();
         let paused = self.factory_paused();
         let now = super::now_ms();
-        let busy = self.tasks.iter().filter(|t| working(t.state) && self.stage_mine(t)).count();
         let plan = self.usage.iter().filter(|w| w.resets_at.is_none_or(|r| r * 1000 > now as i64)).map(|w| w.used).fold(None, |m: Option<f64>, u| Some(m.map_or(u, |m| m.max(u))));
         let today = super::views::spend_by_day(&self.metrics.as_ref().map(|m| m.spend.clone()).unwrap_or_default(), now, 1).last().map_or(0.0, |d| d.1);
-        let mut facts = Vec::new();
-        if paused {
-            facts.push("Paused".to_owned());
-        } else {
-            facts.push(format!("{busy} working"));
-        }
-        match plan {
-            Some(used) => facts.push(format!("{:.0}% of plan", used * 100.0)),
-            None => facts.push(format!("${today:.2} today")),
-        }
-        let state = if paused { "Paused".to_owned() } else { facts.join(" · ") };
-        let head = v_flex()
-            .px(theme::z(theme::SIDE_INSET))
-            .pt(theme::z(4.))
-            .pb(theme::z(14.))
-            .gap(theme::z(10.))
-            .child(
-                h_flex()
-                    .items_center()
-                    .gap(theme::z(8.))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .pl(theme::z(theme::SIDE_PAD - 6.))
-                            .child(h_flex().child(self.scope_picker(17., cx)))
-                            .child(div().pl(theme::z(6.)).text_size(theme::z(13.)).line_height(theme::z(18.)).text_color(if paused { p.blocked } else { p.secondary }).font_features(theme::tabular()).truncate().child(state)),
-                    )
-                    .child(
-                        h_flex()
-                            .id("board-pause")
-                            .aria_label(if paused { "Resume" } else { "Pause" })
-                            .size(theme::z(theme::SIDE_ROW_H))
-                            .flex_shrink_0()
-                            .justify_center()
-                            .rounded(theme::z(theme::by_height(theme::SIDE_ROW_H)))
-                            .cursor_pointer()
-                            .when(paused, |d| d.bg(p.accent).text_color(p.on_accent))
-                            .when(!paused, |d| d.text_color(p.secondary).hover(|d| d.bg(p.hover).text_color(p.label)))
-                            .on_click(cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx)))
-                            .test_support()
-                            .child(Icon::empty().path(if paused { "icons/play.svg" } else { "icons/pause.svg" }).size(theme::z(14.))),
-                    ),
-            )
-            .child(self.bother_picker(cx));
+        let usage = match plan {
+            Some(used) => format!("{:.0}% of plan", used * 100.0),
+            None => format!("${today:.2} today"),
+        };
         let focus_id = match self.stage_focus() {
             Focus::Task(t) => t.id.clone(),
             Focus::New => "new".into(),
             Focus::Issues => "issues".into(),
             Focus::Rules => "rules".into(),
         };
-        let row = |id: String, pick: String, body: Div, two: bool, cx: &mut Context<Self>| {
-            let on = focus_id == pick;
-            let h = if two { TWO_LINES } else { theme::SIDE_ROW_H };
-            theme::side_row(&p, SharedString::from(id), on)
-                .min_h(theme::z(h))
-                .rounded(theme::z(theme::by_height(h)))
-                .when(two, |d| d.py(theme::z(7.)).items_start())
-                .when(!two, |d| d.items_center())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.stage_pick_now(Some(pick.clone()));
-                    match pick.as_str() {
-                        "issues" => this.ask_issues(),
-                        "rules" => this.ask_rules(),
-                        _ => {}
-                    }
-                    cx.notify();
-                }))
-                .test_support()
-                .child(body)
+        let pick = |pick: &'static str, cx: &mut Context<Self>| -> Click {
+            Box::new(cx.listener(move |this: &mut Shell, _: &ClickEvent, _: &mut Window, cx: &mut Context<Shell>| {
+                this.stage_pick_now(Some(pick.to_owned()));
+                match pick {
+                    "issues" => this.ask_issues(),
+                    "rules" => this.ask_rules(),
+                    _ => {}
+                }
+                cx.notify();
+            }))
         };
-        let heading = |text: &str| div().px(theme::z(theme::SIDE_INSET + theme::SIDE_PAD)).pt(theme::z(18.)).pb(theme::z(6.)).text_size(theme::z(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(text.to_owned());
-        let title = |t: &Task, color: Hsla| div().text_size(theme::z(14.5)).line_height(theme::z(20.)).text_color(color).truncate().child(t.title.clone());
-        let sub = |text: String, color: Hsla| div().text_size(theme::z(12.5)).line_height(theme::z(17.)).text_color(color).truncate().child(text);
-        let mut list = v_flex().pb(theme::z(12.));
-        list = list.child(row(
-            "stage-new".into(),
-            "new".into(),
-            h_flex().gap(theme::z(10.)).items_center().child(Icon::empty().path("icons/plus.svg").size(theme::z(14.)).text_color(p.secondary)).child(div().text_size(theme::z(14.5)).text_color(p.label).child("New task")),
-            false,
-            cx,
-        ));
+        let nav_row = |id: &'static str, icon: &str, label: String, on: bool| {
+            theme::side_row(&p, id, on, theme::SIDE_ROW_H)
+                .items_center()
+                .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(15.)).text_color(p.secondary))
+                .child(div().flex_1().min_w_0().truncate().set(Type::Body).text_color(p.label).child(label))
+        };
         let needs = self.stage_list(&[TaskState::Review]);
         let busy = self.stage_list(&[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Checking, TaskState::Planned]);
         let next = self.stage_list(&[TaskState::Ready]);
         let landed: Vec<&Task> = self.stage_list(&[TaskState::Landed]).into_iter().take(12).collect();
         let drafts = self.stage_list(&[TaskState::Draft]);
+        let issues = self.board_issues.as_ref().and_then(|(_, got)| got.as_ref().ok()).map_or(0, |v| v.len());
+        let nav = v_flex()
+            .flex_shrink_0()
+            .gap(theme::z(1.))
+            .child(div().mx(theme::z(theme::SIDE_INSET)).mb(theme::z(6.)).child(self.host_picker(cx)))
+            .child(nav_row("stage-new", "square-pen", "New task".into(), focus_id == "new").on_click(pick("new", cx)).test_support())
+            .child(nav_row("board-tab-issues", "circle-dot", "Issues".into(), focus_id == "issues").when(issues > 0, |d| d.child(theme::count_pill(&p, issues.to_string(), false))).on_click(pick("issues", cx)).test_support())
+            .child(nav_row("board-tab-rules", "book-open", "Rules".into(), focus_id == "rules").on_click(pick("rules", cx)).test_support())
+            .child(
+                nav_row("board-pause", if paused { "play" } else { "pause" }, if paused { "Resume".into() } else { "Pause".into() }, false)
+                    .child(div().flex_shrink_0().set(Type::Subheadline).font_features(theme::tabular()).text_color(if paused { p.blocked } else { p.tertiary }).child(if paused { "Paused".to_owned() } else { usage }))
+                    .on_click(cx.listener(move |this, _, window, cx| this.set_paused(!paused, window, cx)))
+                    .test_support(),
+            );
+        let mut projects = vec![(String::new(), "All projects".to_owned())];
+        projects.extend(self.board_projects().into_iter().map(|f| (f.clone(), super::projects::folder_name(&f))));
+        let project = self.board_project.clone().unwrap_or_default();
+        let project_label = projects.iter().find(|(v, _)| *v == project).map_or_else(|| "All projects".to_owned(), |(_, l)| l.clone());
+        let scope = self.select(
+            super::select::Select { id: "board-project", label: project_label, options: projects, current: project, width: None, height: theme::SIDE_ROW_H, up: false },
+            std::rc::Rc::new(|this: &mut Shell, value: &str, _: &mut Window, _: &mut Context<Shell>| {
+                this.board_project = (!value.is_empty()).then(|| value.to_owned());
+                this.board_issues = None;
+                this.board_rules = None;
+            }),
+            cx,
+        );
+        let controls = v_flex().px(theme::z(theme::SIDE_INSET)).pt(theme::z(10.)).gap(theme::z(6.)).child(scope).child(self.bother_picker(cx));
+
+        let row = |id: String, pick: String, body: Div, cx: &mut Context<Self>| {
+            let on = focus_id == pick;
+            theme::side_row(&p, SharedString::from(id), on, theme::SIDE_TWO_H)
+                .items_center()
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.stage_pick_now(Some(pick.clone()));
+                    cx.notify();
+                }))
+                .test_support()
+                .child(body)
+        };
+        let heading = |text: &str| div().px(theme::z(theme::SIDE_INSET + theme::SIDE_PAD)).pt(theme::z(16.)).pb(theme::z(4.)).set(Type::Subheadline).font_weight(FontWeight::SEMIBOLD).text_color(p.secondary).child(text.to_owned());
+        let title = |t: &Task, color: Hsla| div().set(Type::Body).font_weight(FontWeight::MEDIUM).text_color(color).truncate().child(t.title.clone());
+        let sub = |text: String, color: Hsla| div().set(Type::Subheadline).text_color(color).truncate().child(text);
         let dotted = |t: &Task, core: Hsla, live: bool, line: String, line_color: Hsla| {
-            h_flex()
+            v_flex()
                 .flex_1()
                 .min_w_0()
-                .gap(theme::z(10.))
-                .items_start()
-                .child(div().pt(theme::z(6.)).child(super::status_dot(core, live, &p)))
-                .child(v_flex().flex_1().min_w_0().child(title(t, p.label)).when(!line.is_empty(), |d| d.child(sub(line, line_color))))
+                .gap(theme::z(2.))
+                .child(title(t, p.label))
+                .child(h_flex().gap(theme::z(6.)).items_center().child(div().w(theme::z(12.)).flex_shrink_0().flex().justify_center().child(super::status_dot(core, live, &p))).child(div().flex_1().min_w_0().child(sub(line, line_color))))
         };
+        let mut list = v_flex().pb(theme::z(12.));
         if !needs.is_empty() {
             list = list.child(heading("Needs you"));
             for t in needs {
                 let line = if t.options.is_empty() { "Waiting on you".to_owned() } else { format!("{} options", t.options.len()) };
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.blocked, false, line, p.secondary), true, cx));
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.blocked, false, line, p.secondary), cx));
             }
         }
         if !busy.is_empty() {
             list = list.child(heading("Working"));
             for t in busy {
                 let line = self.stage_doing(t);
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.info, true, line, p.secondary), true, cx));
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.info, true, line, p.secondary), cx));
             }
         }
         if !next.is_empty() {
             list = list.child(heading("Next"));
             for t in next {
-                let line = if t.deps.is_empty() { String::new() } else { "After another task".into() };
-                let two = !line.is_empty();
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.tertiary, false, line, p.tertiary), two, cx));
+                let line = if t.deps.is_empty() { "Queued".to_owned() } else { "After another task".into() };
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.tertiary, false, line, p.tertiary), cx));
             }
         }
         if !landed.is_empty() {
@@ -302,15 +283,13 @@ impl Shell {
             list = list.child(
                 h_flex()
                     .pr(theme::z(theme::SIDE_INSET))
-                    .items_center()
+                    .items_end()
                     .child(heading("Landed").flex_1())
                     .child(
                         theme::button(&p, "board-clear-done", "Clear", None, theme::ButtonKind::Ghost)
-                            .h(theme::z(26.))
-                            .px(theme::z(10.))
-                            .mt(theme::z(12.))
-                            .text_size(theme::z(12.5))
-                            .rounded(theme::z(theme::by_height(26.)))
+                            .h(theme::z(24.))
+                            .px(theme::z(8.))
+                            .rounded(theme::z(theme::by_height(24.)))
                             .text_color(p.secondary)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 for id in &ids {
@@ -322,34 +301,23 @@ impl Shell {
                     ),
             );
             for t in landed {
-                let mark = t.landed.as_deref().map(|s| if s.starts_with("http") { "PR".to_owned() } else if s.contains('/') { "kept".to_owned() } else { s.chars().take(7).collect() }).unwrap_or_default();
-                list = list.child(row(
-                    format!("stage-task-{}", t.id),
-                    t.id.clone(),
-                    h_flex().flex_1().min_w_0().gap(theme::z(10.)).child(div().flex_1().min_w_0().child(title(t, p.secondary))).child(div().flex_shrink_0().pt(theme::z(2.)).text_size(theme::z(12.)).font_family(theme::mono()).text_color(p.tertiary).child(mark)),
-                    false,
-                    cx,
-                ));
+                let mark = t.landed.as_deref().map(|s| if s.starts_with("http") { "Pull request merged".to_owned() } else if s.contains('/') { format!("Kept on {s}") } else { s.chars().take(7).collect() }).unwrap_or_default();
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.finished, false, mark, p.tertiary), cx));
             }
         }
         if !drafts.is_empty() {
             list = list.child(heading("Drafts"));
             for t in drafts {
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), v_flex().flex_1().min_w_0().child(title(t, p.secondary)), false, cx));
+                let line = if t.spec.trim().is_empty() { "Not started".to_owned() } else { t.spec.lines().next().unwrap_or_default().to_owned() };
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.quaternary, false, line, p.tertiary), cx));
             }
         }
-        let foot = v_flex()
-            .py(theme::z(10.))
-            .border_t_1()
-            .border_color(p.separator)
-            .child(row("board-tab-issues".into(), "issues".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Issues"), false, cx))
-            .child(row("board-tab-rules".into(), "rules".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Rules"), false, cx));
         v_flex()
             .id("stage-rail")
             .size_full()
-            .child(head)
+            .child(nav)
+            .child(controls)
             .child(div().id("stage-rail-list").flex_1().min_h_0().overflow_y_scroll().child(list))
-            .child(foot)
             .test_support()
             .into_any_element()
     }
