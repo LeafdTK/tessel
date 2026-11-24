@@ -73,9 +73,16 @@ fn main() -> anyhow::Result<()> {
         }
         _ => Arc::new(claude_backend(login.clone())),
     };
-    if let Some(theirs) = login.as_ref().and_then(|env| env.iter().find(|(k, _)| k == "PATH")).map(|(_, v)| v.clone()) {
-        let ours = std::env::var("PATH").unwrap_or_default();
-        unsafe { std::env::set_var("PATH", wider_path(&theirs, &ours)) };
+    if let Some(env) = login.as_ref() {
+        if let Some((_, theirs)) = env.iter().find(|(k, _)| k == "PATH") {
+            let ours = std::env::var("PATH").unwrap_or_default();
+            unsafe { std::env::set_var("PATH", wider_path(theirs, &ours)) };
+        }
+        for (k, v) in env.iter().filter(|(k, _)| ["GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"].contains(&k.as_str())) {
+            if std::env::var_os(k).is_none() {
+                unsafe { std::env::set_var(k, v) };
+            }
+        }
     }
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
