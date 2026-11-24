@@ -163,7 +163,7 @@ impl Shell {
         }
         .on_click(cx.listener(|this, _, window, cx| this.toggle_default_script(window, cx)));
         let me = cx.entity().downgrade();
-        let menu = Popover::new("run-menu")
+        let menu = Popover::new("run-menu").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(Button::new("run-more").ghost().small().icon(Icon::empty().path("icons/chevron-down.svg")).tooltip("Scripts"))

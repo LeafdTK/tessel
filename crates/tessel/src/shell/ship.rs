@@ -117,7 +117,7 @@ impl Shell {
         }
         let session = summary.id;
         let me = cx.entity().downgrade();
-        let menu = Popover::new("ship-menu")
+        let menu = Popover::new("ship-menu").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(Button::new("ship").ghost().small().icon(Icon::empty().path("icons/git-pull-request-arrow.svg")).tooltip("Ship this work"))

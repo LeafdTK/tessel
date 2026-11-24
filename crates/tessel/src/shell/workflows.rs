@@ -515,7 +515,7 @@ impl Shell {
             Some(Loaded::Ready(choices)) => {
                 let list = choices.clone();
                 let trigger_label = chosen.clone().unwrap_or_else(|| format!("Choose {}…", i.label.to_lowercase()));
-                Popover::new(SharedString::from(format!("wf-select-{id}")))
+                Popover::new(SharedString::from(format!("wf-select-{id}"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
                     .p_0()
                     .anchor(Anchor::TopLeft)
                     .trigger(

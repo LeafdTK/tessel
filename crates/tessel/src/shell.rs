@@ -347,6 +347,7 @@ pub struct Shell {
     pub(crate) task_change: Entity<InputState>,
     pub(crate) bother_input: Entity<InputState>,
     pub(crate) editing_bother: bool,
+    pub(crate) bother_w: std::rc::Rc<std::cell::Cell<f32>>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
     pub(crate) saved_views: Vec<tessel_proto::views::View>,
@@ -882,6 +883,7 @@ impl Shell {
             task_change,
             bother_input,
             editing_bother: false,
+            bother_w: Default::default(),
             tasks: Vec::new(),
             changing_task: None,
             saved_views: Vec::new(),
@@ -2667,7 +2669,7 @@ impl Shell {
     fn turn_menu(&self, id: &ItemId, me: &Entity<Self>) -> AnyElement {
         let me = me.downgrade();
         let turn = id.clone();
-        gpui_kit::component::popover::Popover::new(SharedString::from(format!("turn-{id}-menu")))
+        gpui_kit::component::popover::Popover::new(SharedString::from(format!("turn-{id}-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(Button::new(SharedString::from(format!("turn-{id}-more"))).ghost().small().icon(gpui_kit::component::Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
@@ -3798,7 +3800,7 @@ impl Shell {
                     let _ = weak.update(cx, |this, cx| this.run_key("session.fork", serde_json::json!({ "before": said.as_str() }), window, cx));
                 })
         };
-        let models = gpui_kit::component::popover::Popover::new("failed-models")
+        let models = gpui_kit::component::popover::Popover::new("failed-models").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(Button::new("failed-model").outline().small().label("Try another model").icon(gpui_kit::component::Icon::empty().path("icons/chevron-down.svg")))

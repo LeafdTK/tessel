@@ -264,7 +264,7 @@ impl Shell {
         let search = self.model_search.clone();
         let clear = self.model_search.clone();
         let chip_name = name.clone();
-        Popover::new("model-popover")
+        Popover::new("model-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::BottomLeft)
             .on_open_change(move |open, window, cx| {

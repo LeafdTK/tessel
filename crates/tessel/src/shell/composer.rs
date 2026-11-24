@@ -383,7 +383,7 @@ impl Shell {
                 .child(div().set(Type::Callout).text_color(p.label).child(mode_name(current.as_deref())))
                 .child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(12.)).text_color(p.tertiary)),
         );
-        Popover::new("mode-popover").p_0().anchor(Anchor::BottomLeft).trigger(trigger).content(move |_, _, cx| {
+        Popover::new("mode-popover").rounded(crate::theme::z(crate::theme::R_FLOAT)).p_0().anchor(Anchor::BottomLeft).trigger(trigger).content(move |_, _, cx| {
             let popover = cx.entity();
             let Some(shell) = me.upgrade() else { return div().into_any_element() };
             let this = shell.read(cx);
@@ -437,7 +437,7 @@ impl Shell {
             .tooltip(label);
         let me = cx.entity().downgrade();
         Some(
-            Popover::new("context-popover")
+            Popover::new("context-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
                 .p_0()
                 .anchor(Anchor::BottomRight)
                 .trigger(trigger)
@@ -490,7 +490,7 @@ impl Shell {
             .tooltip(label);
         let me = cx.entity().downgrade();
         Some(
-            Popover::new("usage-popover")
+            Popover::new("usage-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
                 .p_0()
                 .anchor(Anchor::BottomRight)
                 .trigger(trigger)
@@ -520,7 +520,7 @@ impl Shell {
     pub(crate) fn plus_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
         let p_plus = self.palette.get();
-        Popover::new("plus-popover")
+        Popover::new("plus-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::BottomLeft)
             .trigger(tool_button("composer-plus").w(theme::z(theme::CONTROL_H)).px_0().justify_center().tooltip("Add").child(Icon::empty().path("icons/plus.svg").size(theme::z(16.)).text_color(p_plus.secondary)))
@@ -564,7 +564,7 @@ impl Shell {
                     .when(!servers.is_empty(), |d| d.child(div().set(Type::Callout).text_color(p.secondary).child(servers.len().to_string()))),
             )
             .tooltip(if broken > 0 { format!("{broken} tool server{} need{} attention", if broken == 1 { "" } else { "s" }, if broken == 1 { "s" } else { "" }) } else { "Tool Servers".into() });
-        Popover::new("mcp-popover").p_0().anchor(Anchor::BottomRight).trigger(trigger).content(move |_, _, cx| {
+        Popover::new("mcp-popover").rounded(crate::theme::z(crate::theme::R_FLOAT)).p_0().anchor(Anchor::BottomRight).trigger(trigger).content(move |_, _, cx| {
             let Some(shell) = me.upgrade() else { return div().into_any_element() };
             let this = shell.read(cx);
             let p = this.palette.get();

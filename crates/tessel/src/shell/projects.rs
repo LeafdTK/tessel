@@ -316,7 +316,7 @@ impl Shell {
         let folder = self.new_folder();
         let name = folder.as_deref().map(folder_name);
         let me = cx.entity().downgrade();
-        Popover::new("new-project-popover")
+        Popover::new("new-project-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(
@@ -387,7 +387,7 @@ impl Shell {
     /// the + menu: open a folder, clone, start a project, or go back to a recent folder.
     pub(crate) fn add_menu(&self, id: &'static str, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
-        Popover::new(SharedString::from(format!("{id}-popover")))
+        Popover::new(SharedString::from(format!("{id}-popover"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(Button::new(id).ghost().small().icon(Icon::empty().path("icons/plus.svg")).tooltip("New Session"))

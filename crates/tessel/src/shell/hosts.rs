@@ -663,7 +663,7 @@ impl Shell {
         };
         let icon = machine_icon(self.hosts.list.current());
         let width = (self.drawer("sidebar").map_or(280., |d| d.w.value()) - 16.).max(220.);
-        let picker = Popover::new("host-picker-popover")
+        let picker = Popover::new("host-picker-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(
@@ -914,7 +914,7 @@ impl Shell {
             .id(SharedString::from(format!("host-{id}-menu-zone")))
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
-                Popover::new(SharedString::from(format!("host-{id}-menu")))
+                Popover::new(SharedString::from(format!("host-{id}-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
                     .p_0()
                     .anchor(Anchor::TopRight)
                     .trigger(Button::new(SharedString::from(format!("host-{id}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))

@@ -378,7 +378,7 @@ impl Shell {
         let namespace = self.kube.namespace.clone().unwrap_or_else(|| "All namespaces".into());
         let me = cx.entity().downgrade();
         let (contexts, current_ctx) = (self.kube.contexts.clone(), context.clone());
-        let ctx_menu = Popover::new("kube-context-menu").p_0().anchor(Anchor::TopLeft).trigger(picker("kube-context", "ship-wheel", context.clone())).content({
+        let ctx_menu = Popover::new("kube-context-menu").rounded(crate::theme::z(crate::theme::R_FLOAT)).p_0().anchor(Anchor::TopLeft).trigger(picker("kube-context", "ship-wheel", context.clone())).content({
             let me = me.clone();
             move |_, _, cx| {
                 let popover = cx.entity();
@@ -397,7 +397,7 @@ impl Shell {
             }
         });
         let (namespaces, picked_ns) = (self.kube.namespaces.clone(), self.kube.namespace.clone());
-        let ns_menu = Popover::new("kube-namespace-menu").p_0().anchor(Anchor::TopLeft).trigger(picker("kube-namespace", "box", namespace)).content({
+        let ns_menu = Popover::new("kube-namespace-menu").rounded(crate::theme::z(crate::theme::R_FLOAT)).p_0().anchor(Anchor::TopLeft).trigger(picker("kube-namespace", "box", namespace)).content({
             let me = me.clone();
             move |_, _, cx| {
                 let popover = cx.entity();

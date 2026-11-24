@@ -159,7 +159,7 @@ impl Shell {
     pub(crate) fn scope_picker(&self, size: f32, cx: &mut Context<Self>) -> AnyElement {
         let name = self.board_project.as_deref().map(super::projects::folder_name).unwrap_or_else(|| "All projects".into());
         let me = cx.entity().downgrade();
-        Popover::new("board-project-popover")
+        Popover::new("board-project-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopLeft)
             .trigger(
@@ -207,7 +207,7 @@ impl Shell {
         let chosen = self.board_land.clone().unwrap_or(default.clone());
         let label = if chosen == "branch" { "Merge into a branch".to_owned() } else { tessel_proto::task::land_word(&chosen) };
         let me = cx.entity().downgrade();
-        let picker = Popover::new("board-land-popover")
+        let picker = Popover::new("board-land-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::BottomLeft)
             .trigger(

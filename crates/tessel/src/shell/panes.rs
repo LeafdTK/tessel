@@ -927,7 +927,7 @@ impl Shell {
         let me = cx.entity().downgrade();
         let (trail, pid) = (trail.to_vec(), id.to_owned());
         let p = self.palette.get();
-        Popover::new(SharedString::from(format!("pane-{id}-new-menu")))
+        Popover::new(SharedString::from(format!("pane-{id}-new-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(Button::new(SharedString::from(format!("pane-{id}-new"))).ghost().small().icon(Icon::empty().path("icons/plus.svg").text_color(p.secondary)).tooltip("New Pane"))
@@ -965,7 +965,7 @@ impl Shell {
         let me = cx.entity().downgrade();
         let (trail, pid) = (trail.to_vec(), id.to_owned());
         let p = self.palette.get();
-        Popover::new(SharedString::from(format!("pane-{id}-menu")))
+        Popover::new(SharedString::from(format!("pane-{id}-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(Button::new(SharedString::from(format!("pane-{id}-more"))).ghost().small().icon(Icon::empty().path("icons/ellipsis.svg").text_color(p.secondary)).tooltip("Pane"))

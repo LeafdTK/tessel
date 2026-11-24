@@ -135,7 +135,7 @@ impl Shell {
                 .child(
                     // the menu's clicks stay the menu's: the row underneath folds the project on a click.
                     div().id(SharedString::from(format!("project-{title}-menu-zone"))).on_click(|_, _, cx| cx.stop_propagation()).child(
-                    Popover::new(SharedString::from(format!("project-{title}-menu")))
+                    Popover::new(SharedString::from(format!("project-{title}-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
                         .p_0()
                         .anchor(Anchor::TopRight)
                         .trigger(Button::new(SharedString::from(format!("project-{title}-more"))).ghost().small().rounded(px(5.5)).icon(Icon::empty().path("icons/ellipsis.svg")).tooltip("More"))
@@ -192,7 +192,7 @@ impl Shell {
         // clicks on the menu (opening it, closing it, choosing) are the menu's:
         // they don't reach the row underneath, which would open the session.
         div().id(SharedString::from(format!("session-{sid}-menu-zone"))).on_click(|_, _, cx| cx.stop_propagation()).invisible().group_hover(group, |st| st.visible()).child(
-            Popover::new(SharedString::from(format!("session-{sid}-menu")))
+            Popover::new(SharedString::from(format!("session-{sid}-menu"))).rounded(crate::theme::z(crate::theme::R_FLOAT))
                 .p_0()
                 .anchor(Anchor::TopRight)
                 .on_open_change({
@@ -351,7 +351,7 @@ impl Shell {
             .child(Icon::empty().path("icons/trash.svg").size(theme::z(14.)).text_color(p.tertiary))
             .child(div().flex_1().set(Type::Callout).text_color(p.secondary).child("Recently Deleted"))
             .child(theme::count_pill(&p, n.to_string(), false));
-        let popover = Popover::new("deleted-popover")
+        let popover = Popover::new("deleted-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::BottomLeft)
             .trigger(Button::new("nav-deleted-open").ghost().w_full().h_auto().p_0().child(trigger))

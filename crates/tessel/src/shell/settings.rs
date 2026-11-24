@@ -961,7 +961,7 @@ impl Shell {
 
     fn font_picker(&self, id: &'static str, current: String, interface: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let me = cx.entity().downgrade();
-        gpui_kit::component::popover::Popover::new(id)
+        gpui_kit::component::popover::Popover::new(id).rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(Anchor::TopRight)
             .trigger(

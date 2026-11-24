@@ -599,13 +599,18 @@ pub const R_CARD: f32 = 14.0;
 pub const R_CONTROL: f32 = 10.0;
 /// inner tiles: rows in a list, chips, segments in a tray.
 pub const R_TILE: f32 = 8.0;
-pub const FLOAT_PAD: f32 = 4.0;
+pub const FLOAT_PAD: f32 = 5.0;
 /// a floating menu's corner: smaller than a pane's.
-pub const R_FLOAT: f32 = 12.0;
+pub const R_FLOAT: f32 = 14.0;
 pub const SQUIRCLE: f32 = 1.528;
-pub const R_FLOAT_ITEM: f32 = nested(R_CONTROL, FLOAT_PAD);
+pub const R_FLOAT_ITEM: f32 = nested(R_FLOAT, FLOAT_PAD);
+pub const SIDE_ROW_H: f32 = 34.0;
 pub const SIDE_INSET: f32 = 8.0;
 pub const SIDE_PAD: f32 = 8.0;
+
+pub const fn by_height(h: f32) -> f32 {
+    h * 0.3
+}
 
 pub const fn nested(outer: f32, inset: f32) -> f32 {
     let r = outer - inset / SQUIRCLE;
@@ -808,7 +813,8 @@ pub fn side_row(p: &Palette, id: impl Into<SharedString>, on: bool) -> gpui_kit:
         .mx(z(SIDE_INSET))
         .px(z(SIDE_PAD))
         .gap(z(10.))
-        .rounded(z(R_TILE))
+        .min_h(z(SIDE_ROW_H))
+        .rounded(z(by_height(SIDE_ROW_H)))
         .cursor_pointer()
         .when(on, |d| d.bg(p.selection))
         .when(!on, move |d| d.hover(move |d| d.bg(p.hover)))

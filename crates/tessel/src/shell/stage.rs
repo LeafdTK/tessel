@@ -6,6 +6,7 @@ use tessel_proto::task::{Task, TaskAct, TaskState};
 type Click = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
 const RAIL: f32 = 300.;
+const TWO_LINES: f32 = 48.;
 const MAT: f32 = 34.;
 const MAT_PAD: f32 = 14.;
 
@@ -152,7 +153,7 @@ impl Shell {
         let needs = self.tasks.iter().filter(|t| t.state == TaskState::Review && !t.cleared).count();
         let seg = |id: &'static str, label: &'static str, on: bool, view: &'static str, badge: usize| {
             theme::segment(&p, id, label, on)
-                .rounded(theme::z(theme::nested(theme::R_TILE, theme::TRAY_PAD)))
+                .rounded(theme::z(theme::nested(theme::by_height(theme::SIDE_ROW_H), theme::TRAY_PAD)))
                 .flex_1()
                 .justify_center()
                 .gap(theme::z(6.))
@@ -167,7 +168,7 @@ impl Shell {
         div()
             .px(theme::z(theme::SIDE_INSET))
             .pb(theme::z(10.))
-            .child(theme::tray(&p).w_full().h(theme::z(32.)).rounded(theme::z(theme::R_TILE)).child(seg("view-chats", "Chats", !factory, "chats", 0)).child(seg("view-factory", "Factory", factory, "factory", if factory { 0 } else { needs })))
+            .child(theme::tray(&p).w_full().h(theme::z(theme::SIDE_ROW_H)).rounded(theme::z(theme::by_height(theme::SIDE_ROW_H))).child(seg("view-chats", "Chats", !factory, "chats", 0)).child(seg("view-factory", "Factory", factory, "factory", if factory { 0 } else { needs })))
             .into_any_element()
     }
 
@@ -210,10 +211,10 @@ impl Shell {
                         h_flex()
                             .id("board-pause")
                             .aria_label(if paused { "Resume" } else { "Pause" })
-                            .size(theme::z(32.))
+                            .size(theme::z(theme::SIDE_ROW_H))
                             .flex_shrink_0()
                             .justify_center()
-                            .rounded(theme::z(theme::R_TILE))
+                            .rounded(theme::z(theme::by_height(theme::SIDE_ROW_H)))
                             .cursor_pointer()
                             .when(paused, |d| d.bg(p.accent).text_color(p.on_accent))
                             .when(!paused, |d| d.text_color(p.secondary).hover(|d| d.bg(p.hover).text_color(p.label)))
@@ -229,11 +230,14 @@ impl Shell {
             Focus::Issues => "issues".into(),
             Focus::Rules => "rules".into(),
         };
-        let row = |id: String, pick: String, body: Div, cx: &mut Context<Self>| {
+        let row = |id: String, pick: String, body: Div, two: bool, cx: &mut Context<Self>| {
             let on = focus_id == pick;
+            let h = if two { TWO_LINES } else { theme::SIDE_ROW_H };
             theme::side_row(&p, SharedString::from(id), on)
-                .py(theme::z(7.))
-                .items_start()
+                .min_h(theme::z(h))
+                .rounded(theme::z(theme::by_height(h)))
+                .when(two, |d| d.py(theme::z(7.)).items_start())
+                .when(!two, |d| d.items_center())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.stage_pick_now(Some(pick.clone()));
                     match pick.as_str() {
@@ -254,6 +258,7 @@ impl Shell {
             "stage-new".into(),
             "new".into(),
             h_flex().gap(theme::z(10.)).items_center().child(Icon::empty().path("icons/plus.svg").size(theme::z(14.)).text_color(p.secondary)).child(div().text_size(theme::z(14.5)).text_color(p.label).child("New task")),
+            false,
             cx,
         ));
         let needs = self.stage_list(&[TaskState::Review]);
@@ -274,21 +279,22 @@ impl Shell {
             list = list.child(heading("Needs you"));
             for t in needs {
                 let line = if t.options.is_empty() { "Waiting on you".to_owned() } else { format!("{} options", t.options.len()) };
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.blocked, false, line, p.secondary), cx));
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.blocked, false, line, p.secondary), true, cx));
             }
         }
         if !busy.is_empty() {
             list = list.child(heading("Working"));
             for t in busy {
                 let line = self.stage_doing(t);
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.info, true, line, p.secondary), cx));
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.info, true, line, p.secondary), true, cx));
             }
         }
         if !next.is_empty() {
             list = list.child(heading("Next"));
             for t in next {
                 let line = if t.deps.is_empty() { String::new() } else { "After another task".into() };
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.tertiary, false, line, p.tertiary), cx));
+                let two = !line.is_empty();
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), dotted(t, p.tertiary, false, line, p.tertiary), two, cx));
             }
         }
         if !landed.is_empty() {
@@ -304,7 +310,7 @@ impl Shell {
                             .px(theme::z(10.))
                             .mt(theme::z(12.))
                             .text_size(theme::z(12.5))
-                            .rounded(theme::z(theme::R_TILE))
+                            .rounded(theme::z(theme::by_height(26.)))
                             .text_color(p.secondary)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 for id in &ids {
@@ -321,6 +327,7 @@ impl Shell {
                     format!("stage-task-{}", t.id),
                     t.id.clone(),
                     h_flex().flex_1().min_w_0().gap(theme::z(10.)).child(div().flex_1().min_w_0().child(title(t, p.secondary))).child(div().flex_shrink_0().pt(theme::z(2.)).text_size(theme::z(12.)).font_family(theme::mono()).text_color(p.tertiary).child(mark)),
+                    false,
                     cx,
                 ));
             }
@@ -328,15 +335,15 @@ impl Shell {
         if !drafts.is_empty() {
             list = list.child(heading("Drafts"));
             for t in drafts {
-                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), v_flex().flex_1().min_w_0().child(title(t, p.secondary)), cx));
+                list = list.child(row(format!("stage-task-{}", t.id), t.id.clone(), v_flex().flex_1().min_w_0().child(title(t, p.secondary)), false, cx));
             }
         }
         let foot = v_flex()
             .py(theme::z(10.))
             .border_t_1()
             .border_color(p.separator)
-            .child(row("board-tab-issues".into(), "issues".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Issues"), cx))
-            .child(row("board-tab-rules".into(), "rules".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Rules"), cx));
+            .child(row("board-tab-issues".into(), "issues".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Issues"), false, cx))
+            .child(row("board-tab-rules".into(), "rules".into(), div().text_size(theme::z(14.5)).text_color(p.label).child("Rules"), false, cx));
         v_flex()
             .id("stage-rail")
             .size_full()
@@ -355,17 +362,19 @@ impl Shell {
             other => BOTHER.iter().find(|(v, _)| *v == other).map_or("Only critical decisions", |(_, l)| l).to_owned(),
         };
         let me = cx.entity().downgrade();
-        let picker = gpui_kit::component::popover::Popover::new("bother-popover")
+        let (measure, wide) = (self.bother_w.clone(), self.bother_w.clone());
+        let picker = gpui_kit::component::popover::Popover::new("bother-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
             .p_0()
             .anchor(gpui_kit::Anchor::TopLeft)
             .trigger(
                 super::composer::tool_button("bother")
                     .w_full()
-                    .h(theme::z(34.))
+                    .h(theme::z(theme::SIDE_ROW_H))
                     .px(theme::z(theme::SIDE_PAD))
-                    .rounded(theme::z(theme::R_TILE))
+                    .rounded(theme::z(theme::by_height(theme::SIDE_ROW_H)))
                     .bg(p.fill)
-                    .child(h_flex().w_full().gap(theme::z(8.)).items_center().child(div().flex_1().min_w_0().truncate().text_left().text_size(theme::z(14.)).text_color(p.label).child(label)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(13.)).text_color(p.secondary))),
+                    .child(h_flex().w_full().gap(theme::z(8.)).items_center().child(div().flex_1().min_w_0().truncate().text_left().text_size(theme::z(14.)).text_color(p.label).child(label)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(13.)).text_color(p.secondary)))
+                    .child(canvas(move |b, _, _| measure.set(f32::from(b.size.width)), |_, _, _, _| {}).absolute().inset_0()),
             )
             .content(move |_, _, cx| {
                 let popover = cx.entity();
@@ -397,7 +406,8 @@ impl Shell {
                         });
                     }));
                 }
-                theme::float_list(&p).w(px(268.)).child(rows).into_any_element()
+                let w = wide.get();
+                theme::float_list(&p).w(px(if w > 0. { w } else { 268. })).child(rows).into_any_element()
             });
         v_flex()
             .w_full()
@@ -407,12 +417,12 @@ impl Shell {
                 d.child(
                     h_flex()
                         .w_full()
-                        .h(theme::z(34.))
+                        .h(theme::z(theme::SIDE_ROW_H))
                         .pl(theme::z(theme::SIDE_PAD))
                         .pr(theme::z(4.))
                         .gap(theme::z(6.))
                         .items_center()
-                        .rounded(theme::z(theme::R_TILE))
+                        .rounded(theme::z(theme::by_height(theme::SIDE_ROW_H)))
                         .border_1()
                         .border_color(p.separator)
                         .bg(p.window)
@@ -422,7 +432,7 @@ impl Shell {
                                 .h(theme::z(26.))
                                 .px(theme::z(10.))
                                 .text_size(theme::z(13.))
-                                .rounded(theme::z(theme::nested(theme::R_TILE, 4.)))
+                                .rounded(theme::z(theme::nested(theme::by_height(theme::SIDE_ROW_H), 4.)))
                                 .on_click(cx.listener(|this, _, window, cx| this.save_bother(window, cx)))
                                 .test_support(),
                         ),
