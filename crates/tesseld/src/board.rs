@@ -109,14 +109,42 @@ pub fn after_proof(task: &Task, p: &Proof, f: &Factory) -> Next {
     }
 }
 
-pub fn final_review_prompt(t: &Task, report: &str, diff: &str) -> String {
+pub fn mode<'a>(autonomy: &'a str, bother: &str) -> &'a str {
+    match autonomy {
+        "custom" if bother.trim().is_empty() => "agent",
+        "me" | "agent" | "ui" | "full" | "custom" => autonomy,
+        _ => "agent",
+    }
+}
+
+pub fn final_review_prompt(t: &Task, report: &str, diff: &str, autonomy: &str, bother: &str) -> String {
+    let mode = mode(autonomy, bother);
+    let full = mode == "full";
     let mut p = String::from(
         "You are the final reviewer of a change an agent made, deciding for the person who asked for it so they don't have to look. \
 Land it if it does what was asked, completely, and nothing in it is wrong or unsafe. \
-Send it back with \"change\" when something specific is wrong or missing that the agent can fix: say exactly what. \
-Ask the person with \"ask\" only for a decision only they can make: a product or design choice, a risk you can't judge, or a task that's unclear. \
-You can read the repository (Read, Grep, Glob).\n",
+Send it back with \"change\" when something specific is wrong or missing that the agent can fix: say exactly what. ",
     );
+    const CHOOSE: &str = "When the task leaves a product or design choice open, pick the reading that best fits the task and the product as it is, land it, and say in \"why\" which choice you made. ";
+    match mode {
+        "full" => {
+            p.push_str("Nobody will answer questions: the person runs this hands-off, so never answer \"ask\". ");
+            p.push_str(CHOOSE);
+        }
+        "ui" => {
+            p.push_str("Ask the person with \"ask\" only for a choice about how something looks or reads on screen, and set \"visual\" to true when you do. Decide everything else yourself, as nobody else will look. ");
+            p.push_str(CHOOSE);
+        }
+        "custom" => p.push_str(&format!("Ask the person only when this applies: {}. Otherwise decide yourself, as nobody else will look. To ask, answer \"ask\". ", bother.trim().trim_end_matches('.'))),
+        _ => p.push_str("Ask the person with \"ask\" only for a decision only they can make: a product or design choice, a risk you can't judge, or a task that's unclear. "),
+    }
+    if !full {
+        p.push_str(
+            "When you ask, give 2 or 3 concrete options they can pick between, each with a short label of a few words and what it does. \
+Set \"visual\" to true only when the choice is about how something looks or reads on screen and seeing each option would settle it. ",
+        );
+    }
+    p.push_str("You can read the repository (Read, Grep, Glob).\n");
     p.push_str(&format!("\n## The task\n{}\n", t.title));
     if !t.spec.trim().is_empty() {
         p.push_str(&format!("\n{}\n", t.spec.trim()));
@@ -130,7 +158,11 @@ You can read the repository (Read, Grep, Glob).\n",
     p.push_str(&format!("\n## What the checks found\n{report}\n"));
     let diff: String = diff.chars().take(100_000).collect();
     p.push_str(&format!("\n## The change\n```diff\n{diff}\n```\n"));
-    p.push_str("\n## Answer\nEnd with one ```json block and nothing after it: {\"decision\": \"land\" | \"change\" | \"ask\", \"why\": \"one plain sentence the person reads\", \"change\": \"what to change, when you send it back\"}.\n");
+    if full {
+        p.push_str("\n## Answer\nEnd with one ```json block and nothing after it: {\"decision\": \"land\" | \"change\", \"why\": \"one plain sentence the person reads\", \"change\": \"what to change, when you send it back\"}.\n");
+    } else {
+        p.push_str("\n## Answer\nEnd with one ```json block and nothing after it: {\"decision\": \"land\" | \"change\" | \"ask\", \"why\": \"one plain sentence the person reads\", \"change\": \"what to change, when you send it back\", \"options\": [{\"label\": \"a few words\", \"what\": \"what this option does, concretely\"}], \"visual\": true | false}. Give options and visual only when you ask.\n");
+    }
     p
 }
 
@@ -138,7 +170,7 @@ You can read the repository (Read, Grep, Glob).\n",
 pub enum Decision {
     Land(String),
     Change(String, String),
-    Ask(String),
+    Ask { why: String, options: Vec<(String, String)>, visual: bool },
 }
 
 pub fn read_decision(text: &str) -> Decision {
@@ -148,8 +180,33 @@ pub fn read_decision(text: &str) -> Decision {
     match s("decision").as_deref() {
         Some("land") => Decision::Land(why),
         Some("change") => Decision::Change(why.clone(), s("change").unwrap_or(why)),
-        _ => Decision::Ask(why),
+        _ => {
+            let options: Vec<(String, String)> = v
+                .get("options")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|o| {
+                    let f = |k: &str| o.get(k).and_then(serde_json::Value::as_str).map(str::trim).unwrap_or_default().to_owned();
+                    let (label, what) = (f("label"), f("what"));
+                    let label = if label.is_empty() { what.chars().take(40).collect() } else { label };
+                    (!label.is_empty()).then_some((label, what))
+                })
+                .take(3)
+                .collect();
+            let visual = !options.is_empty() && v.get("visual").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            Decision::Ask { why, options, visual }
+        }
     }
+}
+
+pub fn option_prompt(base: &str, label: &str, what: &str) -> String {
+    format!(
+        "The final review has a question for the person, and they'll pick between options by seeing each one. Make this one so they can see it.\n\n\
+Start from commit {base}: run `git reset --hard {base}` in this workspace first (it's your own worktree, so that's safe). \
+Then make this option, and only this: {label}: {what}\n\n\
+Commit it, then stop. Don't run the checks: it's screenshotted next."
+    )
 }
 
 pub fn plan_prompt(t: &Task) -> String {
@@ -199,6 +256,36 @@ pub fn load_attachments(home: &Path, t: &Task) -> Vec<tessel_proto::Attachment> 
         .collect()
 }
 
+pub fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Swatch {
+    pub base: String,
+    pub why: String,
+}
+
+fn swatch_file(home: &Path, id: &str) -> std::path::PathBuf {
+    attachment_dir(home, id).join(".swatch")
+}
+
+pub fn save_swatch(home: &Path, id: &str, s: &Swatch) {
+    let _ = std::fs::create_dir_all(attachment_dir(home, id));
+    if let Ok(b) = serde_json::to_vec(s) {
+        let _ = std::fs::write(swatch_file(home, id), b);
+    }
+}
+
+pub fn load_swatch(home: &Path, id: &str) -> Option<Swatch> {
+    serde_json::from_slice(&std::fs::read(swatch_file(home, id)).ok()?).ok()
+}
+
+pub fn forget_swatch(home: &Path, id: &str) {
+    let _ = std::fs::remove_file(swatch_file(home, id));
+}
+
 pub fn task_prompt(t: &Task) -> String {
     let mut p = t.title.clone();
     if !t.spec.trim().is_empty() {
@@ -246,6 +333,9 @@ mod tests {
             changes: vec![],
             review: None,
             cleared: false,
+            shots: vec![],
+            options: vec![],
+            building: None,
             created_ms: at,
             updated_ms: at,
         }
@@ -255,11 +345,47 @@ mod tests {
     fn the_final_reviewer_lands_sends_back_or_asks_and_says_why() {
         assert_eq!(read_decision("ok\n```json\n{\"decision\": \"land\", \"why\": \"Does what was asked.\"}\n```"), Decision::Land("Does what was asked.".into()));
         assert_eq!(read_decision("```json\n{\"decision\": \"change\", \"why\": \"Misses the empty cart.\", \"change\": \"Handle an empty cart.\"}\n```"), Decision::Change("Misses the empty cart.".into(), "Handle an empty cart.".into()));
-        assert!(matches!(read_decision("I'm not sure"), Decision::Ask(_)), "anything unclear goes to the person");
+        assert!(matches!(read_decision("I'm not sure"), Decision::Ask { .. }), "anything unclear goes to the person");
         let mut t = task("a", TaskState::Proving, &[], 0);
         t.summary = Some("Added coupons.".into());
-        let p = final_review_prompt(&t, "proven", "+x");
+        let p = final_review_prompt(&t, "proven", "+x", "agent", "");
         assert!(p.contains("Added coupons.") && p.contains("\"decision\"") && p.contains("+x"));
+        assert!(p.contains("\"ask\"") && p.contains("\"options\"") && p.contains("\"visual\""));
+    }
+
+    #[test]
+    fn a_question_comes_with_at_most_three_options_and_says_whether_seeing_them_decides_it() {
+        let asked = read_decision(
+            "```json\n{\"decision\": \"ask\", \"why\": \"Which color for the badge?\", \"visual\": true, \"options\": [{\"label\": \"Green\", \"what\": \"Green badge\"}, {\"label\": \"Blue\", \"what\": \"Blue badge\"}, {\"label\": \"\", \"what\": \"Gray badge\"}, {\"label\": \"Red\", \"what\": \"Red badge\"}, {}]}\n```",
+        );
+        let Decision::Ask { why, options, visual } = asked else { panic!("{asked:?}") };
+        assert_eq!(why, "Which color for the badge?");
+        assert!(visual);
+        assert_eq!(options, vec![("Green".to_owned(), "Green badge".to_owned()), ("Blue".to_owned(), "Blue badge".to_owned()), ("Gray badge".to_owned(), "Gray badge".to_owned())]);
+        assert_eq!(read_decision("```json\n{\"decision\": \"ask\", \"why\": \"Unclear.\", \"visual\": true}\n```"), Decision::Ask { why: "Unclear.".into(), options: vec![], visual: false }, "nothing to see without options");
+        assert_eq!(read_decision("```json\n{\"decision\": \"ask\", \"why\": \"Which?\", \"options\": \"pick one\"}\n```"), Decision::Ask { why: "Which?".into(), options: vec![], visual: false });
+        let p = option_prompt("abc123", "Green", "Green badge");
+        assert!(p.contains("git reset --hard abc123") && p.contains("Green: Green badge") && p.contains("Commit it, then stop"));
+    }
+
+    #[test]
+    fn hands_off_the_reviewer_is_told_nobody_answers_and_to_choose_for_itself() {
+        let t = task("a", TaskState::Proving, &[], 0);
+        let p = final_review_prompt(&t, "proven", "+x", "full", "");
+        assert!(p.contains("Nobody will answer questions") && p.contains("which choice you made"));
+        assert!(!p.contains("\"options\""), "no options to offer when nobody picks");
+    }
+
+    #[test]
+    fn the_reviewer_bothers_the_person_only_as_often_as_they_said() {
+        let t = task("a", TaskState::Proving, &[], 0);
+        let ui = final_review_prompt(&t, "proven", "+x", "ui", "");
+        assert!(ui.contains("only for a choice about how something looks") && ui.contains("which choice you made") && ui.contains("\"options\""));
+        let custom = final_review_prompt(&t, "proven", "+x", "custom", "it changes billing.");
+        assert!(custom.contains("Ask the person only when this applies: it changes billing. Otherwise decide yourself, as nobody else will look."), "{custom}");
+        assert_eq!(mode("custom", "  "), "agent", "a rule left empty is no rule");
+        assert_eq!(mode("sometimes", ""), "agent");
+        assert_eq!(mode("ui", ""), "ui");
     }
 
     #[test]

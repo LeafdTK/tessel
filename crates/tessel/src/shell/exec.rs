@@ -385,7 +385,7 @@ impl Shell {
             }
             "theme.material" => {
                 let m = arg(args, "material").ok_or("material: solid, glass, felt or field")?;
-                if !matches!(m, "solid" | "glass" | "felt" | "field") {
+                if !matches!(m, "solid" | "glass" | "felt") {
                     return Err(format!("\"{m}\" isn't a material. use solid, glass, felt or field"));
                 }
                 let v = (m != "solid").then(|| json!(m));
@@ -440,6 +440,21 @@ impl Shell {
                     window,
                     cx,
                 );
+                done
+            }
+            "app.view" => {
+                let view = args.get("view").and_then(|v| v.as_str()).ok_or("view: chats or factory")?;
+                match view {
+                    "factory" => {
+                        if !self.factory_on() {
+                            self.exec("app.factory", &json!({"on": true}), window, cx)?;
+                        }
+                        self.factory_view = true;
+                    }
+                    "chats" => self.factory_view = false,
+                    other => return Err(format!("view: {other} isn't chats or factory")),
+                }
+                cx.notify();
                 done
             }
             "proof.run" => {
@@ -682,7 +697,7 @@ impl Shell {
 
             "theme.set" => {
                 let base = need(args, "base", cmd)?;
-                if !["tessel", "orchard", "field"].contains(&base) {
+                if !["tessel", "orchard"].contains(&base) {
                     return Err(format!("\"{base}\" isn't a theme. themes: tessel, orchard, field"));
                 }
                 let b = base.to_owned();
@@ -803,7 +818,7 @@ impl Shell {
             "panes": panes,
             "drawers": drawers,
             "theme": {
-                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard", crate::ui::Base::Field => "field" },
+                "base": match t.base.unwrap_or_default() { crate::ui::Base::Tessel => "tessel", crate::ui::Base::Orchard => "orchard" },
                 "dark": self.palette.get().dark,
                 "size": t.scale.unwrap_or(1.0),
             },

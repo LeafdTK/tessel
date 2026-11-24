@@ -178,7 +178,6 @@ impl Shell {
         let base = match theme.base.unwrap_or_default() {
             crate::ui::Base::Tessel => "tessel",
             crate::ui::Base::Orchard => "orchard",
-            crate::ui::Base::Field => "field",
         };
         let appearance = match theme.dark.flatten() {
             None => "system",
@@ -197,8 +196,6 @@ impl Shell {
             "glass"
         } else if theme.felt.unwrap_or(false) {
             "felt"
-        } else if theme.field.unwrap_or(false) {
-            "field"
         } else {
             "solid"
         };
@@ -207,7 +204,7 @@ impl Shell {
             .child(self.picture_row(
                 "Material",
                 "",
-                self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt), ("field", "Field", pic_field)], material, cx, |this, v, w, cx| {
+                self.pictures("material", &[("solid", "Solid", pic_solid), ("glass", "Glass", pic_glass), ("felt", "Felt", pic_felt)], material, cx, |this, v, w, cx| {
                     let _ = this.exec("theme.material", &json!({"material": v}), w, cx);
                 }),
             ))
@@ -708,12 +705,7 @@ impl Shell {
             });
             col = col.child(self.setting_row(name, "", choice(format!("role-{job}"), current, &options, set, cx)));
         }
-        let autonomy_hint = match d.autonomy.as_str() {
-            "me" => "You decide on everything that finishes.",
-            "full" => "The reviewer decides everything, risky code included.",
-            _ => "The reviewer decides; anything touching auth, secrets, migrations or infra comes to you.",
-        };
-        col = col.child(self.setting_row("Who decides on finished work", autonomy_hint, choice("autonomy".into(), d.autonomy.clone(), &[("me", "Me".to_owned()), ("agent", "Reviewer".to_owned()), ("full", "Reviewer, always".to_owned())], std::rc::Rc::new(|v: &str| json!({"autonomy": v})), cx)));
+        col = col.child(self.setting_row("Bother me", "", choice("autonomy".into(), d.autonomy.clone(), &[("me", "For anything".to_owned()), ("agent", "Critical decisions".to_owned()), ("ui", "UI choices".to_owned()), ("full", "Never".to_owned())], std::rc::Rc::new(|v: &str| json!({"autonomy": v})), cx)));
         col = col.child(self.setting_row("When a task is done", "", choice("land".into(), d.land.clone(), &[("main", "Land on main".to_owned()), ("pr", "Open a PR".to_owned()), ("keep", "Keep the branch".to_owned())], std::rc::Rc::new(|v: &str| json!({"land": v})), cx)));
         let parallel = d.parallel.unwrap_or(3).to_string();
         col = col.child(self.setting_row("Tasks at once", "", choice("parallel".into(), parallel, &[("1", "1".to_owned()), ("2", "2".to_owned()), ("3", "3".to_owned()), ("4", "4".to_owned()), ("6", "6".to_owned()), ("8", "8".to_owned())], std::rc::Rc::new(|v: &str| json!({"parallel": v.parse::<u32>().unwrap_or(3)})), cx)));
@@ -901,18 +893,6 @@ fn pic_glass(p: &theme::Palette) -> Div {
 
 fn pic_felt(p: &theme::Palette) -> Div {
     mini_window(p, frame_of(p), true, None, true)
-}
-
-fn pic_field(p: &theme::Palette) -> Div {
-    let ramp = [0x16393d, 0x2c6262, 0x4f8d86, 0x86b9a2, 0xc4d8ad];
-    let mut dots = div().size_full().relative().bg(gpui_kit::rgb(0x0b1d22));
-    for y in 0..20u32 {
-        for x in 0..32u32 {
-            let v = (((x as f32) * 0.35 + (y as f32) * 0.22).sin() * 0.5 + 0.5) * 4.0 + ((x * 7 + y * 13) % 5) as f32 * 0.2;
-            dots = dots.child(div().absolute().left(px(x as f32 * 4.)).top(px(y as f32 * 4.)).size(px(3.)).bg(gpui_kit::rgb(ramp[(v as usize).min(4)])));
-        }
-    }
-    dots.child(div().absolute().left(px(10.)).top(px(10.)).right(px(10.)).bottom(px(10.)).rounded(px(6.)).bg(p.window))
 }
 
 fn pic_no_backdrop(p: &theme::Palette) -> Div {

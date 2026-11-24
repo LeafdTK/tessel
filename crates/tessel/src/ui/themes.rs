@@ -8,9 +8,8 @@ use super::ThemeSpec;
 use serde_json::{Map, Value};
 use std::path::Path;
 
-pub const SHIPPED: [(&str, &str); 13] = [
+pub const SHIPPED: [(&str, &str); 12] = [
     ("tessel", include_str!("themes/tessel.json")),
-    ("field", include_str!("themes/field.json")),
     ("orchard", include_str!("themes/orchard.json")),
     ("dusk", include_str!("themes/dusk.json")),
     ("paper", include_str!("themes/paper.json")),

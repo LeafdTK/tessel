@@ -251,8 +251,12 @@ impl Shell {
     }
 
     pub(crate) fn want_shots(&mut self) {
-        let Some(proof) = self.model.open_summary().and_then(|s| s.proof.clone()) else { return };
-        for path in proof.shots {
+        let mut paths: Vec<String> = self.model.open_summary().and_then(|s| s.proof.clone()).map(|p| p.shots).unwrap_or_default();
+        for t in &self.tasks {
+            paths.extend(t.shots.iter().cloned());
+            paths.extend(t.options.iter().flat_map(|o| o.shots.iter().cloned()));
+        }
+        for path in paths {
             if !std::path::Path::new(&path).is_file() && !self.shots.contains_key(&path) {
                 self.shots.insert(path.clone(), None);
                 self.cmd(Cmd::Ask { tag: "shot", req: Request::Shot { path } });

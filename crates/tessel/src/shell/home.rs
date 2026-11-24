@@ -221,8 +221,7 @@ impl Shell {
                 .child(words(13., FontWeight::SEMIBOLD).child(label))
         };
         let open_board = cx.listener(|this, _, window, cx| {
-            let _ = this.exec("app.factory", &serde_json::json!({"on": true}), window, cx);
-            let _ = this.exec("pane.show", &serde_json::json!({"module": "board"}), window, cx);
+            let _ = this.exec("app.view", &serde_json::json!({"view": "factory"}), window, cx);
         });
         let new_chat = cx.listener(|this, _, _, cx| {
             this.show_new_session(cx);

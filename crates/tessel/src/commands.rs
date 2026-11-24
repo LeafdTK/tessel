@@ -160,6 +160,8 @@ pub static COMMANDS: &[Spec] = &[
     c("app.notch", "Notch: Hide", "panel-top-close", None, r#"{"show":false}"#, ""),
     c("app.factory", "Software factory: On", "factory", None, r#"{"on":true}"#, "on: true|false. proving changes against the house rules"),
     c("app.factory", "Software factory: Off", "factory", None, r#"{"on":false}"#, ""),
+    c("app.view", "Show the factory", "factory", None, r#"{"view":"factory"}"#, "view: chats|factory. the window shows your chats, or the factory's queue and what needs you"),
+    c("app.view", "Show chats", "message-square", None, r#"{"view":"chats"}"#, ""),
     c("proof.run", "Prove this change", "badge-check", None, "{}", "session? (the open one). runs the checks, rules and reviewers"),
     c("backdrop.next", "Next space photo", "refresh-cw", None, "{}", "another photograph from NASA's library, for the Space backdrop"),
     c("terminal.look", "Terminal colours: Theme", "square-terminal", None, r#"{"colors":"theme"}"#, "size?: 9 to 24 points; colors?: theme|ink|paper|midnight"),

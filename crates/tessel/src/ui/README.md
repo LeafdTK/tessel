@@ -466,6 +466,7 @@ from a terminal, an agent, or (later) another machine. Events a window publishes
 | `host.bring` | Bring your Claude to a host… |  | host: id or name. its sign-in, CLAUDE.md, settings, skills, git identity: picked in the setup flow |
 | `app.notch` | Notch: Show agents |  | show: true|false. the agents at work, around the camera |
 | `app.factory` | Software factory: On |  | on: true|false. proving changes against the house rules |
+| `app.view` | Show the factory |  | view: chats|factory. the window shows your chats, or the factory's queue and what needs you |
 | `proof.run` | Prove this change |  | session? (the open one). runs the checks, rules and reviewers |
 | `backdrop.next` | Next space photo |  | another photograph from NASA's library, for the Space backdrop |
 | `terminal.look` | Terminal colours: Theme |  | size?: 9 to 24 points; colors?: theme|ink|paper|midnight |

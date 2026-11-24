@@ -1,6 +1,6 @@
 use super::*;
 use crate::board::{self, Next};
-use tessel_proto::task::{Task, TaskAct, TaskNote, TaskState};
+use tessel_proto::task::{Task, TaskAct, TaskNote, TaskOption, TaskState};
 
 const NOBODY: ClientId = ClientId::MAX;
 
@@ -24,6 +24,16 @@ fn first_problem(p: &tessel_proto::proof::Proof) -> Option<String> {
     })
 }
 const WAITING: &str = "finished while paused: it's checked when the factory resumes";
+const HELD: &str = "paused before its next option";
+
+fn lower_first(s: &str) -> String {
+    let s = s.trim().trim_end_matches('.');
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_lowercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
 
 impl Hub {
     fn task_saved(&mut self, id: &str) {
@@ -105,6 +115,9 @@ impl Hub {
             changes: Vec::new(),
             review: None,
             cleared: false,
+            shots: Vec::new(),
+            options: Vec::new(),
+            building: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -166,6 +179,7 @@ impl Hub {
                 if t.state != TaskState::Review {
                     return refuse("it lands from review");
                 }
+                self.stop_swatches(id);
                 match t.pr.clone() {
                     Some(url) if t.notes.iter().rev().find(|n| n.by == "tessel").is_some_and(|n| n.text.starts_with("its checks passed")) => {
                         self.tasks.get_mut(id).unwrap().state = TaskState::Checking;
@@ -182,6 +196,7 @@ impl Hub {
                 if text.trim().is_empty() {
                     return Err(RpcError::new(ErrorCode::Invalid, "say what to change"));
                 }
+                self.stop_swatches(id);
                 self.note(id, "you", text.clone());
                 match t.session.filter(|s| self.sessions.contains_key(s) && matches!(t.state, TaskState::Review | TaskState::Running)) {
                     Some(s) => {
@@ -191,27 +206,33 @@ impl Hub {
                     None => self.tasks.get_mut(id).unwrap().state = TaskState::Ready,
                 }
             }
-            TaskAct::Drop => {
-                if let Some(s) = t.session
-                    && let Some(live) = self.sessions.get_mut(&s)
-                    && let Some(agent) = &live.agent
-                    && live.state.turn_open()
-                {
-                    agent.interrupt();
+            TaskAct::Drop => self.drop_task(id),
+            TaskAct::Choose { index } => {
+                if t.state != TaskState::Review || t.options.is_empty() {
+                    return refuse("only a question with options is answered by choosing");
                 }
-                self.land_queue.retain(|x| x != id);
-                self.tasks.get_mut(id).unwrap().state = TaskState::Dropped;
-                let waiting: Vec<String> = self.tasks.values().filter(|x| x.deps.iter().any(|d| d == id) && matches!(x.state, TaskState::Ready | TaskState::Draft)).map(|x| x.id.clone()).collect();
-                for w in waiting {
-                    let x = self.tasks.get_mut(&w).unwrap();
-                    x.deps.retain(|d| d != id);
-                    x.state = TaskState::Draft;
-                    self.note(&w, "tessel", format!("“{}”, which it waited for, was dropped", t.title));
-                    self.task_saved(&w);
-                }
-                if let Some(p) = t.parent.clone() {
-                    self.task_saved(id);
-                    self.parent_progress(&p);
+                let Some(o) = t.options.get(index).cloned() else { return Err(RpcError::new(ErrorCode::Invalid, format!("{id} has no option {}", index + 1))) };
+                let live = t.session.and_then(|s| self.sessions.get(&s).map(|l| (s, std::path::PathBuf::from(&l.state.meta.cwd))));
+                if let Some(sha) = &o.sha {
+                    let Some((s, ws)) = &live else { return refuse("its workspace is gone") };
+                    if board::git(ws, &["reset", "--hard", sha]).is_none() {
+                        return Err(RpcError::new(ErrorCode::Conflict, format!("couldn't put {id} back to that option")));
+                    }
+                    self.choose_note(id, &o);
+                    let task = self.tasks.get_mut(id).unwrap();
+                    task.options.clear();
+                    task.state = TaskState::Proving;
+                    let s = *s;
+                    if !self.proving.contains(&s) {
+                        self.start_proof(s, false, false);
+                    }
+                } else {
+                    self.choose_note(id, &o);
+                    let what = if o.what.trim().is_empty() { String::new() } else { format!(" {}", o.what.trim()) };
+                    let told = live.is_some_and(|(s, _)| self.tell_agent(s, format!("The person chose: {}.{what} Make it so, commit, then stop.", o.label)));
+                    let task = self.tasks.get_mut(id).unwrap();
+                    task.options.clear();
+                    task.state = if told { TaskState::Running } else { TaskState::Ready };
                 }
             }
             TaskAct::Clear => {
@@ -231,6 +252,66 @@ impl Hub {
         self.dispatch();
         self.pump_land();
         Ok(Response::Task { task: self.tasks[id].clone() })
+    }
+
+    fn choose_note(&mut self, id: &str, o: &TaskOption) {
+        let text = if o.what.trim().is_empty() { format!("Chose: {}", o.label) } else { format!("Chose: {} — {}", o.label, o.what.trim()) };
+        self.note(id, "you", text);
+    }
+
+    fn drop_task(&mut self, id: &str) {
+        let Some(t) = self.tasks.get(id).cloned() else { return };
+        self.stop_swatches(id);
+        if let Some(s) = t.session
+            && let Some(live) = self.sessions.get_mut(&s)
+            && let Some(agent) = &live.agent
+            && live.state.turn_open()
+        {
+            agent.interrupt();
+        }
+        self.land_queue.retain(|x| x != id);
+        self.tasks.get_mut(id).unwrap().state = TaskState::Dropped;
+        let waiting: Vec<String> = self.tasks.values().filter(|x| x.deps.iter().any(|d| d == id) && matches!(x.state, TaskState::Ready | TaskState::Draft)).map(|x| x.id.clone()).collect();
+        for w in waiting {
+            let x = self.tasks.get_mut(&w).unwrap();
+            x.deps.retain(|d| d != id);
+            x.state = TaskState::Draft;
+            self.note(&w, "tessel", format!("“{}”, which it waited for, was dropped", t.title));
+            self.task_saved(&w);
+        }
+        if let Some(p) = t.parent.clone() {
+            self.task_saved(id);
+            self.parent_progress(&p);
+        }
+    }
+
+    fn mode(&self) -> &str {
+        board::mode(&self.settings.autonomy, &self.settings.bother)
+    }
+
+    fn hands_off(&self) -> bool {
+        matches!(self.mode(), "full" | "ui")
+    }
+
+    fn set_aside(&mut self, id: &str, why: String) {
+        self.note(id, "tessel", format!("set aside: {}", lower_first(&why)));
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.ask = Some(why);
+        }
+        self.drop_task(id);
+    }
+
+    fn hold(&mut self, id: &str, why: impl Into<String>) {
+        let why = why.into();
+        if self.hands_off() {
+            self.set_aside(id, why);
+            return;
+        }
+        self.stop_swatches(id);
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.state = TaskState::Review;
+        }
+        self.note(id, "tessel", why);
     }
 
     pub(super) fn dispatch(&mut self) {
@@ -303,14 +384,13 @@ impl Hub {
             return;
         }
         let landed = kids.iter().filter(|s| **s == TaskState::Landed).count();
-        let p = self.tasks.get_mut(parent).unwrap();
         if landed == kids.len() {
+            let p = self.tasks.get_mut(parent).unwrap();
             p.state = TaskState::Landed;
             p.landed = Some(format!("{landed} tasks"));
             self.note(parent, "tessel", format!("all {landed} of its tasks landed"));
         } else {
-            p.state = TaskState::Review;
-            self.note(parent, "tessel", format!("{landed} of its {} tasks landed; the rest were dropped", kids.len()));
+            self.hold(parent, format!("{landed} of its {} tasks landed; the rest were dropped", kids.len()));
         }
         self.task_saved(parent);
     }
@@ -323,6 +403,7 @@ impl Hub {
                 }
             }
             Ok(_) => {}
+            Err(e) if self.hands_off() => self.set_aside(id, format!("couldn't make its workspace: {}", e.message)),
             Err(e) => {
                 if let Some(t) = self.tasks.get_mut(id) {
                     t.state = TaskState::Draft;
@@ -340,12 +421,10 @@ impl Hub {
         }
         if self.tasks[&id].plan {
             let filed = self.tasks.values().filter(|t| t.parent.as_deref() == Some(id.as_str())).count();
-            let t = self.tasks.get_mut(&id).unwrap();
             if filed == 0 {
-                t.state = TaskState::Review;
-                self.note(&id, "tessel", "the planner filed no tasks");
+                self.hold(&id, "the planner filed no tasks");
             } else {
-                t.state = TaskState::Planned;
+                self.tasks.get_mut(&id).unwrap().state = TaskState::Planned;
                 self.note(&id, "tessel", format!("split into {filed} tasks"));
             }
             self.task_saved(&id);
@@ -360,10 +439,15 @@ impl Hub {
             }
             return true;
         }
-        let errored = self.sessions.get(&session).and_then(|l| l.state.attention.as_ref()).is_some_and(|a| a.reason == tessel_proto::AttentionReason::Errored);
+        let errored = self.errored(session);
+        if self.tasks[&id].building.is_some() {
+            self.swatch_turned(&id, session, errored);
+            self.task_saved(&id);
+            self.dispatch();
+            return true;
+        }
         if errored {
-            self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-            self.note(&id, "tessel", "the agent stopped with an error");
+            self.hold(&id, "the agent stopped with an error");
             self.task_saved(&id);
             self.dispatch();
             return true;
@@ -386,6 +470,10 @@ impl Hub {
         true
     }
 
+    fn errored(&self, session: SessionId) -> bool {
+        self.sessions.get(&session).and_then(|l| l.state.attention.as_ref()).is_some_and(|a| a.reason == tessel_proto::AttentionReason::Errored)
+    }
+
     pub(super) fn factory_paused(&mut self, paused: bool) {
         let running: Vec<(String, Option<SessionId>)> = self.tasks.values().filter(|t| t.state == TaskState::Running).map(|t| (t.id.clone(), t.session)).collect();
         if paused {
@@ -404,7 +492,17 @@ impl Hub {
         for (id, session) in running {
             let Some(s) = session else { continue };
             let last = self.tasks[&id].notes.last().filter(|n| n.by == "tessel").map(|n| n.text.clone());
-            if self.sessions.get(&s).is_some_and(|l| l.state.turn_open()) {
+            if self.sessions.get(&s).is_some_and(|l| l.state.turn_open()) || self.shooting.contains(&id) {
+                continue;
+            }
+            if self.tasks[&id].building.is_some() && matches!(last.as_deref(), Some(WAITING) | Some(HELD)) {
+                if last.as_deref() == Some(WAITING) {
+                    let errored = self.errored(s);
+                    self.swatch_turned(&id, s, errored);
+                } else {
+                    self.swatch_go(&id);
+                }
+                self.task_saved(&id);
                 continue;
             }
             match last.as_deref() {
@@ -412,7 +510,7 @@ impl Hub {
                 _ if self.sessions.get(&s).is_some_and(|l| l.agent.is_none()) || last.as_deref() == Some(PAUSED) => {
                     self.note(&id, "tessel", "resumed");
                     if !self.tell_agent(s, "The factory was paused while you worked. Carry on with the task where you left off.".into()) {
-                        self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                        self.hold(&id, "its agent couldn't carry on after the pause");
                     }
                 }
                 _ => {}
@@ -443,6 +541,7 @@ impl Hub {
             t.proof_cost_usd += proof.cost_usd;
             t.risk = Some(board::risk(proof));
             t.changes = proof.changes.clone();
+            t.shots = proof.shots.clone();
         }
         let word = crate::proof::verdict_word(proof);
         match next {
@@ -452,7 +551,7 @@ impl Hub {
                 if self.tell_agent(session, text) {
                     self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
                 } else {
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                    self.hold(&id, "couldn't send it back to its agent");
                 }
             }
             Next::Review(why) => {
@@ -471,6 +570,15 @@ impl Hub {
     }
 
     fn escalate(&mut self, id: &str, why: String) {
+        if self.hands_off() {
+            self.set_aside(id, why);
+            return;
+        }
+        self.bring(id, why);
+    }
+
+    fn bring(&mut self, id: &str, why: String) {
+        self.stop_swatches(id);
         if let Some(t) = self.tasks.get_mut(id) {
             t.state = TaskState::Review;
             t.ask = Some(why.clone());
@@ -479,7 +587,7 @@ impl Hub {
     }
 
     fn final_review(&mut self, id: &str, session: SessionId, proof: &tessel_proto::proof::Proof) {
-        if self.settings.autonomy == "me" {
+        if self.mode() == "me" {
             self.escalate(id, "Done and checked. You review finished work yourself (Factory settings).".into());
             return;
         }
@@ -489,10 +597,10 @@ impl Hub {
             return;
         };
         self.note(id, "tessel", "in final review");
-        let (tx, backend, model, report, task) = (self.tx.clone(), self.backend.clone(), self.settings.role("review"), proof.report(), id.to_owned());
+        let (tx, backend, model, report, task, autonomy, bother) = (self.tx.clone(), self.backend.clone(), self.settings.role("review"), proof.report(), id.to_owned(), self.settings.autonomy.clone(), self.settings.bother.clone());
         tokio::spawn(async move {
             let diff = crate::proof::change(&ws).await.map(|c| c.diff).unwrap_or_default();
-            let mut job = tessel_agent::backend::Job::review(board::final_review_prompt(&t, &report, &diff), ws, &model);
+            let mut job = tessel_agent::backend::Job::review(board::final_review_prompt(&t, &report, &diff, &autonomy, &bother), ws, &model);
             job.system = "You decide whether finished work lands, for a person who trusts you to. Be decisive and brief.".into();
             let result = backend.job(job).await.map(|r| (board::read_decision(&r.text), r.cost_usd)).map_err(|e| format!("{e:#}"));
             let _ = tx.send(HubMsg::Reviewed { task, result });
@@ -511,17 +619,12 @@ impl Hub {
             Ok((decision, cost)) => {
                 self.tasks.get_mut(&id).unwrap().proof_cost_usd += cost;
                 match decision {
-                    board::Decision::Land(why) if risky && self.settings.autonomy != "full" => {
+                    board::Decision::Land(why) if risky && matches!(self.mode(), "me" | "agent") => {
                         self.tasks.get_mut(&id).unwrap().review = Some(why.clone());
                         self.escalate(&id, format!("It touches risky code (auth, secrets, migrations or infra), so it's yours to land. The reviewer says: {why}"));
                     }
-                    board::Decision::Land(why) => {
-                        let task = self.tasks.get_mut(&id).unwrap();
-                        task.review = Some(why.clone());
-                        task.state = TaskState::Landing;
-                        self.note(&id, "tessel", format!("approved: {why}"));
-                        self.land_queue.push_back(id.clone());
-                    }
+                    board::Decision::Land(why) => self.approve(&id, why),
+                    board::Decision::Ask { why, visual, .. } if self.mode() == "full" || (self.mode() == "ui" && !visual) => self.approve(&id, why),
                     board::Decision::Change(why, change) if t.attempts < f.fix_rounds && t.session.is_some_and(|s| self.sessions.contains_key(&s)) => {
                         let session = t.session.unwrap();
                         let task = self.tasks.get_mut(&id).unwrap();
@@ -535,13 +638,169 @@ impl Hub {
                         }
                     }
                     board::Decision::Change(why, _) => self.escalate(&id, format!("The reviewer still wants changes after {} tries: {why}", t.attempts)),
-                    board::Decision::Ask(why) => self.escalate(&id, why),
+                    board::Decision::Ask { why, options, visual } => self.ask_with(&id, why, options, visual),
                 }
             }
         }
         self.task_saved(&id);
         self.dispatch();
         self.pump_land();
+    }
+
+    fn approve(&mut self, id: &str, why: String) {
+        let task = self.tasks.get_mut(id).unwrap();
+        task.review = Some(why.clone());
+        task.state = TaskState::Landing;
+        self.note(id, "tessel", format!("approved: {why}"));
+        self.land_queue.push_back(id.to_owned());
+    }
+
+    fn task_place(&self, id: &str) -> Option<(SessionId, std::path::PathBuf, std::path::PathBuf)> {
+        let s = self.tasks.get(id)?.session?;
+        let live = self.sessions.get(&s)?;
+        let ws = std::path::PathBuf::from(&live.state.meta.cwd);
+        let root = live.state.meta.worktree.as_ref().map_or_else(|| ws.clone(), |w| std::path::PathBuf::from(&w.repo));
+        Some((s, ws, root))
+    }
+
+    fn ask_with(&mut self, id: &str, why: String, options: Vec<(String, String)>, visual: bool) {
+        let options: Vec<TaskOption> = options.into_iter().map(|(label, what)| TaskOption { label, what, ..Default::default() }).collect();
+        let offers = matches!(self.mode(), "agent" | "ui" | "custom");
+        let place = self.task_place(id).filter(|(_, ws, _)| ws.is_dir());
+        let base = place
+            .as_ref()
+            .filter(|(_, ws, root)| visual && offers && !options.is_empty() && !crate::rules::config(ws, root).look.is_empty())
+            .and_then(|(_, ws, _)| board::git(ws, &["rev-parse", "HEAD"]));
+        let Some(base) = base else {
+            self.bring(id, why);
+            if offers && let Some(t) = self.tasks.get_mut(id) {
+                t.options = options;
+            }
+            return;
+        };
+        board::save_swatch(&self.cfg.paths.home, id, &board::Swatch { base, why });
+        let n = options.len();
+        let t = self.tasks.get_mut(id).unwrap();
+        t.options = options;
+        t.building = Some(0);
+        t.state = TaskState::Running;
+        self.note(id, "tessel", format!("the reviewer has a question: trying its {n} options so you can see them"));
+        self.swatch_go(id);
+    }
+
+    fn swatch_go(&mut self, id: &str) {
+        let Some(t) = self.tasks.get(id).cloned() else { return };
+        let (Some(i), Some(s)) = (t.building, t.session) else { return };
+        let (Some(o), Some(sw)) = (t.options.get(i).cloned(), board::load_swatch(&self.cfg.paths.home, id)) else {
+            self.swatch_done(id);
+            return;
+        };
+        if self.settings.paused {
+            if t.notes.last().is_none_or(|n| n.text != HELD) {
+                self.note(id, "tessel", HELD);
+            }
+            return;
+        }
+        self.note(id, "tessel", format!("trying option {}: {}", i + 1, o.label));
+        if !self.tell_agent(s, board::option_prompt(&sw.base, &o.label, &o.what)) {
+            self.note(id, "tessel", "its agent couldn't try the options");
+            self.swatch_done(id);
+        }
+    }
+
+    fn swatch_turned(&mut self, id: &str, session: SessionId, errored: bool) {
+        let Some(i) = self.tasks.get(id).and_then(|t| t.building) else { return };
+        let base = board::load_swatch(&self.cfg.paths.home, id).map(|s| s.base);
+        let place = self.task_place(id);
+        let head = place.as_ref().and_then(|(_, ws, _)| board::git(ws, &["rev-parse", "HEAD"]));
+        let failed = if errored {
+            Some("the agent stopped with an error")
+        } else if head.is_none() || head == base {
+            Some("nothing was committed")
+        } else {
+            None
+        };
+        if let Some(why) = failed {
+            self.note(id, "tessel", format!("option {} didn't work out: {why}", i + 1));
+            self.swatch_next(id);
+            return;
+        }
+        let (Some((_, ws, root)), Some(sha)) = (place, head) else { return };
+        if let Some(o) = self.tasks.get_mut(id).and_then(|t| t.options.get_mut(i)) {
+            o.sha = Some(sha);
+        }
+        self.shooting.insert(id.to_owned());
+        let home = self.cfg.paths.home.clone();
+        let dir = home.join("shots").join(session.to_string()).join(format!("option-{i}"));
+        let (tx, task) = (self.tx.clone(), id.to_owned());
+        tokio::spawn(async move {
+            let result = crate::proof::shoot(&home, &ws, &root, &dir).await.map(|shots| shots.iter().map(|p| p.to_string_lossy().into_owned()).collect());
+            let _ = tx.send(HubMsg::Swatch { task, index: i, result });
+        });
+    }
+
+    pub(super) fn swatch_shot(&mut self, id: String, index: usize, result: Result<Vec<String>, String>) {
+        self.shooting.remove(&id);
+        if self.tasks.get(&id).is_none_or(|t| t.building != Some(index) || t.state != TaskState::Running) {
+            return;
+        }
+        match result {
+            Ok(shots) => {
+                if let Some(o) = self.tasks.get_mut(&id).and_then(|t| t.options.get_mut(index)) {
+                    o.shots = shots;
+                }
+            }
+            Err(e) => self.note(&id, "tessel", format!("option {} has no screenshots: {e}", index + 1)),
+        }
+        self.swatch_next(&id);
+        self.task_saved(&id);
+        self.dispatch();
+    }
+
+    fn swatch_next(&mut self, id: &str) {
+        let Some(t) = self.tasks.get_mut(id) else { return };
+        let next = t.building.map_or(0, |i| i + 1);
+        if next >= t.options.len() {
+            self.swatch_done(id);
+            return;
+        }
+        t.building = Some(next);
+        self.swatch_go(id);
+    }
+
+    fn swatch_done(&mut self, id: &str) {
+        let home = self.cfg.paths.home.clone();
+        let sw = board::load_swatch(&home, id);
+        if let (Some(sw), Some((_, ws, _))) = (&sw, self.task_place(id)) {
+            board::git(&ws, &["reset", "--hard", &sw.base]);
+        }
+        board::forget_swatch(&home, id);
+        self.shooting.remove(id);
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.building = None;
+        }
+        let why = sw.map(|s| s.why).unwrap_or_else(|| "The reviewer has a question.".into());
+        let options = self.tasks.get(id).map(|t| t.options.clone()).unwrap_or_default();
+        self.bring(id, why);
+        if let Some(t) = self.tasks.get_mut(id).filter(|t| t.state == TaskState::Review) {
+            t.options = options;
+        }
+    }
+
+    fn stop_swatches(&mut self, id: &str) {
+        let Some(t) = self.tasks.get_mut(id) else { return };
+        t.options.clear();
+        if t.building.take().is_none() {
+            return;
+        }
+        let home = self.cfg.paths.home.clone();
+        let quiet = !self.shooting.remove(id) && self.task_place(id).is_some_and(|(s, _, _)| self.sessions.get(&s).is_some_and(|l| !l.state.turn_open()));
+        if quiet
+            && let (Some(sw), Some((_, ws, _))) = (board::load_swatch(&home, id), self.task_place(id))
+        {
+            board::git(&ws, &["reset", "--hard", &sw.base]);
+        }
+        board::forget_swatch(&home, id);
     }
 
     pub(super) fn pump_land(&mut self) {
@@ -551,8 +810,7 @@ impl Hub {
         while let Some(id) = self.land_queue.pop_front() {
             let Some(t) = self.tasks.get(&id).filter(|t| t.state == TaskState::Landing).cloned() else { continue };
             let Some(ws) = t.session.and_then(|s| self.sessions.get(&s)).map(|l| l.state.meta.cwd.clone()) else {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-                self.note(&id, "tessel", "its workspace is gone, so there's nothing to land");
+                self.hold(&id, "its workspace is gone, so there's nothing to land");
                 self.task_saved(&id);
                 continue;
             };
@@ -608,12 +866,16 @@ impl Hub {
                     Stuck::Checks(out) => ("checks failed on top of main".to_owned(), Some(format!("On top of the main branch the checks fail:\n\n{out}\n\nRebase onto main, fix it, commit, then stop."))),
                     Stuck::Other(e) => (e, None),
                 };
-                self.note(&id, "tessel", format!("couldn't land: {said}"));
                 let sent = match (ask, session) {
                     (Some(text), Some(s)) => self.tell_agent(s, text),
                     _ => false,
                 };
-                self.tasks.get_mut(&id).unwrap().state = if sent { TaskState::Running } else { TaskState::Review };
+                if sent {
+                    self.note(&id, "tessel", format!("couldn't land: {said}"));
+                    self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
+                } else {
+                    self.hold(&id, format!("couldn't land: {said}"));
+                }
             }
         }
         self.task_saved(&id);
@@ -698,13 +960,10 @@ impl Hub {
                     self.parent_progress(&p);
                 }
             }
-            Ok(Ci::Closed) => {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-                self.note(&id, "tessel", "its pull request was closed");
-            }
+            Ok(Ci::Closed) => self.hold(&id, "its pull request was closed"),
             Ok(Ci::Passed) => {
                 let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
-                if f.auto_land && t.risk == Some(tessel_proto::task::Risk::Low) {
+                if (f.auto_land && t.risk == Some(tessel_proto::task::Risk::Low)) || self.hands_off() {
                     self.note(&id, "tessel", "its checks passed: merging");
                     self.merge_pr(&id, t.pr.clone().unwrap_or_default());
                 } else {
@@ -728,8 +987,7 @@ impl Hub {
                     t.state = TaskState::Running;
                     self.note(&id, "tessel", format!("its checks failed ({}): sent back to fix", names.join(", ")));
                 } else {
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-                    self.note(&id, "tessel", format!("its checks failed on GitHub: {}", names.join(", ")));
+                    self.hold(&id, format!("its checks failed on GitHub: {}", names.join(", ")));
                 }
             }
         }
@@ -881,8 +1139,7 @@ impl Hub {
             {
                 agent.interrupt();
             }
-            self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-            self.note(&id, "tessel", "stopped: it reached its budget");
+            self.hold(&id, "stopped: it reached its budget");
             self.task_saved(&id);
         }
         if self.tasks.values().any(|t| t.state == TaskState::Ready) {
@@ -891,6 +1148,12 @@ impl Hub {
     }
 
     pub(super) fn tasks_after_restart(&mut self) {
+        let building: Vec<String> = self.tasks.values().filter(|t| t.building.is_some()).map(|t| t.id.clone()).collect();
+        for id in building {
+            self.note(&id, "tessel", "tessel restarted while it tried the options");
+            self.swatch_done(&id);
+            self.task_saved(&id);
+        }
         let stale: Vec<String> = self.tasks.values().filter(|t| matches!(t.state, TaskState::Proving | TaskState::Landing)).map(|t| t.id.clone()).collect();
         for id in stale {
             let session = self.tasks[&id].session;

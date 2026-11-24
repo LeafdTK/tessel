@@ -28,6 +28,8 @@ float pick_corner_radius(float2 center_to_point, Corners_ScaledPixels corner_rad
 float quad_sdf(float2 point, Bounds_ScaledPixels bounds,
                Corners_ScaledPixels corner_radii);
 float quad_sdf_impl(float2 center_to_point, float corner_radius);
+float squircle_extent(float corner_radius, float2 half_size);
+float squircle_sdf(float2 corner_center_to_point, float extent, float corner_radius);
 float gaussian(float x, float sigma);
 float2 erf(float2 x);
 float blur_along_x(float x, float y, float sigma, float corner,
@@ -127,8 +129,8 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
   // minimum distance between the center of the pixel and the edge.
   const float antialias_threshold = 0.5;
 
-  // Radius of the nearest corner
-  float corner_radius = pick_corner_radius(center_to_point, quad.corner_radii);
+  float nominal_radius = min(pick_corner_radius(center_to_point, quad.corner_radii), min(half_size.x, half_size.y));
+  float corner_radius = squircle_extent(nominal_radius, half_size);
 
   // Width of the nearest borders
   float2 border = float2(
@@ -179,7 +181,7 @@ fragment float4 quad_fragment(QuadFragmentInput input [[stage_in]],
   }
 
   // Signed distance of the point to the outside edge of the quad's border
-  float outer_sdf = quad_sdf_impl(corner_center_to_point, corner_radius);
+  float outer_sdf = squircle_sdf(corner_center_to_point, corner_radius, nominal_radius);
 
   // Approximate signed distance of the point to the inside edge of the quad's
   // border. It is negative outside this edge (within the border), and
@@ -1065,10 +1067,31 @@ float quad_sdf(float2 point, Bounds_ScaledPixels bounds,
     float2 half_size = float2(bounds.size.width, bounds.size.height) / 2.0;
     float2 center = float2(bounds.origin.x, bounds.origin.y) + half_size;
     float2 center_to_point = point - center;
-    float corner_radius = pick_corner_radius(center_to_point, corner_radii);
+    float nominal_radius = min(pick_corner_radius(center_to_point, corner_radii), min(half_size.x, half_size.y));
+    float corner_radius = squircle_extent(nominal_radius, half_size);
     float2 corner_to_point = fabs(center_to_point) - half_size;
     float2 corner_center_to_point = corner_to_point + corner_radius;
-    return quad_sdf_impl(corner_center_to_point, corner_radius);
+    return squircle_sdf(corner_center_to_point, corner_radius, nominal_radius);
+}
+
+float squircle_extent(float corner_radius, float2 half_size) {
+    return min(corner_radius * 1.528, min(half_size.x, half_size.y));
+}
+
+float squircle_sdf(float2 corner_center_to_point, float extent, float corner_radius) {
+    if (corner_radius <= 0.0 || extent <= 0.0) {
+        return max(corner_center_to_point.x, corner_center_to_point.y);
+    }
+    float2 v = max(float2(0.0), corner_center_to_point);
+    float inside = min(0.0, max(corner_center_to_point.x, corner_center_to_point.y));
+    if (v.x <= 0.0 || v.y <= 0.0) {
+        return length(v) + inside - extent;
+    }
+    float n = max(2.0, -1.0 / log2(max(1e-4, 1.0 - 0.29289 * corner_radius / extent)));
+    float2 q = v / extent;
+    float p = pow(pow(q.x, n) + pow(q.y, n), 1.0 / n);
+    float2 g = float2(pow(q.x, n - 1.0), pow(q.y, n - 1.0)) / pow(max(p, 1e-4), n - 1.0);
+    return (p - 1.0) * extent / max(length(g), 1e-4);
 }
 
 // Implementation of quad signed distance field

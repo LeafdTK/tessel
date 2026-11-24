@@ -93,6 +93,7 @@ pub enum HubMsg {
     Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
     Ci { task: String, result: Result<crate::ci::Ci, String>, why: String },
     Reviewed { task: String, result: Result<(crate::board::Decision, f64), String> },
+    Swatch { task: String, index: usize, result: Result<Vec<String>, String> },
     Issue { repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)> },
     Issues { repo: String, issues: Vec<crate::issues::Issue> },
     CheckedUp { repo: String, proof: Box<tessel_proto::proof::Proof>, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)> },
@@ -254,6 +255,7 @@ pub struct Hub {
     landing: Option<String>,
     ci_polled: HashMap<String, std::time::Instant>,
     ci_busy: HashSet<String>,
+    shooting: HashSet<String>,
     checkups: HashSet<String>,
     issues_polled: Option<std::time::Instant>,
     egress: Option<crate::egress::Egress>,
@@ -356,6 +358,7 @@ impl Hub {
             landing: None,
             ci_polled: Default::default(),
             ci_busy: Default::default(),
+            shooting: Default::default(),
             checkups: Default::default(),
             issues_polled: None,
             egress: None,
@@ -726,6 +729,7 @@ impl Hub {
             HubMsg::Landed { task, result } => self.task_landed(task, result),
             HubMsg::Ci { task, result, why } => self.task_ci(task, result, why),
             HubMsg::Reviewed { task, result } => self.task_reviewed(task, result),
+            HubMsg::Swatch { task, index, result } => self.swatch_shot(task, index, result),
             HubMsg::Issue { repo, result, ready, reply } => self.issue_fetched(repo, result, ready, reply),
             HubMsg::Issues { repo, issues } => {
                 for i in issues {
@@ -1861,9 +1865,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     return Some(Err(RpcError::new(ErrorCode::Invalid, "settings change with an object, like {\"agent_tools\": false}")));
                 };
                 let mut all = serde_json::to_value(&self.settings).unwrap_or_default();
+                let every = serde_json::to_value(tessel_proto::DaemonSettings { bother: " ".into(), parallel: Some(1), projects: Some(Vec::new()), ..Default::default() }).unwrap_or_default();
                 for (k, v) in patch {
-                    if all.get(k).is_none() {
-                        let known: Vec<String> = all.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+                    if every.get(k).is_none() {
+                        let known: Vec<String> = every.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
                         return Some(Err(RpcError::new(ErrorCode::Invalid, format!("there's no setting \"{k}\". settings: {}", known.join(", ")))));
                     }
                     all[k] = v.clone();

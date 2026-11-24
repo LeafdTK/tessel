@@ -32,6 +32,7 @@ mod palette;
 mod panel;
 mod proof;
 mod board;
+mod stage;
 #[cfg(test)]
 pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
@@ -328,11 +329,15 @@ pub struct Shell {
     pub(crate) board_attachments: Vec<Attachment>,
     pub(crate) board_files: Vec<String>,
     pub(crate) board_project: Option<String>,
-    pub(crate) board_tab: &'static str,
-    pub(crate) open_task: Option<String>,
+    pub(crate) stage_pick: Option<String>,
+    pub(crate) factory_view: bool,
+    pub(crate) stage_diff_for: Option<String>,
+    pub(crate) stage_diff_parts: Vec<tessel_proto::FileDiff>,
+    pub(crate) stage_diff: Option<Entity<gpui_kit::component::diff::DiffState>>,
+    pub(crate) stage_shot: usize,
+    pub(crate) stage_swatch: Option<usize>,
     pub(crate) board_land: Option<String>,
     pub(crate) board_branch: Entity<InputState>,
-    pub(crate) show_working: bool,
     pub(crate) board_issues: Option<(String, Result<Vec<tessel_proto::task::IssueInfo>, String>)>,
     pub(crate) issues_loading: bool,
     pub(crate) board_rules: Option<(String, Option<Result<tessel_proto::proof::Rulebook, String>>)>,
@@ -340,6 +345,8 @@ pub struct Shell {
     pub(crate) key_inputs: keys::KeyForm,
     pub(crate) keys: Option<(Vec<tessel_proto::keys::KeyInfo>, Vec<tessel_proto::keys::KeyUse>)>,
     pub(crate) task_change: Entity<InputState>,
+    pub(crate) bother_input: Entity<InputState>,
+    pub(crate) editing_bother: bool,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
     pub(crate) saved_views: Vec<tessel_proto::views::View>,
@@ -519,6 +526,7 @@ impl Shell {
         let task_title = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(true).placeholder("Describe a change, paste a list or a spec, or an issue like #42…"));
         let key_inputs = keys::KeyForm::new(window, cx);
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
+        let bother_input = cx.new(|cx| InputState::new(window, cx).placeholder("Anything that touches payments"));
 
         // the `/` and `@` menus get their keys before the message box does:
         // here bindings (return sends, arrows move) run ahead of key listeners.
@@ -561,6 +569,11 @@ impl Shell {
             cx.subscribe_in(&task_title, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, secondary } = ev {
                     this.add_task(*secondary, window, cx);
+                }
+            }),
+            cx.subscribe_in(&bother_input, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.save_bother(window, cx);
                 }
             }),
             cx.subscribe_in(&task_change, window, |this, _, ev: &InputEvent, window, cx| {
@@ -867,16 +880,22 @@ impl Shell {
             key_inputs,
             keys: None,
             task_change,
+            bother_input,
+            editing_bother: false,
             tasks: Vec::new(),
             changing_task: None,
             saved_views: Vec::new(),
             metrics: None,
             board_project: None,
-            board_tab: "tasks",
-            open_task: None,
+            stage_pick: None,
+            factory_view: false,
+            stage_diff_for: None,
+            stage_diff_parts: Vec::new(),
+            stage_diff: None,
+            stage_shot: 0,
+            stage_swatch: None,
             board_land: None,
             board_branch: cx.new(|cx| InputState::new(window, cx).placeholder("branch name")),
-            show_working: false,
             board_issues: None,
             issues_loading: false,
             board_rules: None,
@@ -1325,6 +1344,7 @@ impl Shell {
             UiEvent::Answer { tag: "views", result } => self.views_answer(result),
             UiEvent::Answer { tag: "metrics", result } => self.metrics_answer(result),
             UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
+            UiEvent::Answer { tag: "stage.diff", result } => self.stage_diff_answer(result, cx),
             UiEvent::Answer { tag: "issues", result } => self.issues_answer(result),
             UiEvent::Answer { tag: "board.rules", result } => self.board_rules_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),
@@ -3014,13 +3034,11 @@ impl Render for Shell {
         // felt: the cloth is drawn under everything, and the frame is clear over it.
         let glass = self.ui.theme.glass.unwrap_or(false);
         let felt = self.felt_on();
-        let field = self.field_on();
         div()
             .id("shell")
             .relative()
             .size_full()
-            .when(!glass && !field, |d| d.bg(p.window))
-            .when(field, |d| d.bg(Hsla { a: 1., ..p.sidebar }))
+            .when(!glass, |d| d.bg(p.window))
             .when(felt, |d| d.child(self.felt_el(cx)))
             .text_color(p.label)
             .set(Type::Body)

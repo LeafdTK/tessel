@@ -738,6 +738,8 @@ pub struct DaemonSettings {
     pub roles: std::collections::BTreeMap<String, String>,
     #[serde(default = "agent")]
     pub autonomy: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub bother: String,
     #[serde(default = "main")]
     pub land: String,
 }
@@ -782,7 +784,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false, roles: Default::default(), autonomy: agent(), land: main() }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false, roles: Default::default(), autonomy: agent(), bother: String::new(), land: main() }
     }
 }
 

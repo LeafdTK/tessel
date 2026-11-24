@@ -405,7 +405,11 @@ impl Shell {
                 let err = self.error.clone()?;
                 self.styled(div().px_4().py_1().set(Type::Callout).text_color(p.failed).child(err), s).into_any_element()
             }
-            Kind::Sessions => self.styled(self.sessions_list(now, cx), s).into_any_element(),
+            Kind::Sessions => {
+                let body = if self.factory_view && self.factory_on() { self.stage_rail_body(cx) } else { self.sessions_list(now, cx).into_any_element() };
+                let col = v_flex().size_full().min_h_0().when(self.factory_on(), |d| d.child(self.view_switch(cx))).child(div().flex_1().min_h_0().child(body));
+                self.styled(col, s).into_any_element()
+            }
             Kind::NewSession => self.styled(self.new_session_form(cx), s).into_any_element(),
             Kind::Transcript => self.styled(self.transcript_el(cx), s).into_any_element(),
             Kind::Prompts => self.styled(self.prompts_el(cx)?, s).into_any_element(),
@@ -414,22 +418,23 @@ impl Shell {
             Kind::ModelPicker => self.styled(div().child(self.model_chip(cx)), s).into_any_element(),
             Kind::ModePicker => self.styled(div().child(self.mode_menu(cx)), s).into_any_element(),
             Kind::Context => self.styled(div().child(self.context_meter_el(cx)?), s).into_any_element(),
+            Kind::Panes if self.factory_view && self.factory_on() => self
+                .styled(
+                    div().child(
+                        div()
+                            .size_full()
+                            .rounded(px(theme::R_PANEL))
+                            .border_1()
+                            .border_color(p.separator)
+                            .bg(p.window)
+                            .shadow_sm()
+                            .overflow_hidden()
+                            .child(self.stage_main(cx)),
+                    ),
+                    s,
+                )
+                .into_any_element(),
             Kind::Panes => {
-                let framed;
-                let s = if self.field_on() {
-                    let mut t = s.clone();
-                    t.p = Some(8.0);
-                    t.pt = None;
-                    t.pb = None;
-                    t.pl = Some(0.0);
-                    t.pr = None;
-                    t.px = None;
-                    t.py = None;
-                    framed = t;
-                    &framed
-                } else {
-                    s
-                };
                 // the frame above the panes is title bar: dragging it moves the window.
                 let top = s.pt.or(s.py).or(s.p).unwrap_or(0.0);
                 let strip = (top > 0.0).then(|| {
@@ -537,17 +542,12 @@ impl Shell {
                 inner = inner.child(el);
             }
         }
-        let floating = self.field_on() && id == "sidebar";
-        if floating {
-            inner = inner.w(px(d.size.max(w) - 8.)).rounded(px(theme::R_PANEL)).bg(p.window).border_1().border_color(p.separator).shadow_lg();
-        }
         let clip = div()
             .id(eid(format!("{id}-clip")))
             .w(px(w))
             .h_full()
             .flex_shrink_0()
             .overflow_hidden()
-            .when(floating, |d| d.pl(px(8.)).py(px(8.)))
             // two fingers sideways across the sidebar: the next desktop, or the last.
             .when(id == "sidebar", |d| d.on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| this.sidebar_swipe(ev, window, cx))))
             .child(inner);

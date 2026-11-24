@@ -473,6 +473,49 @@ pub fn looks(cfg: &crate::rules::Config, c: &Change) -> bool {
     !cfg.look.is_empty() && (cfg.look_paths.is_empty() || crate::rules::applies(&cfg.look_paths, &c.paths))
 }
 
+async fn take_shots(lab: Option<&crate::lab::Lab>, ws: &Path, look: &[String], dir: &Path) -> (Vec<PathBuf>, Vec<Verified>) {
+    let _ = std::fs::remove_dir_all(dir);
+    let _ = std::fs::create_dir_all(dir);
+    let mut failed = Vec::new();
+    for command in look {
+        let v = match lab {
+            Some(l) => l.run(&format!("mkdir -p {} && {command}", crate::lab::SHOTS), &[("TESSEL_SHOTS", &l.shots_dir())]).await,
+            None => run_with(ws, command, None, &[("TESSEL_SHOTS", &dir.to_string_lossy())]).await,
+        };
+        if !v.ok {
+            failed.push(v);
+        }
+    }
+    if let Some(l) = lab {
+        l.fetch_shots(dir).await;
+    }
+    let shots = collect_shots(dir);
+    if shots.is_empty() && failed.is_empty() {
+        failed.push(Verified { command: look.join(" && "), ok: false, output: format!("it saved no PNG screenshots into $TESSEL_SHOTS ({})", dir.display()), ms: 0, rule: None });
+    }
+    (shots, failed)
+}
+
+pub async fn shoot(tessel_home: &Path, ws: &Path, root: &Path, dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let cfg = crate::rules::config(ws, root);
+    if cfg.look.is_empty() {
+        return Err("this project takes no screenshots".into());
+    }
+    let lab = match &cfg.lab {
+        Some(name) => Some(crate::lab::Lab::open(tessel_home, name, ws, &cfg.lab_setup).await.map_err(|e| format!("the lab {name} couldn't take it: {e}"))?),
+        None => None,
+    };
+    let (shots, failed) = take_shots(lab.as_ref(), ws, &cfg.look, dir).await;
+    if let Some(l) = &lab {
+        l.close().await;
+    }
+    match (shots.is_empty(), failed.first()) {
+        (true, Some(v)) => Err(format!("`{}` failed: {}", v.command, v.output.lines().last().unwrap_or_default())),
+        (true, None) => Err("it saved no screenshots".into()),
+        _ => Ok(shots),
+    }
+}
+
 pub fn collect_shots(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"))).collect();
@@ -707,29 +750,11 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
     let mut shots = Vec::new();
     if look_now && !p.verify.iter().any(|v| !v.ok) {
         let dir = places.shots.clone().unwrap_or_default();
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        for command in &cfg.look {
-            p.stage = "Taking screenshots".into();
-            tell(&p);
-            let v = match &lab {
-                Some(l) => l.run(&format!("mkdir -p {} && {command}", crate::lab::SHOTS), &[("TESSEL_SHOTS", &l.shots_dir())]).await,
-                None => run_with(&ws, command, None, &[("TESSEL_SHOTS", &dir.to_string_lossy())]).await,
-            };
-            if !v.ok {
-                p.verify.push(v);
-            }
-        }
-        shots = match &lab {
-            Some(l) => {
-                l.fetch_shots(&dir).await;
-                collect_shots(&dir)
-            }
-            None => collect_shots(&dir),
-        };
-        if shots.is_empty() && !p.verify.iter().any(|v| !v.ok) {
-            p.verify.push(Verified { command: cfg.look.join(" && "), ok: false, output: format!("it saved no PNG screenshots into $TESSEL_SHOTS ({})", dir.display()), ms: 0, rule: None });
-        }
+        p.stage = "Taking screenshots".into();
+        tell(&p);
+        let failed;
+        (shots, failed) = take_shots(lab.as_ref(), &ws, &cfg.look, &dir).await;
+        p.verify.extend(failed);
         p.shots = shots.iter().map(|s| s.to_string_lossy().into_owned()).collect();
         tell(&p);
     }

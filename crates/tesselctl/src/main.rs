@@ -55,6 +55,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl task solve ISSUE [--draft] [--repo DIR]   a GitHub issue (42, #42 or its link) becomes a task,
                                             started at once; landing it closes the issue
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
+  tesselctl task choose ID N                answer a task's question with its option N (as task ls numbers them)
   tesselctl task clear                      take finished work off the board (it stays in your history)
   tesselctl key add NAME [--preset github|github-git] [--for HOST]… [--env VAR] [--method M]… [--path P]…
              [--from 'gh auth token']       a key agents use without ever seeing it: kept in the keychain, added
@@ -66,6 +67,8 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl metrics [--json]                what the factory has landed, what it cost, what was reverted
   tesselctl factory pause|resume|status     stop the factory spending: agents at work are interrupted, nothing
                                             new starts, nothing lands; resume carries on where it was
+  tesselctl factory bother me|agent|ui|full|RULE…   when finished work comes to you: all of it, critical
+                                            decisions, only how things look, never, or when your own rule says
   tesselctl checkup [REPO] [--nightly | --every CRON]   run every check, scenario and screenshot on main
                                             now, and file a task for each thing that broke (or every night)
   tesselctl shot URL OUT.png [--size 1280x800] [--wait MS]   a screenshot of a web page, with headless
@@ -601,7 +604,7 @@ async fn run() -> anyhow::Result<()> {
                 let after = if t.deps.is_empty() { String::new() } else { format!("  after {}", t.deps.join(", ")) };
                 format!("{}  {:<8} {}{after}{cost}", t.id, format!("{:?}", t.state).to_lowercase(), t.title)
             };
-            let sub = if cmd == "tasks" { "ls".to_owned() } else { args.next("ls, add, ready, draft, land, change or drop")? };
+            let sub = if cmd == "tasks" { "ls".to_owned() } else { args.next("ls, add, ready, draft, land, change, choose or drop")? };
             let one = |r: Response| match r {
                 Response::Task { task } => Ok(task),
                 other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
@@ -615,6 +618,9 @@ async fn run() -> anyhow::Result<()> {
                     } else {
                         for t in &tasks {
                             println!("{}", line(t));
+                            for o in option_lines(t) {
+                                println!("{o}");
+                            }
                         }
                     }
                 }
@@ -665,6 +671,15 @@ async fn run() -> anyhow::Result<()> {
                     }
                     println!("cleared {n} finished task(s) from the board");
                 }
+                "choose" => {
+                    let id = args.next("a task")?;
+                    let n: usize = args.next("an option's number")?.parse().map_err(|_| anyhow::anyhow!("an option is picked by its number, like 1"))?;
+                    if n == 0 {
+                        bail!("options are numbered from 1");
+                    }
+                    let t = one(client.request(Request::TaskAct { id, act: TaskAct::Choose { index: n - 1 } }).await?)?;
+                    println!("{}", line(&t));
+                }
                 "ready" | "draft" | "land" | "drop" | "change" | "plan" => {
                     let id = args.next("a task")?;
                     let act = match sub.as_str() {
@@ -678,7 +693,7 @@ async fn run() -> anyhow::Result<()> {
                     let t = one(client.request(Request::TaskAct { id, act }).await?)?;
                     println!("{}", line(&t));
                 }
-                other => bail!("task {other}? ls, add, ready, draft, land, change or drop"),
+                other => bail!("task {other}? ls, add, ready, draft, land, change, choose or drop"),
             }
         }
         "key" | "keys" => {
@@ -768,12 +783,13 @@ async fn run() -> anyhow::Result<()> {
             }
         }
         "factory" => {
-            let what = args.next("pause, resume or status")?;
+            let what = args.next("pause, resume, bother or status")?;
             let patch = match what.as_str() {
                 "pause" => Some(serde_json::json!({"paused": true})),
                 "resume" => Some(serde_json::json!({"paused": false})),
+                "bother" => Some(bother_patch(&std::mem::take(&mut args.rest))?),
                 "status" => None,
-                other => bail!("factory {other}? pause, resume or status"),
+                other => bail!("factory {other}? pause, resume, bother or status"),
             };
             let settings = match patch {
                 Some(patch) => match client.request(Request::SetSettings { patch }).await? {
@@ -786,6 +802,7 @@ async fn run() -> anyhow::Result<()> {
                 },
             };
             println!("{}", if settings.paused { "paused: nothing new starts, nothing lands, triggers wait" } else { "running" });
+            println!("{}", bother_line(&settings));
         }
         "checkup" => {
             let every = args.opt("--every")?.or_else(|| args.flag("--nightly").then(|| "0 3 * * *".to_owned()));
@@ -1572,8 +1589,68 @@ fn one_line(s: &str, max: usize) -> String {
     flat.chars().take(max).collect::<String>() + "…"
 }
 
+fn bother_patch(words: &[String]) -> anyhow::Result<serde_json::Value> {
+    let rule = words.join(" ").trim().to_owned();
+    Ok(match rule.as_str() {
+        "" => bail!("bother me, agent, ui, full, or a rule of your own, like: it changes billing"),
+        "me" | "agent" | "ui" | "full" => serde_json::json!({"autonomy": rule, "bother": ""}),
+        _ => serde_json::json!({"autonomy": "custom", "bother": rule}),
+    })
+}
+
+fn bother_line(s: &tessel_proto::DaemonSettings) -> String {
+    match s.autonomy.as_str() {
+        "me" => "brings you everything it finishes".to_owned(),
+        "ui" => "asks you only how things look".to_owned(),
+        "full" => "hands-off: never asks you".to_owned(),
+        "custom" if !s.bother.trim().is_empty() => format!("asks you only when {}", s.bother.trim()),
+        _ => "asks you about critical decisions".to_owned(),
+    }
+}
+
+fn option_lines(t: &tessel_proto::task::Task) -> Vec<String> {
+    t.options
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let what = if o.what.is_empty() { String::new() } else { format!(" — {}", o.what) };
+            let shots = match o.shots.len() {
+                0 => String::new(),
+                1 => "  (1 shot)".to_owned(),
+                n => format!("  ({n} shots)"),
+            };
+            let trying = if t.building == Some(i) { "  trying it now" } else { "" };
+            format!("    {}. {}{what}{shots}{trying}", i + 1, o.label)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_task_s_options_are_numbered_from_one_with_their_screenshots() {
+        use tessel_proto::task::{Task, TaskOption, TaskState};
+        let mut t: Task = serde_json::from_value(serde_json::json!({"id": "t1", "title": "Badge", "repo": "/r", "created_ms": 0, "updated_ms": 0})).unwrap();
+        t.state = TaskState::Review;
+        t.options = vec![
+            TaskOption { label: "Green".into(), what: "a green badge".into(), sha: Some("abc".into()), shots: vec!["/s/a.png".into(), "/s/b.png".into()] },
+            TaskOption { label: "Blue".into(), ..Default::default() },
+        ];
+        assert_eq!(super::option_lines(&t), vec!["    1. Green — a green badge  (2 shots)", "    2. Blue"]);
+        t.building = Some(1);
+        assert!(super::option_lines(&t)[1].ends_with("trying it now"));
+    }
+
+    #[test]
+    fn bother_takes_a_level_or_a_rule_of_your_own() {
+        let words = |s: &str| s.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(super::bother_patch(&words("ui")).unwrap(), serde_json::json!({"autonomy": "ui", "bother": ""}));
+        assert_eq!(super::bother_patch(&words("it changes billing")).unwrap(), serde_json::json!({"autonomy": "custom", "bother": "it changes billing"}));
+        assert!(super::bother_patch(&[]).is_err());
+        let s = tessel_proto::DaemonSettings { autonomy: "custom".into(), bother: "it changes billing".into(), ..Default::default() };
+        assert_eq!(super::bother_line(&s), "asks you only when it changes billing");
+    }
+
     #[test]
     fn a_file_is_named_with_its_line_and_column_after_colons() {
         assert_eq!(super::file_spec("/nowhere/src/main.rs:12:4"), ("/nowhere/src/main.rs".into(), Some(12), Some(4)));

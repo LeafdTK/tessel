@@ -380,7 +380,7 @@ pub fn apply(force_dark: Option<bool>, spec: &ThemeSpec, window: &mut Window, cx
     }
     // felt: the frame's colour is drawn as cloth underneath (see `shell::backdrop`),
     // so the frame itself is left clear over it.
-    if (spec.felt.unwrap_or(false) || spec.field.unwrap_or(false)) && !glass {
+    if spec.felt.unwrap_or(false) && !glass {
         palette.sidebar = palette.sidebar.opacity(0.0);
     }
     set_mono(spec.mono.as_deref().unwrap_or(MONO));

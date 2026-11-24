@@ -92,6 +92,12 @@ pub struct Task {
     pub review: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleared: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<TaskOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub building: Option<usize>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }
@@ -106,8 +112,20 @@ pub enum TaskAct {
     Plan,
     Drop,
     Clear,
+    Choose { index: usize },
     #[serde(other)]
     Unknown,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TaskOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub what: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

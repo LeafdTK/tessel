@@ -120,14 +120,26 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         changes: vec![tessel_proto::task::FileStat { path: "src/cart/coupon.rs".into(), added: 84, removed: 3 }, tessel_proto::task::FileStat { path: "src/cart/view.rs".into(), added: 22, removed: 9 }, tessel_proto::task::FileStat { path: "tests/coupon.rs".into(), added: 61, removed: 0 }],
         review: (state == TaskState::Landed).then(|| "Does what was asked, and the tests cover both kinds of discount.".to_owned()),
         cleared: false,
+        shots: vec![],
+        options: vec![],
+        building: None,
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }
 }
 
-fn tasks() -> Vec<Task> {
+fn tasks(swatches: bool) -> Vec<Task> {
+    let mut coupons = task("t1a2b", "Coupons at checkout", TaskState::Review, Some(1), Some("proven with concerns"), Some(Risk::Medium), None, None);
+    coupons.ask = Some("Should a coupon apply on top of a sale price?".into());
+    if swatches && let Ok(dir) = std::env::var("TESSEL_DEMO_SHOTS") {
+        let at = |n: u32| vec![std::path::Path::new(&dir).join(format!("option-{n}.png")).to_string_lossy().into_owned()];
+        coupons.options = vec![
+            tessel_proto::task::TaskOption { label: "Stack with the sale".into(), what: "Coupons come off the sale price".into(), sha: Some("a1".into()), shots: at(1) },
+            tessel_proto::task::TaskOption { label: "Sale price only".into(), what: "Coupons don't apply to sale items".into(), sha: Some("a2".into()), shots: at(2) },
+        ];
+    }
     vec![
-        task("t1a2b", "Coupons at checkout", TaskState::Review, Some(1), Some("proven with concerns"), Some(Risk::Medium), None, None),
+        coupons,
         task("t3c4d", "Show stock left on the product page", TaskState::Running, Some(2), None, None, None, None),
         task("t5e6f", "Retry failed webhooks with backoff", TaskState::Checking, Some(3), Some("Opened a pull request into main. Waiting for its checks."), Some(Risk::Low), None, Some("https://github.com/you/shop/pull/42")),
         task("t7a8b", "Fix the cart badge count after removing an item", TaskState::Ready, None, None, None, None, None),
@@ -187,16 +199,15 @@ const SCREENS: &[Screen] = &[
         launch: || Launch { open: Some("00000000-0000-0000-0000-000000000001".into()), panel: Some("checks".into()), ..Default::default() },
         calls: &[("app.factory", r#"{"on": true}"#)],
     },
-    Screen { name: "board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
+    Screen { name: "board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
     Screen { name: "home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
-    Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
-    Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
+    Screen { name: "board-swatches", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "board-new", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "settings-factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.settings", r#"{"section": "factory"}"#)] },
-    Screen { name: "field-board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
-    Screen { name: "field-chat", launch: || Launch { open: Some("00000000-0000-0000-0000-000000000001".into()), ..Default::default() }, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#)] },
-    Screen { name: "field-home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("theme.set", r#"{"base": "field"}"#), ("theme.material", r#"{"material": "field"}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
-    Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
+    Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
 ];
 
 fn settle(cx: &mut VisualTestAppContext, window: &WindowHandle<Shell>) {
@@ -244,20 +255,30 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             settle(&mut cx, &window);
         }
         for ev in [
-            UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: if screen.name.ends_with("-empty") { Vec::new() } else { tasks() } }) },
+            UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: if screen.name.ends_with("-empty") { Vec::new() } else { tasks(screen.name == "board-swatches") } }) },
             UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: metrics() }) },
             UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }]),
         ] {
             let _ = events.send(ev);
         }
         if screen.name == "board-open" {
-            let _ = window.update(&mut cx, |s, _, _| {
-                s.open_task = Some("t1a2b".into());
-                s.show_working = true;
-            });
+            let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("tab12".into()));
+        }
+        if screen.name == "board-new" {
+            let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("new".into()));
         }
         settle(&mut cx, &window);
-        while cmds.try_recv().is_ok() {}
+        let mut answered = false;
+        while let Ok(cmd) = cmds.try_recv() {
+            if let crate::bridge::Cmd::Ask { tag: "stage.diff", req: tessel_proto::Request::GitDiff { path, .. } } = cmd {
+                let _ = events.send(UiEvent::Answer { tag: "stage.diff", result: Ok(Response::Diff { diff: tessel_proto::FileDiff { unified: demo_diff(&path), path, ..Default::default() } }) });
+                answered = true;
+            }
+        }
+        if answered {
+            settle(&mut cx, &window);
+            while cmds.try_recv().is_ok() {}
+        }
         let frame = cx.capture_screenshot(window.into()).map_err(|e| format!("picturing {}: {e:#}", screen.name))?;
         let path = dir.join(format!("{}.png", screen.name));
         save(frame, &path)?;
@@ -267,4 +288,25 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
         let _ = std::fs::remove_dir_all(&scratch);
     }
     Ok(saved)
+}
+
+fn demo_diff(path: &str) -> String {
+    let body = match path {
+        "src/cart/coupon.rs" => "@@ -12,7 +12,10 @@ impl Coupon {\n     pub fn apply(&self, line: &Line) -> Money {\n-        let base = line.price;\n+        let base = line.sale.unwrap_or(line.price);\n+        if self.expired(now()) {\n+            return Money::ZERO;\n+        }\n         match self.kind {\n             Kind::Percent(p) => base * p / 100,\n-            Kind::Fixed(f) => f,\n+            Kind::Fixed(f) => f.min(base),\n         }\n     }\n",
+        "src/cart/view.rs" => "@@ -40,2 +40,5 @@ fn summary(cart: &Cart) -> Html {\n     rows.push(line(\"Subtotal\", cart.subtotal()));\n+    if let Some(c) = &cart.coupon {\n+        rows.push(line(&format!(\"Coupon {}\", c.code), -cart.discount()));\n+    }\n     rows.push(total(cart.total()));\n",
+        _ => "@@ -0,0 +1,6 @@\n+#[test]\n+fn coupon_stacks_with_sale() {\n+    let cart = cart_with(sale(68, 54), coupon(\"SPRING10\"));\n+    assert_eq!(cart.total(), Money::cents(4860));\n+}\n+\n",
+    };
+    let old = if body.starts_with("@@ -0,0") { "/dev/null".to_owned() } else { format!("a/{path}") };
+    format!("diff --git a/{path} b/{path}\n--- {old}\n+++ b/{path}\n{body}")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_demo_diffs_parse() {
+        for path in ["src/cart/coupon.rs", "src/cart/view.rs", "tests/coupon.rs"] {
+            let files = gpui_kit::component::diff::DiffFile::parse(&super::demo_diff(path));
+            assert!(files.as_ref().is_ok_and(|f| f.len() == 1), "{path}: {:?}", files.err());
+        }
+    }
 }

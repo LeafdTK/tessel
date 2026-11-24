@@ -2280,3 +2280,188 @@ async fn dropping_a_task_turns_what_waited_for_it_into_a_draft_instead_of_waitin
     assert!(after.deps.is_empty() && after.session.is_none(), "it doesn't start by itself, and nothing holds it");
     assert!(after.notes.iter().any(|n| n.text.contains("“First”, which it waited for, was dropped")));
 }
+
+fn task_repo(d: &Daemon, name: &str, settings: &str) -> PathBuf {
+    let repo = d.cfg.paths.home.join(name);
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), settings).unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    repo
+}
+
+fn new_task(repo: &Path, title: &str, deps: Vec<String>, land: Option<&str>) -> Request {
+    Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: String::new(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![], land: land.map(str::to_owned) }
+}
+
+#[tokio::test]
+async fn hands_off_nobody_is_asked_a_question_lands_and_what_would_wait_is_set_aside() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "[factory]\nfix_rounds = 0\n");
+    let (c, _) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"autonomy": "full"}) }).await.unwrap();
+    d.backend.reviews.lock().unwrap().extend([
+        ("## The task\nCount higher".to_owned(), "```json\n{\"decision\": \"ask\", \"why\": \"Went with counting by one, like the rest of the app.\"}\n```".to_owned()),
+        ("## The task\nCount lower".to_owned(), "```json\n{\"decision\": \"change\", \"why\": \"Misses zero.\", \"change\": \"Stop at zero.\"}\n```".to_owned()),
+    ]);
+    let Response::Task { task: higher } = c.request(new_task(&repo, "Count higher", vec![], Some("keep"))).await.unwrap() else { panic!() };
+    let Response::Task { task: lower } = c.request(new_task(&repo, "Count lower", vec![], None)).await.unwrap() else { panic!() };
+    let mut waits = new_task(&repo, "Then count again", vec![lower.id.clone()], None);
+    if let Request::TaskCreate { ready, .. } = &mut waits {
+        *ready = false;
+    }
+    let Response::Task { task: after } = c.request(waits).await.unwrap() else { panic!() };
+
+    let landed = task_until(&c, &higher.id, "landed without asking", |t| t.state.finished()).await;
+    assert_eq!(landed.state, TaskState::Landed, "{:?}", landed.notes);
+    assert!(landed.ask.is_none());
+    assert!(landed.notes.iter().any(|n| n.text == "approved: Went with counting by one, like the rest of the app."), "{:?}", landed.notes);
+    assert!(d.backend.asked.lock().unwrap().iter().any(|(q, _)| q.contains("Count higher") && q.contains("Nobody will answer questions")));
+
+    let aside = task_until(&c, &lower.id, "set aside", |t| t.state.finished()).await;
+    assert_eq!(aside.state, TaskState::Dropped, "{:?}", aside.notes);
+    assert!(aside.notes.iter().any(|n| n.by == "tessel" && n.text == "set aside: the reviewer still wants changes after 0 tries: Misses zero"), "{:?}", aside.notes);
+    assert_eq!(aside.ask.as_deref(), Some("The reviewer still wants changes after 0 tries: Misses zero."), "the reason stays on it");
+    let after = task_until(&c, &after.id, "no longer waits", |t| t.deps.is_empty()).await;
+    assert_eq!(after.state, TaskState::Draft);
+    assert!(after.notes.iter().any(|n| n.text.contains("“Count lower”, which it waited for, was dropped")));
+}
+
+#[tokio::test]
+async fn a_question_without_pictures_offers_its_options_and_choosing_one_tells_the_agent() {
+    use tessel_proto::task::{TaskAct, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "[proof]\nlenses = [\"correctness\"]\n");
+    let (c, _) = d.client().await;
+    d.backend.reviews.lock().unwrap().extend([
+        ("Also asked: Chose: Blue".to_owned(), "```json\n{\"decision\": \"land\", \"why\": \"Blue, as chosen.\"}\n```".to_owned()),
+        (
+            "final reviewer".to_owned(),
+            "```json\n{\"decision\": \"ask\", \"why\": \"Which color should the badge be?\", \"visual\": false, \"options\": [{\"label\": \"Green\", \"what\": \"A green badge.\"}, {\"label\": \"Blue\", \"what\": \"A blue badge.\"}]}\n```".to_owned(),
+        ),
+    ]);
+    let Response::Task { task } = c.request(new_task(&repo, "Add a badge", vec![], Some("keep"))).await.unwrap() else { panic!() };
+    let asked = task_until(&c, &task.id, "asks with options", |t| t.state == TaskState::Review).await;
+    assert_eq!(asked.ask.as_deref(), Some("Which color should the badge be?"));
+    assert_eq!(asked.options.iter().map(|o| (o.label.as_str(), o.what.as_str(), o.sha.is_none())).collect::<Vec<_>>(), vec![("Green", "A green badge.", true), ("Blue", "A blue badge.", true)]);
+    assert_eq!(asked.building, None);
+
+    assert!(c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Choose { index: 2 } }).await.is_err(), "there's no third option");
+    let Response::Task { task: chose } = c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Choose { index: 1 } }).await.unwrap() else { panic!() };
+    assert!(chose.options.is_empty() && chose.ask.is_none());
+    assert_ne!(chose.state, TaskState::Review);
+    assert!(chose.notes.iter().any(|n| n.by == "you" && n.text == "Chose: Blue — A blue badge."));
+    assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("The person chose: Blue. A blue badge. Make it so, commit, then stop.")));
+    let done = task_until(&c, &task.id, "landed", |t| t.state.finished()).await;
+    assert_eq!(done.state, TaskState::Landed, "{:?}", done.notes);
+    assert!(c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Choose { index: 0 } }).await.is_err(), "nothing left to choose");
+}
+
+#[tokio::test]
+async fn a_question_about_looks_is_tried_out_screenshotted_and_the_chosen_option_lands() {
+    use tessel_proto::task::{TaskAct, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "[proof]\nverify = \"sleep 1\"\nlook = 'printf png > \"$TESSEL_SHOTS/badge.png\"'\nlenses = [\"correctness\"]\n");
+    let (c, _) = d.client().await;
+    d.backend.reviews.lock().unwrap().extend([
+        ("Also asked: Chose: Green".to_owned(), "```json\n{\"decision\": \"land\", \"why\": \"Green, as chosen.\"}\n```".to_owned()),
+        (
+            "Also asked: try again".to_owned(),
+            "```json\n{\"decision\": \"ask\", \"why\": \"Which color should the badge be?\", \"visual\": true, \"options\": [{\"label\": \"Green\", \"what\": \"A green badge.\"}, {\"label\": \"Blue\", \"what\": \"A blue badge.\"}]}\n```".to_owned(),
+        ),
+        ("final reviewer".to_owned(), "```json\n{\"decision\": \"ask\", \"why\": \"Not sure yet.\"}\n```".to_owned()),
+    ]);
+    let pause = |on: bool| c.request(Request::SetSettings { patch: serde_json::json!({"paused": on}) });
+    let Response::Task { task } = c.request(new_task(&repo, "Add a badge", vec![], None)).await.unwrap() else { panic!() };
+    let first = task_until(&c, &task.id, "a first question", |t| t.state == TaskState::Review).await;
+    let s = first.session.unwrap();
+    let ws = PathBuf::from(list(&c).await.into_iter().find(|x| x.id == s).unwrap().cwd);
+    std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+    git(&ws, &["commit", "-q", "-am", "feat: count higher"]);
+    let base = git(&ws, &["rev-parse", "HEAD"]);
+
+    pause(true).await.unwrap();
+    c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Change { text: "try again".into() } }).await.unwrap();
+    task_until(&c, &task.id, "its turn ends while paused", |t| t.notes.last().is_some_and(|n| n.text.starts_with("finished while paused"))).await;
+    pause(false).await.unwrap();
+    task_until(&c, &task.id, "being proved", |t| t.state == TaskState::Proving).await;
+    pause(true).await.unwrap();
+    let held = task_until(&c, &task.id, "holds before its first option", |t| t.notes.last().is_some_and(|n| n.text == "paused before its next option")).await;
+    assert_eq!((held.state, held.building, held.options.len()), (TaskState::Running, Some(0), 2), "{:?}", held.notes);
+
+    std::fs::write(ws.join("a.txt"), "green\n").unwrap();
+    git(&ws, &["commit", "-q", "-am", "feat: green badge"]);
+    let green = git(&ws, &["rev-parse", "HEAD"]);
+    pause(false).await.unwrap();
+    let ready = task_until(&c, &task.id, "both options tried", |t| t.state == TaskState::Review && t.building.is_none()).await;
+    assert_eq!(ready.ask.as_deref(), Some("Which color should the badge be?"), "{:?}", ready.notes);
+    assert_eq!(ready.options[0].sha.as_deref(), Some(green.as_str()));
+    let option_dir = d.cfg.paths.home.join("shots").join(s.to_string()).join("option-0");
+    assert_eq!(ready.options[0].shots, vec![option_dir.join("badge.png").to_string_lossy().into_owned()]);
+    assert_eq!(ready.options[1].shots.len(), 1);
+    assert_eq!(git(&ws, &["rev-parse", "HEAD"]), base, "the workspace is put back to the reviewed change");
+    let written = d.backend.written.lock().unwrap().clone();
+    assert!(written.iter().any(|l| l.contains(&format!("git reset --hard {base}")) && l.contains("Green: A green badge.")));
+    assert!(written.iter().any(|l| l.contains("Blue: A blue badge.")));
+
+    c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Choose { index: 0 } }).await.unwrap();
+    assert_eq!(git(&ws, &["rev-parse", "HEAD"]), green, "the chosen option is what's proved");
+    let done = task_until(&c, &task.id, "proved again and landed", |t| t.state.finished()).await;
+    assert_eq!(done.state, TaskState::Landed, "{:?}", done.notes);
+    assert!(done.notes.iter().any(|n| n.by == "you" && n.text == "Chose: Green — A green badge."));
+    assert_eq!(done.review.as_deref(), Some("Green, as chosen."));
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "green\n");
+    assert_eq!(done.shots, vec![d.cfg.paths.home.join("shots").join(s.to_string()).join("badge.png").to_string_lossy().into_owned()], "the last proof's screenshots are on the task");
+}
+
+#[tokio::test]
+async fn only_ui_choices_come_to_you_and_the_reviewer_settles_the_rest() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "[factory]\nfix_rounds = 0\n");
+    let (c, _) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"autonomy": "ui"}) }).await.unwrap();
+    d.backend.reviews.lock().unwrap().extend([
+        ("## The task\nAdd a badge".to_owned(), "```json\n{\"decision\": \"ask\", \"why\": \"Which color should the badge be?\", \"visual\": true, \"options\": [{\"label\": \"Green\", \"what\": \"A green badge.\"}, {\"label\": \"Blue\", \"what\": \"A blue badge.\"}]}\n```".to_owned()),
+        ("## The task\nCache the list".to_owned(), "```json\n{\"decision\": \"ask\", \"why\": \"Kept it for a minute, like the other caches.\", \"visual\": false}\n```".to_owned()),
+        ("## The task\nCount lower".to_owned(), "```json\n{\"decision\": \"change\", \"why\": \"Misses zero.\", \"change\": \"Stop at zero.\"}\n```".to_owned()),
+    ]);
+    let Response::Task { task: badge } = c.request(new_task(&repo, "Add a badge", vec![], Some("keep"))).await.unwrap() else { panic!() };
+    let Response::Task { task: cache } = c.request(new_task(&repo, "Cache the list", vec![], Some("keep"))).await.unwrap() else { panic!() };
+    let Response::Task { task: lower } = c.request(new_task(&repo, "Count lower", vec![], None)).await.unwrap() else { panic!() };
+
+    let asked = task_until(&c, &badge.id, "a look question comes to you", |t| t.state == TaskState::Review).await;
+    assert_eq!(asked.ask.as_deref(), Some("Which color should the badge be?"));
+    assert_eq!(asked.options.len(), 2, "with its options, though there's nothing to screenshot here");
+    let landed = task_until(&c, &cache.id, "settled by the reviewer", |t| t.state.finished()).await;
+    assert_eq!(landed.state, TaskState::Landed, "{:?}", landed.notes);
+    assert!(landed.notes.iter().any(|n| n.text == "approved: Kept it for a minute, like the other caches."));
+    let aside = task_until(&c, &lower.id, "set aside", |t| t.state.finished()).await;
+    assert_eq!(aside.state, TaskState::Dropped, "{:?}", aside.notes);
+    assert!(d.backend.asked.lock().unwrap().iter().any(|(q, _)| q.contains("Cache the list") && q.contains("only for a choice about how something looks")));
+}
+
+#[tokio::test]
+async fn a_rule_of_your_own_decides_what_comes_to_you_and_trouble_still_does() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "[factory]\nfix_rounds = 0\n");
+    let (c, _) = d.client().await;
+    let Response::Settings { settings } = c.request(Request::SetSettings { patch: serde_json::json!({"autonomy": "custom", "bother": "it changes how billing works"}) }).await.unwrap() else { panic!() };
+    assert_eq!((settings.autonomy.as_str(), settings.bother.as_str()), ("custom", "it changes how billing works"));
+    d.backend.reviews.lock().unwrap().extend([
+        ("## The task\nCharge monthly".to_owned(), "```json\n{\"decision\": \"ask\", \"why\": \"Charge on the first or on signup day?\", \"options\": [{\"label\": \"The first\", \"what\": \"Everyone on the 1st.\"}, {\"label\": \"Signup day\", \"what\": \"On the day they joined.\"}]}\n```".to_owned()),
+        ("## The task\nCount lower".to_owned(), "```json\n{\"decision\": \"change\", \"why\": \"Misses zero.\", \"change\": \"Stop at zero.\"}\n```".to_owned()),
+    ]);
+    let Response::Task { task: billing } = c.request(new_task(&repo, "Charge monthly", vec![], None)).await.unwrap() else { panic!() };
+    let Response::Task { task: lower } = c.request(new_task(&repo, "Count lower", vec![], None)).await.unwrap() else { panic!() };
+    let asked = task_until(&c, &billing.id, "asks", |t| t.state == TaskState::Review).await;
+    assert_eq!(asked.ask.as_deref(), Some("Charge on the first or on signup day?"));
+    assert_eq!(asked.options.len(), 2);
+    assert!(d.backend.asked.lock().unwrap().iter().any(|(q, _)| q.contains("Charge monthly") && q.contains("Ask the person only when this applies: it changes how billing works. Otherwise decide yourself, as nobody else will look.")));
+    let stuck = task_until(&c, &lower.id, "comes to you", |t| t.state == TaskState::Review).await;
+    assert_eq!(stuck.ask.as_deref(), Some("The reviewer still wants changes after 0 tries: Misses zero."), "not set aside: {:?}", stuck.notes);
+}

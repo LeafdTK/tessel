@@ -375,14 +375,10 @@ impl Shell {
         })
     }
 
-    pub(crate) fn field_on(&self) -> bool {
-        self.ui.theme.field.unwrap_or(false) && !self.ui.theme.glass.unwrap_or(false)
-    }
-
-    pub(crate) fn field_el(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(crate) fn mat_el(&self, radius: f32, cx: &mut Context<Self>) -> AnyElement {
         let dark = self.palette.get().dark;
-        image_el(self.field_img.clone(), cx.entity().downgrade(), f32::from(theme::z(26.)), move |w, h, scale| {
-            Some(Key { w: w.round() as u32, h: h.round() as u32, cell: (5.0 * scale).round().max(4.0) as u32, hue: 0.0, dark, bg: [0, 0, 0], felt: false, field: if dark { 1 } else { 2 }, fade: true, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 })
+        image_el(self.field_img.clone(), cx.entity().downgrade(), f32::from(theme::z(radius)), move |w, h, scale| {
+            Some(Key { w: w.round() as u32, h: h.round() as u32, cell: (5.0 * scale).round().max(4.0) as u32, hue: 0.0, dark, bg: [0, 0, 0], felt: false, field: if dark { 1 } else { 2 }, fade: false, meadow: false, frame: 0, frost: false, ox: 0, oy: 0, fw: 0, fh: 0 })
         })
     }
 

@@ -584,8 +584,7 @@ impl Shell {
             .when(!compact && !open_sky, |d| d.rounded(px(theme::R_PANEL)).border_1())
             // on felt a pane is set into the cloth: a dark rim and a hairline of light
             // under its lower edge, where the cloth turns up to meet it.
-            .when(!compact && !open_sky && !felt && !self.field_on(), |d| d.shadow_sm())
-            .when(!compact && !open_sky && self.field_on(), |d| d.shadow_lg())
+            .when(!compact && !open_sky && !felt, |d| d.shadow_sm())
             .when(!compact && !open_sky && felt, |d| {
                 d.shadow(vec![
                     gpui_kit::BoxShadow {
@@ -709,7 +708,7 @@ impl Shell {
             Module::Terminal => self.terminal_el(pane.map_or("", |p| p.id.as_str()), cx),
             // nor does a cluster.
             Module::Kube => self.kube_el(cx),
-            Module::Board => self.board_el(cx),
+            Module::Board => self.stage_el(cx),
             Module::Views => self.views_el(cx),
             Module::Home => self.home_el(cx),
             Module::Processes => self.procs_el(cx),

@@ -531,8 +531,6 @@ pub enum Base {
     Tessel,
     /// hack club orchard's default palette.
     Orchard,
-    /// the landing page: ink and bone at night, paper by day.
-    Field,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -555,7 +553,6 @@ pub struct ThemeSpec {
     pub glass: Option<bool>,
     /// the frame is felt: a fine grain with a soft sheen, the panes set into it.
     pub felt: Option<bool>,
-    pub field: Option<bool>,
     /// with glass: what an agent's doing glows as light under the glass (off unless asked for).
     pub glow: Option<bool>,
     /// what's behind the panes: nothing unless asked for.
@@ -572,7 +569,7 @@ impl ThemeSpec {
     pub(crate) fn parse(v: &Value) -> Result<Self, String> {
         // "photon" is tessel's old name: a layout written then still reads.
         // "photon" is tessel's old name, and "tern" a palette that's gone: both still read, as tessel.
-        let bases = [("tessel", Base::Tessel), ("orchard", Base::Orchard), ("field", Base::Field), ("photon", Base::Tessel), ("tern", Base::Tessel)];
+        let bases = [("tessel", Base::Tessel), ("orchard", Base::Orchard), ("photon", Base::Tessel), ("tern", Base::Tessel)];
         if v.is_string() {
             return Ok(Self { base: Some(one_of(v, "theme", &bases)?), ..Self::default() });
         }
@@ -621,10 +618,9 @@ impl ThemeSpec {
             t.glow = Some(flag(g, "theme.glow")?);
         }
         if let Some(m) = obj.get("material") {
-            let (glass, felt, field) = one_of(m, "theme.material", &[("solid", (false, false, false)), ("glass", (true, false, false)), ("felt", (false, true, false)), ("field", (false, false, true))])?;
+            let (glass, felt) = one_of(m, "theme.material", &[("solid", (false, false)), ("glass", (true, false)), ("felt", (false, true))])?;
             t.glass = Some(glass);
             t.felt = Some(felt);
-            t.field = Some(field);
         }
         if let Some(t) = obj.get("terminal") {
             let o = t.as_object().ok_or("theme.terminal: expected an object, like {\"size\": 13, \"colors\": \"ink\"}")?;
@@ -677,7 +673,6 @@ impl ThemeSpec {
         self.message_size = over.message_size.or(self.message_size);
         self.glass = over.glass.or(self.glass);
         self.felt = over.felt.or(self.felt);
-        self.field = over.field.or(self.field);
         self.backdrop = over.backdrop.or(self.backdrop);
         self.term_size = over.term_size.or(self.term_size);
         self.term_colors = over.term_colors.or(self.term_colors.take());
@@ -688,12 +683,10 @@ impl ThemeSpec {
     /// the palette for one appearance.
     pub fn palette(&self, dark: bool) -> Palette {
         let mut p = match (self.base.unwrap_or_default(), dark) {
-            (Base::Tessel, false) => Palette::light(),
-            (Base::Tessel, true) => Palette::dark(),
+            (Base::Tessel, false) => Palette::paper(),
+            (Base::Tessel, true) => Palette::ink(),
             (Base::Orchard, false) => Palette::orchard_light(),
             (Base::Orchard, true) => Palette::orchard_dark(),
-            (Base::Field, false) => Palette::paper(),
-            (Base::Field, true) => Palette::ink(),
         };
         for (token, color) in if dark { &self.dark_tokens } else { &self.light } {
             p.set(*token, *color);
