@@ -166,7 +166,7 @@ pub fn trimmed(output: &str) -> String {
 pub async fn run_check(ws: &Path, command: &str, rule: Option<String>) -> Verified {
     let start = Instant::now();
     let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command]).current_dir(ws).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(["-c", command]).current_dir(ws).env("PYTHONDONTWRITEBYTECODE", "1").stdin(std::process::Stdio::null()).kill_on_drop(true);
     let (ok, output) = match tokio::time::timeout(std::time::Duration::from_secs(20 * 60), cmd.output()).await {
         Ok(Ok(o)) => {
             let mut all = String::from_utf8_lossy(&o.stdout).into_owned();

@@ -19,6 +19,8 @@ pub enum Stuck {
     Other(String),
 }
 
+const LITTER: [&str; 8] = [":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/*.pyc", ":(exclude,glob)**/node_modules/**", ":(exclude,glob)**/.DS_Store", ":(exclude,glob)**/.pytest_cache/**", ":(exclude,glob)**/.mypy_cache/**", ":(exclude,glob)**/.ruff_cache/**", ":(exclude,glob)**/.tessel/settings.local.toml"];
+
 fn typed(subject: &str) -> bool {
     regex::Regex::new(r"^[a-z]+(\([^)]*\))?!?: \S").is_ok_and(|re| re.is_match(subject)) && subject.chars().count() <= 72
 }
@@ -46,8 +48,10 @@ async fn subject(backend: &Arc<dyn Backend>, ws: &Path, main: &str, title: &str)
 pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str, verify: &[String], mode: Land) -> Result<Landed, Stuck> {
     let main = crate::ship::main_branch(ws).await;
     let other = |e: String| Stuck::Other(e);
-    if !git(ws, &["status", "--porcelain"]).await.map_err(other)?.is_empty() {
-        git(ws, &["add", "-A"]).await.map_err(other)?;
+    let mut add = vec!["add", "-A", "--", "."];
+    add.extend(LITTER);
+    git(ws, &add).await.map_err(other)?;
+    if !git(ws, &["diff", "--cached", "--name-only"]).await.map_err(other)?.is_empty() {
         let message = subject(&backend, ws, &main, title).await;
         git(ws, &["commit", "-q", "-m", &message]).await.map_err(other)?;
     }
@@ -65,9 +69,22 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
     let message = subject(&backend, ws, &main, title).await;
     match mode {
         Land::Main => {
-            let (said, _) = crate::ship::ship(ws, root, title, ShipStep::MergeIntoMain { squash: true, message, push: false }).await.map_err(other)?;
+            let here = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
+            if here != main {
+                return Err(Stuck::Other(format!("the main checkout is on {here}, not {main}")));
+            }
+            if !git(root, &["status", "--porcelain", "--untracked-files=no"]).await.map_err(other)?.is_empty() {
+                return Err(Stuck::Other("the main checkout has changes of its own".into()));
+            }
+            if git(ws, &["rev-list", "--count", &format!("{main}..HEAD")]).await.map_err(other)?.trim() == "0" {
+                return Err(Stuck::Other("there's nothing to land".into()));
+            }
+            let branch = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
+            git(ws, &["reset", "--soft", &main]).await.map_err(other)?;
+            git(ws, &["commit", "-q", "-m", &message]).await.map_err(other)?;
+            git(root, &["merge", "--ff-only", &branch]).await.map_err(other)?;
             let sha = git(root, &["rev-parse", "--short", "HEAD"]).await.unwrap_or_default();
-            Ok(Landed::Merged { sha, said })
+            Ok(Landed::Merged { sha, said: format!("Merged into {main}.") })
         }
         Land::PullRequest => {
             let (said, url) = crate::ship::ship(ws, root, title, ShipStep::PullRequest { title: message, body: String::new(), draft: false }).await.map_err(other)?;
@@ -112,6 +129,9 @@ mod tests {
         std::fs::write(ws.join("a.txt"), "two\n").unwrap();
         sh(&ws, &["commit", "-q", "-am", "fix: count to two"]);
         std::fs::write(ws.join("c.txt"), "loose\n").unwrap();
+        std::fs::create_dir_all(ws.join("__pycache__")).unwrap();
+        std::fs::write(ws.join("__pycache__/a.cpython-39.pyc"), "junk").unwrap();
+        std::fs::write(ws.join(".DS_Store"), "junk").unwrap();
         std::fs::write(root.join("b.txt"), "moved on\n").unwrap();
         sh(&root, &["commit", "-q", "-am", "chore: meanwhile"]);
         let landed = land(backend(), &ws, &root, "Count to two", &["test -f c.txt".into()], Land::Main).await.unwrap();
@@ -120,6 +140,8 @@ mod tests {
         assert_eq!(sh(&root, &["log", "-1", "--format=%s"]), "fix: what the replay agent would say", "uncommitted work is committed, then all of it squashed");
         assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "two\n");
         assert_eq!(std::fs::read_to_string(root.join("b.txt")).unwrap(), "moved on\n", "on top of what main got meanwhile");
+        let files = sh(&root, &["show", "--name-only", "--format=", "HEAD"]);
+        assert!(files.contains("c.txt") && !files.contains("pycache") && !files.contains("DS_Store"), "build litter isn't landed: {files}");
     }
 
     #[tokio::test]

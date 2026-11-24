@@ -58,6 +58,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl key ls|rm NAME|uses             your keys, and what used them
   tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
                                             they never enter it
+  tesselctl metrics [--json]                what the factory has landed, what it cost, what was reverted
   tesselctl tidy REPO [--every CRON]        once a week (or as often as you say), an agent files up to 3 small
                                             cleanups for that repository as drafts on the board
   tesselctl fire WORKFLOW [--title T] [--event JSON]   run a workflow as its trigger would (from a webhook,
@@ -703,6 +704,15 @@ async fn run() -> anyhow::Result<()> {
                     show(&keys.into_iter().filter(|k| k.name == name).collect::<Vec<_>>());
                 }
                 other => bail!("key {other}? ls, add, rm or uses"),
+            }
+        }
+        "metrics" => {
+            let Response::Metrics { metrics: m } = client.request(Request::Metrics).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&m)?);
+            } else {
+                println!("landed {}  waiting on you {}  working {}  up next {}  dropped {}", m.landed, m.review, m.working, m.ready, m.dropped);
+                println!("${:.3} per landed task  ${:.3} wasted  {} reverted later", m.cost_per_landed, m.waste, m.escaped);
             }
         }
         "tidy" => {
