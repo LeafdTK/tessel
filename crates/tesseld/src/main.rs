@@ -64,14 +64,19 @@ fn main() -> anyhow::Result<()> {
         cfg.tools_bin = std::env::current_exe().ok().and_then(|me| me.parent().map(|d| d.join("tesselctl"))).filter(|p| p.is_file());
     }
 
+    let login = login_env();
     let backend: Arc<dyn Backend> = match std::env::var("TESSEL_REPLAY") {
         Ok(list) if !list.is_empty() => {
             let recs = list.split(',').map(tessel_agent::recording::load).collect::<anyhow::Result<Vec<_>>>()?;
             eprintln!("tesseld: replaying {} recording(s) instead of running claude", recs.len());
             Arc::new(ReplayBackend::new(recs).paced(Duration::from_millis(400)))
         }
-        _ => Arc::new(claude_backend()),
+        _ => Arc::new(claude_backend(login.clone())),
     };
+    if let Some(theirs) = login.as_ref().and_then(|env| env.iter().find(|(k, _)| k == "PATH")).map(|(_, v)| v.clone()) {
+        let ours = std::env::var("PATH").unwrap_or_default();
+        unsafe { std::env::set_var("PATH", wider_path(&theirs, &ours)) };
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(async move {
@@ -98,7 +103,7 @@ fn main() -> anyhow::Result<()> {
 /// started from a terminal, our own environment is right. started from the
 /// dock it is nearly empty and claude (often under ~/.nvm) isn't on PATH, so
 /// we ask a login shell what the environment should be.
-fn claude_backend() -> ClaudeBackend {
+fn claude_backend(login: Option<Vec<(String, String)>>) -> ClaudeBackend {
     let extra_args: Vec<String> =
         std::env::var("TESSEL_CLAUDE_ARGS").unwrap_or_default().split_whitespace().map(str::to_owned).collect();
     if let Some(bin) = std::env::var_os("TESSEL_CLAUDE_BIN") {
@@ -107,7 +112,7 @@ fn claude_backend() -> ClaudeBackend {
     if let Some(program) = find_in_path("claude", &std::env::var("PATH").unwrap_or_default()) {
         return ClaudeBackend { program, env: None, extra_args };
     }
-    let env = login_env().unwrap_or_default();
+    let env = login.unwrap_or_default();
     let path = env.iter().find(|(k, _)| k == "PATH").map(|(_, v)| v.clone()).unwrap_or_default();
     if let Some(program) = find_in_path("claude", &path) {
         return ClaudeBackend { program, env: Some(env), extra_args };
@@ -124,6 +129,16 @@ fn claude_backend() -> ClaudeBackend {
     }
 }
 
+
+fn wider_path(theirs: &str, ours: &str) -> String {
+    let mut all: Vec<&str> = Vec::new();
+    for d in theirs.split(':').chain(ours.split(':')) {
+        if !d.is_empty() && !all.contains(&d) {
+            all.push(d);
+        }
+    }
+    all.join(":")
+}
 
 fn find_in_path(name: &str, path: &str) -> Option<PathBuf> {
     path.split(':').filter(|d| !d.is_empty()).map(|d| PathBuf::from(d).join(name)).find(|p| p.is_file())
@@ -160,4 +175,13 @@ fn login_env() -> Option<Vec<(String, String)>> {
     let env: Vec<(String, String)> =
         after.split('\0').filter_map(|kv| kv.split_once('=')).map(|(k, v)| (k.to_owned(), v.to_owned())).collect();
     (!env.is_empty()).then_some(env)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn what_the_daemon_runs_finds_what_your_shell_finds() {
+        assert_eq!(super::wider_path("/Users/me/.cargo/bin:/opt/homebrew/bin:/usr/bin", "/usr/bin:/bin"), "/Users/me/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin");
+        assert_eq!(super::wider_path("", "/usr/bin"), "/usr/bin");
+    }
 }
