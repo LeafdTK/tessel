@@ -666,9 +666,9 @@ impl Shell {
         let Some(d) = self.daemon_settings.clone() else {
             return v_flex().child(div().p_4().set(Type::Callout).text_color(p.secondary).child("The daemon running now is too old for these. Restart it to get them."));
         };
-        let choice = |key: String, current: String, options: &[(&'static str, &'static str)], set: std::rc::Rc<dyn Fn(&str) -> serde_json::Value>, cx: &mut Context<Self>| {
+        let choice = |key: String, current: String, options: &[(&'static str, String)], set: std::rc::Rc<dyn Fn(&str) -> serde_json::Value>, cx: &mut Context<Self>| {
             let mut tray = theme::tray(&p);
-            for (value, label) in options.iter().copied() {
+            for (value, label) in options.iter().cloned() {
                 let set = set.clone();
                 tray = tray.child(theme::segment(&p, SharedString::from(format!("{key}-{value}")), label, current == value).test_support().on_click(cx.listener(move |this, _, window, cx| {
                     if let Err(e) = this.exec("daemon.set", &set(value), window, cx) {
@@ -678,15 +678,25 @@ impl Shell {
             }
             tray
         };
-        let models: [(&str, &str); 4] = [("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus"), ("claude-fable-5-2", "Fable")];
+        let named = |value: &'static str, fallback: &str| -> (&'static str, String) {
+            let found = self.models.iter().find(|m| m.value == value || m.id == value);
+            let label = match found {
+                Some(m) if m.name.chars().any(|c| c.is_ascii_digit()) => m.name.clone(),
+                Some(m) if !m.id.is_empty() => model_name(&m.id),
+                _ if value.starts_with("claude-") => model_name(value),
+                _ => fallback.to_owned(),
+            };
+            (value, label)
+        };
+        let models: Vec<(&'static str, String)> = vec![named("haiku", "Haiku"), named("sonnet", "Sonnet"), named("opus", "Opus"), named("claude-fable-5-2", "Fable")];
         let mut col = v_flex();
         for (job, name, _) in tessel_proto::ROLES {
             let current = d.role(job);
-            let mut options: Vec<(&str, &str)> = Vec::new();
+            let mut options: Vec<(&'static str, String)> = Vec::new();
             if job == "check" {
-                options.push(("auto", "By size"));
+                options.push(("auto", "By size".to_owned()));
             }
-            options.extend(models);
+            options.extend(models.iter().cloned());
             let roles = d.roles.clone();
             let set: std::rc::Rc<dyn Fn(&str) -> serde_json::Value> = std::rc::Rc::new(move |m: &str| {
                 let mut r = roles.clone();
@@ -700,10 +710,10 @@ impl Shell {
             "full" => "The reviewer decides everything, risky code included.",
             _ => "The reviewer decides; anything touching auth, secrets, migrations or infra comes to you.",
         };
-        col = col.child(self.setting_row("Who decides on finished work", autonomy_hint, choice("autonomy".into(), d.autonomy.clone(), &[("me", "Me"), ("agent", "Reviewer"), ("full", "Reviewer, always")], std::rc::Rc::new(|v: &str| json!({"autonomy": v})), cx)));
-        col = col.child(self.setting_row("When a task is done", "", choice("land".into(), d.land.clone(), &[("main", "Land on main"), ("pr", "Open a PR"), ("keep", "Keep the branch")], std::rc::Rc::new(|v: &str| json!({"land": v})), cx)));
+        col = col.child(self.setting_row("Who decides on finished work", autonomy_hint, choice("autonomy".into(), d.autonomy.clone(), &[("me", "Me".to_owned()), ("agent", "Reviewer".to_owned()), ("full", "Reviewer, always".to_owned())], std::rc::Rc::new(|v: &str| json!({"autonomy": v})), cx)));
+        col = col.child(self.setting_row("When a task is done", "", choice("land".into(), d.land.clone(), &[("main", "Land on main".to_owned()), ("pr", "Open a PR".to_owned()), ("keep", "Keep the branch".to_owned())], std::rc::Rc::new(|v: &str| json!({"land": v})), cx)));
         let parallel = d.parallel.unwrap_or(3).to_string();
-        col = col.child(self.setting_row("Tasks at once", "", choice("parallel".into(), parallel, &[("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("6", "6"), ("8", "8")], std::rc::Rc::new(|v: &str| json!({"parallel": v.parse::<u32>().unwrap_or(3)})), cx)));
+        col = col.child(self.setting_row("Tasks at once", "", choice("parallel".into(), parallel, &[("1", "1".to_owned()), ("2", "2".to_owned()), ("3", "3".to_owned()), ("4", "4".to_owned()), ("6", "6".to_owned()), ("8", "8".to_owned())], std::rc::Rc::new(|v: &str| json!({"parallel": v.parse::<u32>().unwrap_or(3)})), cx)));
         col
     }
 
@@ -1018,4 +1028,26 @@ fn installed_fonts(cx: &App) -> std::sync::Arc<Vec<String>> {
             std::sync::Arc::new(names)
         })
         .clone()
+}
+
+fn model_name(id: &str) -> String {
+    let mut parts = id.trim_start_matches("claude-").split('-');
+    let family = parts.next().unwrap_or_default();
+    let version: Vec<&str> = parts.take_while(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() <= 2).collect();
+    let mut name: String = family.chars().take(1).flat_map(char::to_uppercase).chain(family.chars().skip(1)).collect();
+    if !version.is_empty() {
+        name.push(' ');
+        name.push_str(&version.join("."));
+    }
+    name
+}
+
+#[cfg(test)]
+mod model_names {
+    #[test]
+    fn a_model_id_reads_as_its_name_and_version() {
+        assert_eq!(super::model_name("claude-opus-5-5"), "Opus 5.5");
+        assert_eq!(super::model_name("claude-fable-5-2"), "Fable 5.2");
+        assert_eq!(super::model_name("claude-haiku-4-5-20251001"), "Haiku 4.5");
+    }
 }
