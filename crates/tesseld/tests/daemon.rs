@@ -2123,3 +2123,86 @@ async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
     assert!(done.notes.iter().any(|n| n.text == "all 2 of its tasks landed"));
     assert_eq!(git(&repo, &["log", "--format=%s", "-n", "2"]), "feat: charge monthly\nfeat: add the plans table");
 }
+
+#[tokio::test]
+async fn a_change_is_looked_at_and_tried_like_a_user_before_any_reviewer_reads_it() {
+    use tessel_proto::proof::{Severity, Verdict};
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("shop");
+    for dir in [".tessel/rules", ".tessel/scenarios"] {
+        std::fs::create_dir_all(repo.join(dir)).unwrap();
+    }
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nlook = \"printf 'png' > \\\"$TESSEL_SHOTS/board.png\\\"\"\nlenses = [\"correctness\"]\n").unwrap();
+    std::fs::write(repo.join(".tessel/rules/roomy.md"), "---\ncheck: look\nseverity: warn\n---\nControls need room to breathe.\n").unwrap();
+    std::fs::write(repo.join(".tessel/scenarios/smoke.md"), "---\nrun: test -f a.txt\n---\n").unwrap();
+    std::fs::write(repo.join(".tessel/scenarios/sign-in.md"), "---\npaths: [\"a.txt\"]\n---\n# Sign in\nSign in and see the board.\n").unwrap();
+    std::fs::write(repo.join(".tessel/scenarios/search.md"), "# Search\nSearch for a product.\n").unwrap();
+    let hidden = d.cfg.paths.home.join("holdouts/shop/scenarios");
+    std::fs::create_dir_all(&hidden).unwrap();
+    std::fs::write(hidden.join("pay.md"), "---\npaths: [\"a.txt\"]\n---\n# Pay\nBuy something and pay.\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    d.backend.reviews.lock().unwrap().extend([
+        ("judge how it looks".to_owned(), "```json\n[{\"lens\":\"look\",\"file\":\"board.png\",\"severity\":\"warn\",\"rule\":\"roomy\",\"title\":\"Buttons touch the card's edge\",\"why\":\"bottom right\"}]\n```".to_owned()),
+        ("The scenario: Sign in".to_owned(), "Signed in.\n```json\n{\"passed\": true, \"said\": \"saw the board\"}\n```".to_owned()),
+        ("The scenario: Pay".to_owned(), "```json\n{\"passed\": false, \"said\": \"checkout answered 500\"}\n```".to_owned()),
+    ]);
+    let (c, _) = d.client().await;
+    let s = create(&c, &repo.to_string_lossy(), None).await;
+    c.request(Request::ProofRun { session: s.id, anyway: false }).await.unwrap();
+    let p = until(&c, s.id, "proved", |s| s.proof.as_ref().is_some_and(|p| p.verdict.done())).await.proof.unwrap();
+    assert_eq!(p.verdict, Verdict::Failed, "{}", p.report());
+    assert_eq!(p.shots.len(), 1);
+    assert!(p.shots[0].ends_with("board.png") && std::path::Path::new(&p.shots[0]).starts_with(d.cfg.paths.home.join("shots")));
+    let look = p.findings.iter().find(|f| f.lens == "look").expect("a look finding");
+    assert_eq!((look.rule.as_deref(), look.file.as_deref(), look.severity.clone()), (Some("roomy"), Some("board.png"), Severity::Warn));
+    let tried: Vec<(&str, bool, bool)> = p.tried.iter().map(|t| (t.id.as_str(), t.ok, t.holdout)).collect();
+    assert_eq!(tried, vec![("smoke", true, false), ("pay", false, true), ("sign-in", true, false)], "the script runs first for free, then the testers; search isn't for a change this small");
+    assert!(p.tried[1].said.contains("500"));
+    let asked = d.backend.asked.lock().unwrap().clone();
+    assert!(!asked.iter().any(|(q, _)| q.contains("reviewing a change")), "a failed scenario stops it before the reviewers");
+    assert!(asked.iter().any(|(q, m)| q.contains("judge how it looks") && q.contains("roomy") && m == "sonnet"), "the look rule goes to a model that can see");
+    let jobs = d.backend.jobs.lock().unwrap().clone();
+    let tester = jobs.iter().find(|j| j.0.contains("Bash")).expect("a tester");
+    assert!(tester.1, "a tester acts without asking");
+    assert_eq!(tester.3, cfg!(target_os = "macos"), "in a sandbox where there is one");
+    assert!(jobs.iter().any(|j| j.0 == "Read" && j.2.iter().any(|d| d.ends_with(s.id.to_string()))), "the look reviewer can read the screenshots");
+    assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "two\n");
+
+    let Response::Shot { png, .. } = c.request(Request::Shot { path: p.shots[0].clone() }).await.unwrap() else { panic!() };
+    assert_eq!(png, "cG5n");
+    assert!(c.request(Request::Shot { path: "/etc/hosts".into() }).await.is_err(), "only screenshots");
+}
+
+#[tokio::test]
+async fn a_checkup_runs_everything_on_main_and_files_a_task_for_each_thing_that_broke() {
+    use tessel_proto::proof::Verdict;
+    let d = Daemon::start(&["plain"]).await;
+    let repo = d.cfg.paths.home.join("app");
+    std::fs::create_dir_all(repo.join(".tessel/scenarios")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nverify = [\"true\", \"echo 'error: lint' && false\"]\n[factory]\ncheckup = \"draft\"\n").unwrap();
+    std::fs::write(repo.join(".tessel/scenarios/export.md"), "---\nrun: test -f export.csv\n---\n# Export\n").unwrap();
+    std::fs::write(repo.join(".tessel/scenarios/login.md"), "# Login\nLog in.\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    d.backend.reviews.lock().unwrap().push(("The scenario: Login".to_owned(), "```json\n{\"passed\": true, \"said\": \"fine\"}\n```".to_owned()));
+    let (c, _) = d.client().await;
+    let Response::Checkup { proof, filed } = c.request(Request::Checkup { repo: repo.to_string_lossy().into_owned() }).await.unwrap() else { panic!() };
+    assert_eq!(proof.verdict, Verdict::Failed);
+    assert_eq!(filed.len(), 2, "{}", proof.report());
+    let Response::Tasks { tasks } = c.request(Request::TaskList).await.unwrap() else { panic!() };
+    let titles: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+    assert!(titles.contains(&"Fix `echo 'error: lint' && false` failing on main") && titles.contains(&"Fix: Export fails on main"), "{titles:?}");
+    assert!(tasks.iter().all(|t| t.state == tessel_proto::task::TaskState::Draft), "this repository wants them as drafts");
+    assert!(tasks.iter().any(|t| t.spec.contains("error: lint")));
+    assert!(proof.tried.iter().any(|t| t.id == "login" && t.ok), "every scenario runs in a checkup");
+    let Response::Checkup { filed: again, .. } = c.request(Request::Checkup { repo: repo.to_string_lossy().into_owned() }).await.unwrap() else { panic!() };
+    assert!(again.is_empty(), "the same breakage isn't filed twice");
+    assert_eq!(git(&repo, &["worktree", "list"]).lines().count(), 1, "its scratch checkout is gone");
+    assert!(d.cfg.paths.home.join("checkups/app.json").is_file());
+}

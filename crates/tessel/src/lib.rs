@@ -14,6 +14,7 @@ pub mod notch;
 pub mod pdf;
 pub mod rich;
 pub mod shell;
+pub mod shots;
 #[cfg(test)]
 mod shell_tests;
 pub mod theme;

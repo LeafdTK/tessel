@@ -59,6 +59,10 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
                                             they never enter it
   tesselctl metrics [--json]                what the factory has landed, what it cost, what was reverted
+  tesselctl checkup [REPO] [--nightly | --every CRON]   run every check, scenario and screenshot on main
+                                            now, and file a task for each thing that broke (or every night)
+  tesselctl shot URL OUT.png [--size 1280x800] [--wait MS]   a screenshot of a web page, with headless
+                                            Chrome: for [proof] look in web projects
   tesselctl tidy REPO [--every CRON]        once a week (or as often as you say), an agent files up to 3 small
                                             cleanups for that repository as drafts on the board
   tesselctl fire WORKFLOW [--title T] [--event JSON]   run a workflow as its trigger would (from a webhook,
@@ -236,6 +240,14 @@ async fn run() -> anyhow::Result<()> {
     // tessel as tools for an agent: connects only when a tool is used.
     if cmd == "mcp" {
         return mcp::serve().await;
+    }
+
+    if cmd == "shot" {
+        let url = args.next("a URL")?;
+        let out = std::path::PathBuf::from(args.next("where to save the PNG")?);
+        let size = args.opt("--size")?.unwrap_or_else(|| "1280x800".into());
+        let wait = args.opt("--wait")?.map(|s| s.parse::<u64>()).transpose()?.unwrap_or(1500);
+        return shot(&url, &out, &size, wait);
     }
 
     if cmd == "daemon" {
@@ -713,6 +725,40 @@ async fn run() -> anyhow::Result<()> {
             } else {
                 println!("landed {}  waiting on you {}  working {}  up next {}  dropped {}", m.landed, m.review, m.working, m.ready, m.dropped);
                 println!("${:.3} per landed task  ${:.3} wasted  {} reverted later", m.cost_per_landed, m.waste, m.escaped);
+                for g in &m.lenses {
+                    println!("  {:<12} found {:<4} refuted {:<4} fixed {:<4} landed anyway {}", g.lens, g.found, g.refuted, g.fixed, g.ignored);
+                }
+            }
+        }
+        "checkup" => {
+            let every = args.opt("--every")?.or_else(|| args.flag("--nightly").then(|| "0 3 * * *".to_owned()));
+            let given = std::path::PathBuf::from(if args.rest.is_empty() { ".".to_owned() } else { args.next("a repository")? });
+            let repo = if given.is_absolute() { given } else { std::fs::canonicalize(given)? };
+            let name = repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if let Some(every) = every {
+                let yaml = checkup_workflow(&name, &repo.to_string_lossy(), &every);
+                match client.request(Request::WorkflowSave { name: format!("Check {name}"), yaml, cwd: None }).await? {
+                    Response::WorkflowSaved { workflow } if workflow.problems.is_empty() => println!("{} runs {}: anything broken on main becomes a task", workflow.name, workflow.on.iter().map(|t| t.describe()).collect::<Vec<_>>().join(", ")),
+                    Response::WorkflowSaved { workflow } => bail!("{}", workflow.problems.join("; ")),
+                    other => bail!("unexpected reply: {other:?}"),
+                }
+                return Ok(());
+            }
+            eprintln!("checking {name}'s main branch…");
+            let Response::Checkup { proof, filed } = client.request(Request::Checkup { repo: repo.to_string_lossy().into_owned() }).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({"proof": proof, "filed": filed}))?);
+            } else {
+                println!("{}", proof.report());
+                for s in &proof.shots {
+                    println!("screenshot {s}");
+                }
+                if !filed.is_empty() {
+                    println!("filed {}", filed.join(", "));
+                }
+            }
+            if proof.verdict == tessel_proto::proof::Verdict::Failed {
+                std::process::exit(1);
             }
         }
         "tidy" => {
@@ -779,6 +825,7 @@ async fn run() -> anyhow::Result<()> {
                         tessel_proto::proof::Check::Judge => "judge".to_owned(),
                         tessel_proto::proof::Check::Run { command } => format!("run `{command}`"),
                         tessel_proto::proof::Check::Match { .. } => "match".to_owned(),
+                        tessel_proto::proof::Check::Look => "look".to_owned(),
                         tessel_proto::proof::Check::Unknown => "?".to_owned(),
                     };
                     let from = if r.builtin { "built in".to_owned() } else { r.path.clone() };
@@ -786,6 +833,10 @@ async fn run() -> anyhow::Result<()> {
                 }
                 for k in &rulebook.knowledge {
                     println!("knowledge {:<18} {}  ({})", k.id, k.title, k.path);
+                }
+                for sc in &rulebook.scenarios {
+                    let how = sc.run.as_deref().map_or_else(|| "a tester".to_owned(), |r| format!("run `{r}`"));
+                    println!("scenario  {:<18} {}  ({how}, {})", sc.id, sc.title, if sc.holdout { "hidden" } else { sc.path.as_str() });
                 }
                 for v in &rulebook.verify {
                     println!("verify    {v}");
@@ -1494,6 +1545,61 @@ pub(crate) fn service_file(home: &std::path::Path, bin: &std::path::Path) -> (st
         let text = format!("[Unit]\nDescription=tessel daemon\n\n[Service]\nExecStart={bin}\nEnvironment=TESSEL_HOME={home}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n");
         (path, text)
     }
+}
+
+pub(crate) fn checkup_workflow(name: &str, repo: &str, every: &str) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_default();
+    format!(
+        "name: {}\nicon: stethoscope\ndescription: {}\nfolder: {}\non:\n  cron: {}\nsteps:\n  - checkup: {}\n",
+        q(&format!("Check {name}")),
+        q(&format!("Runs {name}'s checks, scenarios and screenshots on main, and files a task for each thing that broke")),
+        q(repo),
+        q(every),
+        q(repo)
+    )
+}
+
+fn chrome() -> Option<std::path::PathBuf> {
+    let mut found: Vec<std::path::PathBuf> = [
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    ]
+    .iter()
+    .map(std::path::PathBuf::from)
+    .collect();
+    for name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] {
+        if let Some(dir) = std::env::var_os("PATH") {
+            found.extend(std::env::split_paths(&dir).map(|d| d.join(name)));
+        }
+    }
+    found.into_iter().find(|p| p.is_file())
+}
+
+fn shot(url: &str, out: &std::path::Path, size: &str, wait_ms: u64) -> anyhow::Result<()> {
+    let browser = chrome().context("no Chrome, Chromium, Brave or Edge here to take it with")?;
+    let (w, h) = size.split_once('x').context("--size is WIDTHxHEIGHT")?;
+    let out = if out.is_absolute() { out.to_path_buf() } else { std::env::current_dir()?.join(out) };
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let profile = std::env::temp_dir().join(format!("tessel-shot-{}", std::process::id()));
+    std::fs::create_dir_all(&profile)?;
+    let status = std::process::Command::new(browser)
+        .args(["--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run", "--no-default-browser-check", "--force-device-scale-factor=2"])
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .arg(format!("--window-size={w},{h}"))
+        .arg(format!("--virtual-time-budget={wait_ms}"))
+        .arg(format!("--screenshot={}", out.display()))
+        .arg(url)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = std::fs::remove_dir_all(&profile);
+    anyhow::ensure!(status?.success() && out.is_file(), "the browser couldn't take it");
+    println!("{}", out.display());
+    Ok(())
 }
 
 pub(crate) fn tidy_workflow(name: &str, repo: &str, every: &str) -> String {

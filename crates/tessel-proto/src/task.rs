@@ -15,6 +15,7 @@ pub enum TaskState {
     Landed,
     Dropped,
     Planned,
+    Checking,
     #[serde(other)]
     Unknown,
 }
@@ -73,6 +74,8 @@ pub struct Task {
     pub risk: Option<Risk>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub landed: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }

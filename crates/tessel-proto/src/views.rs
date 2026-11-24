@@ -23,6 +23,17 @@ pub struct Metrics {
     pub cost_per_landed: f64,
     pub waste: f64,
     pub escaped: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lenses: Vec<Graded>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Graded {
+    pub lens: String,
+    pub found: u32,
+    pub refuted: u32,
+    pub fixed: u32,
+    pub ignored: u32,
 }
 
 pub fn format() -> String {

@@ -5,7 +5,7 @@ use tessel_proto::{Request, Response};
 
 const SECTIONS: [(&str, &[TaskState]); 5] = [
     ("Review", &[TaskState::Review]),
-    ("Working", &[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Planned]),
+    ("Working", &[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Checking, TaskState::Planned]),
     ("Up Next", &[TaskState::Ready]),
     ("Drafts", &[TaskState::Draft]),
     ("Landed", &[TaskState::Landed]),
@@ -122,7 +122,7 @@ impl Shell {
         let id = t.id.clone();
         let session = t.session;
         let summary = session.and_then(|s| self.model.sessions.iter().find(|x| x.id == s));
-        let working = matches!(t.state, TaskState::Running | TaskState::Proving | TaskState::Landing);
+        let working = matches!(t.state, TaskState::Running | TaskState::Proving | TaskState::Landing | TaskState::Checking);
         let status = match t.state {
             TaskState::Proving => "Proving".to_owned(),
             TaskState::Planned => {
@@ -132,6 +132,7 @@ impl Shell {
             }
             TaskState::Running if t.plan => "Planning".to_owned(),
             TaskState::Landing => "Landing".to_owned(),
+            TaskState::Checking => t.notes.iter().rev().find(|n| n.by == "tessel").map(|n| super::sentence(&n.text)).filter(|n| n.starts_with("Merging")).unwrap_or_else(|| "Waiting for its checks".into()),
             TaskState::Running => summary.and_then(|s| s.activity.clone()).unwrap_or_else(|| "Working".into()),
             TaskState::Review => t
                 .notes
@@ -170,6 +171,12 @@ impl Shell {
                     })));
             }
             _ => {}
+        }
+        if let Some(url) = t.pr.clone() {
+            actions = actions.child(button("pr").ghost().label("Pull Request").on_click(cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.open_url(&url);
+            })));
         }
         if !t.state.finished() && t.state != TaskState::Landing {
             let i = id.clone();

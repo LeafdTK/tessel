@@ -28,6 +28,7 @@ pub struct ReplayBackend {
     /// every one-off question asked, and the model it was asked of.
     pub asked: Arc<Mutex<Vec<(String, String)>>>,
     pub reviews: Arc<Mutex<Vec<(String, String)>>>,
+    pub jobs: Arc<Mutex<Vec<(String, bool, Vec<std::path::PathBuf>, bool)>>>,
     again: bool,
 }
 
@@ -42,6 +43,7 @@ impl ReplayBackend {
             spawned: Default::default(),
             asked: Default::default(),
             reviews: Default::default(),
+            jobs: Default::default(),
             again: false,
         }
     }
@@ -64,9 +66,11 @@ impl Backend for ReplayBackend {
         Box::pin(async { Ok("fix: what the replay agent would say".to_owned()) })
     }
 
-    fn review(&self, prompt: String, _cwd: std::path::PathBuf, model: &str) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::backend::Reviewed>> + Send>> {
+    fn job(&self, job: crate::backend::Job) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::backend::Reviewed>> + Send>> {
+        let prompt = job.prompt;
         let answer = self.reviews.lock().unwrap().iter().find(|(key, _)| prompt.contains(key.as_str())).map(|(_, a)| a.clone()).unwrap_or_else(|| "```json\n[]\n```".into());
-        self.asked.lock().unwrap().push((prompt, model.to_owned()));
+        self.jobs.lock().unwrap().push((job.tools, job.act, job.dirs, job.sandbox.is_some()));
+        self.asked.lock().unwrap().push((prompt, job.model));
         Box::pin(async move { Ok(crate::backend::Reviewed { text: answer, cost_usd: 0.01 }) })
     }
 

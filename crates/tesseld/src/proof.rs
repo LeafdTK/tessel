@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tessel_agent::Backend;
-use tessel_proto::proof::{Check, Finding, Knowledge, Proof, Reviewer, Rule, Rulebook, Severity, Verdict, Verified, Within};
+use tessel_proto::proof::{Check, Finding, Knowledge, Proof, Reviewer, Rule, Rulebook, Scenario, Severity, Tried, Verdict, Verified, Within};
 
 use crate::ship::git;
 
@@ -164,9 +164,13 @@ pub fn trimmed(output: &str) -> String {
 }
 
 pub async fn run_check(ws: &Path, command: &str, rule: Option<String>) -> Verified {
+    run_with(ws, command, rule, &[]).await
+}
+
+pub async fn run_with(ws: &Path, command: &str, rule: Option<String>, env: &[(&str, &str)]) -> Verified {
     let start = Instant::now();
     let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command]).current_dir(ws).env("PYTHONDONTWRITEBYTECODE", "1").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(["-c", command]).current_dir(ws).env("PYTHONDONTWRITEBYTECODE", "1").envs(env.iter().copied()).stdin(std::process::Stdio::null()).kill_on_drop(true);
     let (ok, output) = match tokio::time::timeout(std::time::Duration::from_secs(20 * 60), cmd.output()).await {
         Ok(Ok(o)) => {
             let mut all = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -361,9 +365,9 @@ pub fn verdict_word(p: &Proof) -> String {
 }
 
 pub fn verdict(p: &Proof) -> Verdict {
-    if p.verify.iter().any(|v| !v.ok) || p.standing().any(|f| f.severity == Severity::Block) {
+    if p.verify.iter().any(|v| !v.ok) || p.tried.iter().any(|t| !t.ok && !t.broken) || p.standing().any(|f| f.severity == Severity::Block) {
         Verdict::Failed
-    } else if p.standing().any(|f| f.severity == Severity::Warn) {
+    } else if p.standing().any(|f| f.severity == Severity::Warn) || p.tried.iter().any(|t| t.broken) {
         Verdict::Concerns
     } else if !p.reviewers.is_empty() && p.reviewers.iter().all(|r| r.error.is_some()) && p.verify.is_empty() {
         Verdict::Broken
@@ -394,7 +398,165 @@ pub fn model_for(cfg: &str, calls: &[Vec<String>], room: Room) -> &'static str {
     if room.used >= 0.8 && !room.anyway { "haiku" } else { picked }
 }
 
-pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, holdouts: Option<PathBuf>, ask: Ask, room: Room, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
+
+#[derive(Clone, Debug, Default)]
+pub struct Places {
+    pub holdouts: Option<PathBuf>,
+    pub shots: Option<PathBuf>,
+    pub home: PathBuf,
+    pub tessel_home: PathBuf,
+}
+
+pub fn big(c: &Change) -> bool {
+    c.changed > 60 || c.paths.len() > 4
+}
+
+pub fn pick_scenarios(cfg: &crate::rules::Config, all: &[Scenario], c: &Change, risky: bool) -> Vec<Scenario> {
+    use crate::rules::Scenarios;
+    all.iter()
+        .filter(|s| match cfg.scenarios {
+            Scenarios::Never => false,
+            Scenarios::Always => true,
+            Scenarios::Matching if s.paths.is_empty() => s.run.is_some() || big(c) || risky,
+            Scenarios::Matching => crate::rules::applies(&s.paths, &c.paths),
+        })
+        .cloned()
+        .collect()
+}
+
+pub fn looks(cfg: &crate::rules::Config, c: &Change) -> bool {
+    !cfg.look.is_empty() && (cfg.look_paths.is_empty() || crate::rules::applies(&cfg.look_paths, &c.paths))
+}
+
+pub fn collect_shots(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("png"))).collect();
+    out.sort();
+    out.truncate(12);
+    out
+}
+
+fn sev_word(s: &Severity) -> &'static str {
+    match s {
+        Severity::Block => "block",
+        Severity::Warn => "warn",
+        Severity::Note => "note",
+    }
+}
+
+pub fn look_prompt(ask: &Ask, change: &Change, shots: &[PathBuf], rules: &[&Rule]) -> String {
+    let mut p = String::from("You are looking at screenshots of a product after a change, to judge how it looks. Open each picture below with Read: it shows you the image. You can't change anything.\n");
+    p.push_str(&format!("\n## What was asked\n{}\n", ask.goal));
+    p.push_str(&format!("\n## What changed\n{}\n", change.paths.iter().take(30).cloned().collect::<Vec<_>>().join("\n")));
+    p.push_str("\n## The screens\n");
+    for s in shots {
+        p.push_str(&format!("- {}: {}\n", s.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(), s.display()));
+    }
+    p.push_str(
+        "\n## Look for\n\
+- what the change was meant to show: is it there, and does it look finished?\n\
+- text cut off, overlapping, or running out of its box\n\
+- controls cramped against each other or against their container's edge. Everything needs room to breathe; padding that is too tight is a real problem, not a preference\n\
+- things that should line up and don't, uneven spacing between things of the same kind\n\
+- empty, broken or placeholder states, and text too faint to read\n",
+    );
+    if !rules.is_empty() {
+        p.push_str("\n## House rules for how it looks\n");
+        for r in rules {
+            p.push_str(&format!("\n### `{}` ({}): {}\n{}\n", r.id, sev_word(&r.severity), r.title, r.body.chars().take(3000).collect::<String>()));
+        }
+    }
+    p.push_str(
+        "\n## Answer\nEnd with a JSON array in a ```json block, and nothing after it. One object per problem:\n\
+{\"lens\": \"look\", \"file\": \"the screen's file name\", \"severity\": \"block\" | \"warn\" | \"note\", \"rule\": \"rule id or null\", \"title\": \"under 80 characters\", \"why\": \"where on the screen, and what's wrong\"}\n\
+`block`: broken or unusable. `warn`: it should change before it lands. `note`: worth knowing. Only what you can see in the pictures. If it all looks right, answer `[]`.\n",
+    );
+    p
+}
+
+pub fn tester_prompt(sc: &Scenario, ask: &Ask, change: &Change) -> String {
+    format!(
+        "Check that this still works, the way someone using it would, on the code in this folder as it is now.\n\n\
+## The scenario: {}\n{}\n\n\
+## The change being checked\n{}\nFiles: {}\n\n\
+## How\n\
+Build and run what you need with Bash, and do what the scenario says. Don't edit, commit or delete the project's files: put anything you make in $TMPDIR. \
+Stop servers you start. If something can't be run here (a missing tool, no network to a service), say so: that isn't the change failing.\n\n\
+## Answer\nEnd with one ```json block and nothing after it: {{\"passed\": true | false | null, \"said\": \"what you did and saw, with the evidence: commands, output, what was on the page\"}}. \
+null means you couldn't tell.\n",
+        sc.title,
+        sc.body.chars().take(6000).collect::<String>(),
+        ask.goal,
+        change.paths.iter().take(30).cloned().collect::<Vec<_>>().join(", ")
+    )
+}
+
+pub fn parse_tried(sc: &Scenario, text: &str, cost_usd: f64, ms: u64) -> Tried {
+    let v = json_tail(text);
+    let passed = v.as_ref().and_then(|v| v.get("passed")).and_then(serde_json::Value::as_bool);
+    let said = v.as_ref().and_then(|v| v.get("said")).and_then(serde_json::Value::as_str).map(str::to_owned).unwrap_or_else(|| text.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect());
+    Tried { id: sc.id.clone(), title: sc.title.clone(), ok: passed == Some(true), said: said.chars().take(2000).collect(), ms, cost_usd, holdout: sc.holdout, broken: passed.is_none() }
+}
+
+struct Before {
+    stash: String,
+    untracked: Vec<String>,
+    status: String,
+}
+
+async fn remember(ws: &Path) -> Before {
+    Before {
+        stash: git(ws, &["stash", "create"]).await.unwrap_or_default(),
+        untracked: git(ws, &["ls-files", "--others", "--exclude-standard"]).await.unwrap_or_default().lines().map(str::to_owned).collect(),
+        status: format!("{}\n{}", git(ws, &["status", "--porcelain"]).await.unwrap_or_default(), git(ws, &["diff", "HEAD"]).await.unwrap_or_default()),
+    }
+}
+
+async fn put_back(ws: &Path, before: &Before) {
+    let now = format!("{}\n{}", git(ws, &["status", "--porcelain"]).await.unwrap_or_default(), git(ws, &["diff", "HEAD"]).await.unwrap_or_default());
+    if now == before.status {
+        return;
+    }
+    let _ = git(ws, &["reset", "-q", "--hard"]).await;
+    if !before.stash.is_empty() {
+        let _ = git(ws, &["stash", "apply", "-q", &before.stash]).await;
+    }
+    for f in git(ws, &["ls-files", "--others", "--exclude-standard"]).await.unwrap_or_default().lines() {
+        if !before.untracked.iter().any(|u| u == f) {
+            let _ = std::fs::remove_file(ws.join(f));
+        }
+    }
+}
+
+pub async fn try_scenario(backend: &Arc<dyn Backend>, ws: &Path, root: &Path, places: &Places, sc: &Scenario, ask: &Ask, change: &Change, model: &str) -> Tried {
+    let start = Instant::now();
+    let before = remember(ws).await;
+    let sandbox = cfg!(target_os = "macos").then(|| crate::sandbox::tester(ws, root, &places.home, &places.tessel_home));
+    let job = tessel_agent::backend::Job {
+        prompt: tester_prompt(sc, ask, change),
+        cwd: ws.to_path_buf(),
+        model: model.to_owned(),
+        tools: "Bash,Read,Grep,Glob".into(),
+        system: "You test software the way the person using it would, and report exactly what you saw. You never change the project's files.".into(),
+        dirs: Vec::new(),
+        sandbox,
+        act: true,
+        minutes: 15,
+    };
+    let got = backend.job(job).await;
+    put_back(ws, &before).await;
+    let ms = start.elapsed().as_millis() as u64;
+    match got {
+        Ok(r) => parse_tried(sc, &r.text, r.cost_usd, ms),
+        Err(e) => Tried { id: sc.id.clone(), title: sc.title.clone(), ok: false, said: format!("the tester couldn't finish: {e:#}"), ms, cost_usd: 0.0, holdout: sc.holdout, broken: true },
+    }
+}
+
+pub fn scripted(sc: &Scenario, v: Verified) -> Tried {
+    Tried { id: sc.id.clone(), title: sc.title.clone(), ok: v.ok, said: if v.ok { String::new() } else { format!("{}\n{}", v.command, v.output) }, ms: v.ms, cost_usd: 0.0, holdout: sc.holdout, broken: false }
+}
+
+pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places: Places, ask: Ask, room: Room, now: impl Fn() -> u64 + Send + Sync + 'static, tell: impl Fn(&Proof) + Send + Sync + 'static) -> Proof {
     let mut p = Proof { started_ms: now(), stage: "Reading the change".into(), ..Default::default() };
     tell(&p);
     let change = match change(&ws).await {
@@ -420,7 +582,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, holdou
         tell(&p);
         return p;
     }
-    let book: Rulebook = crate::rules::load_with(&ws, &root, holdouts.as_deref());
+    let book: Rulebook = crate::rules::load_with(&ws, &root, places.holdouts.as_deref());
     let cfg = crate::rules::config(&ws, &root);
     p.risky = !cfg.risk.is_empty() && crate::rules::applies(&cfg.risk, &change.paths);
     let mut rules: Vec<Rule> = book.rules.into_iter().filter(|r| r.check != Check::Unknown).collect();
@@ -449,27 +611,151 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, holdou
         return finish(p, Some("a house rule is broken: fix that first, and the reviewers look after"));
     }
 
+    let picked = pick_scenarios(&cfg, &book.scenarios, &change, p.risky);
+    let look_now = looks(&cfg, &change) && places.shots.is_some();
     let mut commands: Vec<(String, Option<String>)> = cfg.verify.iter().map(|c| (c.clone(), None)).collect();
     commands.extend(applying.iter().filter_map(|r| match &r.check {
         Check::Run { command } => Some((command.clone(), Some(r.id.clone()))),
         _ => None,
     }));
+    let lab = match &cfg.lab {
+        Some(name) if !commands.is_empty() || look_now || picked.iter().any(|s| s.run.is_some()) => {
+            p.stage = format!("Sending it to {name}");
+            tell(&p);
+            match crate::lab::Lab::open(&places.tessel_home, name, &ws, &cfg.lab_setup).await {
+                Ok(l) => {
+                    p.lab = Some(l.name.clone());
+                    Some(l)
+                }
+                Err(e) => return finish(p, Some(&format!("the lab {name} couldn't take it: {e}"))),
+            }
+        }
+        _ => None,
+    };
     for (command, rule) in commands {
         p.stage = format!("Running {command}");
         tell(&p);
-        p.verify.push(run_check(&ws, &command, rule).await);
+        let mut v = match &lab {
+            Some(l) => l.run(&command, &[]).await,
+            None => run_check(&ws, &command, None).await,
+        };
+        v.rule = rule;
+        p.verify.push(v);
         tell(&p);
     }
-    if p.verify.iter().any(|v| !v.ok) {
+    for sc in picked.iter().filter(|s| s.run.is_some()) {
+        let command = sc.run.clone().unwrap_or_default();
+        p.stage = format!("Trying {}", sc.title);
+        tell(&p);
+        let v = match &lab {
+            Some(l) => l.run(&command, &[]).await,
+            None => run_check(&ws, &command, None).await,
+        };
+        p.tried.push(scripted(sc, v));
+        tell(&p);
+    }
+    let mut shots = Vec::new();
+    if look_now && !p.verify.iter().any(|v| !v.ok) {
+        let dir = places.shots.clone().unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::create_dir_all(&dir);
+        for command in &cfg.look {
+            p.stage = "Taking screenshots".into();
+            tell(&p);
+            let v = match &lab {
+                Some(l) => l.run(&format!("mkdir -p {} && {command}", crate::lab::SHOTS), &[("TESSEL_SHOTS", &l.shots_dir())]).await,
+                None => run_with(&ws, command, None, &[("TESSEL_SHOTS", &dir.to_string_lossy())]).await,
+            };
+            if !v.ok {
+                p.verify.push(v);
+            }
+        }
+        shots = match &lab {
+            Some(l) => {
+                l.fetch_shots(&dir).await;
+                collect_shots(&dir)
+            }
+            None => collect_shots(&dir),
+        };
+        if shots.is_empty() && !p.verify.iter().any(|v| !v.ok) {
+            p.verify.push(Verified { command: cfg.look.join(" && "), ok: false, output: format!("it saved no PNG screenshots into $TESSEL_SHOTS ({})", dir.display()), ms: 0, rule: None });
+        }
+        p.shots = shots.iter().map(|s| s.to_string_lossy().into_owned()).collect();
+        tell(&p);
+    }
+    if let Some(l) = &lab {
+        l.close().await;
+    }
+    if p.verify.iter().any(|v| !v.ok) || p.tried.iter().any(|t| !t.ok) {
         return finish(p, Some("a check failed: fix that first, and the reviewers look after"));
     }
-
-    let judged = applying.iter().any(|r| r.check == Check::Judge);
-    let calls = panel(&cfg, &change, judged);
     if room.used >= 0.95 && !room.anyway {
         p.skipped = true;
         return finish(p, Some(&format!("reviewers skipped: your usage limit is at {:.0}%", room.used * 100.0)));
     }
+
+    if !shots.is_empty() {
+        p.stage = format!("Looking at {} screens", shots.len());
+        tell(&p);
+        let look_rules: Vec<&Rule> = applying.iter().filter(|r| r.check == Check::Look).collect();
+        let model = match cfg.model.as_str() {
+            "auto" | "haiku" | "sonnet" | "opus" if room.used >= 0.8 && !room.anyway => "haiku".to_owned(),
+            "auto" | "haiku" => "sonnet".to_owned(),
+            other => other.to_owned(),
+        };
+        let mut job = tessel_agent::backend::Job::review(look_prompt(&ask, &change, &shots, &look_rules), ws.clone(), &model);
+        job.tools = "Read".into();
+        job.system = "You judge how software looks from screenshots, like a careful designer. Be precise and brief.".into();
+        job.dirs = places.shots.iter().cloned().collect();
+        let names: Vec<String> = shots.iter().filter_map(|s| s.file_name().map(|n| n.to_string_lossy().into_owned())).collect();
+        let ids: Vec<String> = look_rules.iter().map(|r| r.id.clone()).collect();
+        let start = Instant::now();
+        let got = backend.job(job).await;
+        let ms = start.elapsed().as_millis() as u64;
+        match got {
+            Ok(r) => {
+                p.cost_usd += r.cost_usd;
+                match parse_findings(&["look".into()], &r.text, &names, &ids) {
+                    Ok(f) => {
+                        p.findings.extend(f.into_iter().map(|mut f| {
+                            f.confirmed = Some(true);
+                            f
+                        }));
+                        p.reviewers.push(Reviewer { lens: "look".into(), error: None, cost_usd: r.cost_usd, ms });
+                    }
+                    Err(e) => p.reviewers.push(Reviewer { lens: "look".into(), error: Some(e), cost_usd: r.cost_usd, ms }),
+                }
+            }
+            Err(e) => p.reviewers.push(Reviewer { lens: "look".into(), error: Some(format!("{e:#}")), cost_usd: 0.0, ms }),
+        }
+        tell(&p);
+        if p.findings.iter().any(|f| f.lens == "look" && f.severity == Severity::Block) {
+            return finish(p, Some("it looks broken: fix that first, and the reviewers look after"));
+        }
+    }
+
+    let testing: Vec<&Scenario> = picked.iter().filter(|s| s.run.is_none()).take(cfg.testers).collect();
+    if !testing.is_empty() {
+        let model = match cfg.model.as_str() {
+            _ if room.used >= 0.8 && !room.anyway => "haiku".to_owned(),
+            "auto" | "haiku" => "sonnet".to_owned(),
+            other => other.to_owned(),
+        };
+        for sc in testing {
+            p.stage = format!("Trying {}", sc.title);
+            tell(&p);
+            let t = try_scenario(&backend, &ws, &root, &places, sc, &ask, &change, &model).await;
+            p.cost_usd += t.cost_usd;
+            p.tried.push(t);
+            tell(&p);
+        }
+        if p.tried.iter().any(|t| !t.ok && !t.broken) {
+            return finish(p, Some("a scenario failed: fix that first, and the reviewers look after"));
+        }
+    }
+
+    let judged = applying.iter().any(|r| r.check == Check::Judge);
+    let calls = panel(&cfg, &change, judged);
     let model = match cfg.model.as_str() {
         "haiku" | "sonnet" | "opus" | "auto" => model_for(&cfg.model, &calls, room).to_owned(),
         custom => custom.to_owned(),
@@ -637,7 +923,7 @@ mod tests {
 
     #[test]
     fn the_panel_grows_with_the_change_and_its_risk() {
-        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "auto".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true, auto: false };
+        let cfg = |lenses: Option<Vec<String>>| crate::rules::Config { verify: vec![], model: "auto".into(), lenses, risk: crate::rules::RISK.iter().map(|s| (*s).to_owned()).collect(), starter: true, gate: true, auto: false, look: vec![], look_paths: vec![], scenarios: crate::rules::Scenarios::Matching, testers: 3, lab: None, lab_setup: vec![] };
         let change = |changed: usize, paths: &[&str]| Change { changed, paths: paths.iter().map(|p| (*p).to_owned()).collect(), ..Default::default() };
         let small = change(12, &["src/list.rs"]);
         assert_eq!(panel(&cfg(None), &small, false), vec![vec!["correctness".to_owned(), "scope".to_owned()]], "a small change is one reviewer");
@@ -666,6 +952,63 @@ mod tests {
         assert_eq!(model_for("auto", &full, Room { anyway: true, ..tight }), "sonnet");
         let w = |name: &str, used: f64, resets_at: Option<i64>| tessel_proto::UsageWindow { name: name.into(), used, resets_at, status: String::new() };
         assert_eq!(room(&[w("five_hour", 0.4, Some(100)), w("seven_day", 0.9, Some(50))], 60, false).used, 0.4, "a window that has started over doesn't count");
+    }
+
+    #[tokio::test]
+    async fn what_a_tester_changes_is_put_back_and_the_agent_s_own_work_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path();
+        let sh = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(ws).args(args).status().unwrap().success());
+        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"]] {
+            sh(a);
+        }
+        std::fs::write(ws.join("a.txt"), "one\n").unwrap();
+        std::fs::write(ws.join("b.txt"), "b\n").unwrap();
+        sh(&["add", "-A"]);
+        sh(&["commit", "-q", "-m", "start"]);
+        std::fs::write(ws.join("a.txt"), "agent's work\n").unwrap();
+        std::fs::write(ws.join("new.txt"), "agent's new file\n").unwrap();
+        let before = remember(ws).await;
+        std::fs::write(ws.join("a.txt"), "tester scribbled\n").unwrap();
+        std::fs::write(ws.join("b.txt"), "tester scribbled\n").unwrap();
+        std::fs::write(ws.join("junk.log"), "tester's\n").unwrap();
+        put_back(ws, &before).await;
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "agent's work\n");
+        assert_eq!(std::fs::read_to_string(ws.join("b.txt")).unwrap(), "b\n");
+        assert_eq!(std::fs::read_to_string(ws.join("new.txt")).unwrap(), "agent's new file\n");
+        assert!(!ws.join("junk.log").exists());
+    }
+
+    #[test]
+    fn free_scripts_always_run_and_testers_only_where_the_change_reaches() {
+        let sc = |id: &str, paths: &[&str], run: Option<&str>| Scenario { id: id.into(), title: id.into(), path: String::new(), paths: paths.iter().map(|p| (*p).to_owned()).collect(), run: run.map(str::to_owned), body: "x".into(), holdout: false };
+        let all = vec![sc("script", &[], Some("true")), sc("checkout", &["shop/**"], None), sc("anything", &[], None), sc("admin", &["admin/**"], None)];
+        let mut cfg = crate::rules::config(Path::new("/nowhere"), Path::new("/nowhere"));
+        let ids = |cfg: &crate::rules::Config, c: &Change, risky: bool| pick_scenarios(cfg, &all, c, risky).into_iter().map(|s| s.id).collect::<Vec<_>>();
+        let small = Change { changed: 10, paths: vec!["shop/cart.rs".into()], ..Default::default() };
+        assert_eq!(ids(&cfg, &small, false), vec!["script", "checkout"]);
+        assert_eq!(ids(&cfg, &small, true), vec!["script", "checkout", "anything"], "near auth, the general ones too");
+        assert_eq!(ids(&cfg, &Change { changed: 200, ..small.clone() }, false), vec!["script", "checkout", "anything"]);
+        cfg.scenarios = crate::rules::Scenarios::Never;
+        assert!(ids(&cfg, &small, true).is_empty());
+        cfg.scenarios = crate::rules::Scenarios::Always;
+        assert_eq!(ids(&cfg, &small, false).len(), 4);
+        cfg.look = vec!["shots".into()];
+        cfg.look_paths = vec!["ui/**".into()];
+        assert!(!looks(&cfg, &small) && looks(&cfg, &Change { paths: vec!["ui/board.rs".into()], ..small }));
+    }
+
+    #[test]
+    fn a_tester_s_answer_is_passed_failed_or_couldn_t_tell() {
+        let sc = Scenario { id: "pay".into(), title: "Pay".into(), path: String::new(), paths: vec![], run: None, body: String::new(), holdout: true };
+        let t = parse_tried(&sc, "did it\n```json\n{\"passed\": false, \"said\": \"500\"}\n```", 0.02, 9);
+        assert!(!t.ok && !t.broken && t.said == "500" && t.holdout);
+        assert!(parse_tried(&sc, "```json\n{\"passed\": true, \"said\": \"ok\"}\n```", 0.0, 1).ok);
+        let unsure = parse_tried(&sc, "```json\n{\"passed\": null, \"said\": \"no network\"}\n```", 0.0, 1);
+        assert!(!unsure.ok && unsure.broken);
+        let p = Proof { tried: vec![unsure], ..Default::default() };
+        assert_eq!(verdict(&p), Verdict::Concerns, "couldn't tell isn't a failure, but it isn't proven either");
+        assert!(tester_prompt(&sc, &Ask { goal: "add coupons".into(), said: vec![] }, &Change::default()).contains("Don't edit, commit or delete"));
     }
 
     #[test]

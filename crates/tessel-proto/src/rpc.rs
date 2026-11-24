@@ -280,6 +280,12 @@ pub enum Request {
     TaskList,
     Views,
     Metrics,
+    Checkup {
+        repo: String,
+    },
+    Shot {
+        path: String,
+    },
     Triggers,
     TriggerFire {
         workflow: String,
@@ -890,6 +896,15 @@ pub enum Response {
     },
     Metrics {
         metrics: crate::views::Metrics,
+    },
+    Shot {
+        path: String,
+        png: String,
+    },
+    Checkup {
+        proof: crate::proof::Proof,
+        #[serde(default)]
+        filed: Vec<String>,
     },
     Keys {
         keys: Vec<crate::keys::KeyInfo>,

@@ -77,6 +77,7 @@ impl Hub {
             budget_usd,
             risk: None,
             landed: None,
+            pr: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -138,8 +139,17 @@ impl Hub {
                 if t.state != TaskState::Review {
                     return refuse("it lands from review");
                 }
-                self.tasks.get_mut(id).unwrap().state = TaskState::Landing;
-                self.land_queue.push_back(id.to_owned());
+                match t.pr.clone() {
+                    Some(url) if t.notes.iter().rev().find(|n| n.by == "tessel").is_some_and(|n| n.text.starts_with("its checks passed")) => {
+                        self.tasks.get_mut(id).unwrap().state = TaskState::Checking;
+                        self.note(id, "tessel", "merging its pull request");
+                        self.merge_pr(id, url);
+                    }
+                    _ => {
+                        self.tasks.get_mut(id).unwrap().state = TaskState::Landing;
+                        self.land_queue.push_back(id.to_owned());
+                    }
+                }
             }
             TaskAct::Change { text } => {
                 if text.trim().is_empty() {
@@ -363,12 +373,13 @@ impl Hub {
                 continue;
             };
             let root = std::path::PathBuf::from(&t.repo);
+            let pr = t.pr.clone();
             let verify = crate::rules::config(std::path::Path::new(&ws), &root).verify;
             let mode = board::factory(std::path::Path::new(&ws), &root).land;
             self.landing = Some(id.clone());
             let (tx, backend) = (self.tx.clone(), self.backend.clone());
             tokio::spawn(async move {
-                let result = crate::land::land(backend, std::path::Path::new(&ws), &root, &t.title, &verify, mode).await;
+                let result = crate::land::land(backend, std::path::Path::new(&ws), &root, &t.title, &verify, mode, pr.as_deref()).await;
                 let _ = tx.send(HubMsg::Landed { task: id, result });
             });
             return;
@@ -386,12 +397,14 @@ impl Hub {
                 t.state = TaskState::Landed;
                 t.landed = Some(sha);
                 self.note(&id, "tessel", said);
+                self.grade_landed(&id);
             }
             Ok(Landed::Opened { url, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
-                t.state = TaskState::Landed;
-                t.landed = Some(url);
-                self.note(&id, "tessel", said);
+                t.state = TaskState::Checking;
+                t.pr = Some(url);
+                self.ci_polled.remove(&id);
+                self.note(&id, "tessel", format!("{said} Waiting for its checks."));
             }
             Err(stuck) => {
                 let (said, ask) = match stuck {
@@ -421,7 +434,162 @@ impl Hub {
         self.pump_land();
     }
 
+    fn grade_landed(&mut self, id: &str) {
+        let Some(t) = self.tasks.get(id) else { return };
+        let Some(proof) = t.session.and_then(|s| self.sessions.get(&s)).and_then(|l| l.state.proof.clone()) else { return };
+        let mut book = crate::grades::load(&self.cfg.paths.home);
+        crate::grades::landed(&mut book, &t.repo, &proof);
+        crate::grades::save(&self.cfg.paths.home, &book);
+    }
+
+    fn merge_pr(&mut self, id: &str, url: String) {
+        let Some(t) = self.tasks.get(id) else { return };
+        self.ci_busy.insert(id.to_owned());
+        let (tx, repo, task) = (self.tx.clone(), std::path::PathBuf::from(&t.repo), id.to_owned());
+        tokio::spawn(async move {
+            let result = crate::ci::merge(&repo, &url).await;
+            let _ = tx.send(HubMsg::Ci { task, result, why: String::new() });
+        });
+    }
+
+    fn poll_ci(&mut self) {
+        let due: Vec<(String, String, String)> = self
+            .tasks
+            .values()
+            .filter(|t| t.state == TaskState::Checking && !self.ci_busy.contains(&t.id))
+            .filter(|t| self.ci_polled.get(&t.id).is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(60)))
+            .filter_map(|t| Some((t.id.clone(), t.repo.clone(), t.pr.clone()?)))
+            .collect();
+        for (id, repo, url) in due {
+            self.ci_polled.insert(id.clone(), std::time::Instant::now());
+            self.ci_busy.insert(id.clone());
+            let tx = self.tx.clone();
+            tokio::spawn(async move {
+                let repo = std::path::PathBuf::from(repo);
+                let result = crate::ci::poll(&repo, &url).await;
+                let why = match &result {
+                    Ok(crate::ci::Ci::Failed(failed)) => crate::ci::why(&repo, failed).await,
+                    _ => String::new(),
+                };
+                let _ = tx.send(HubMsg::Ci { task: id, result, why });
+            });
+        }
+    }
+
+    pub(super) fn task_ci(&mut self, id: String, result: Result<crate::ci::Ci, String>, why: String) {
+        use crate::ci::Ci;
+        self.ci_busy.remove(&id);
+        let Some(t) = self.tasks.get(&id).cloned() else { return };
+        if t.state != TaskState::Checking {
+            return;
+        }
+        match result {
+            Err(e) => {
+                if t.notes.last().is_none_or(|n| !n.text.starts_with("couldn't ask GitHub")) {
+                    self.note(&id, "tessel", format!("couldn't ask GitHub about its pull request: {e}"));
+                }
+            }
+            Ok(Ci::Pending) => return,
+            Ok(Ci::Merged(sha)) => {
+                let task = self.tasks.get_mut(&id).unwrap();
+                task.state = TaskState::Landed;
+                task.landed = Some(if sha.is_empty() { task.pr.clone().unwrap_or_default() } else { sha });
+                self.note(&id, "tessel", "Merged its pull request.");
+                self.grade_landed(&id);
+                if let Some(p) = t.parent.clone() {
+                    self.task_saved(&id);
+                    self.parent_progress(&p);
+                }
+            }
+            Ok(Ci::Closed) => {
+                self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                self.note(&id, "tessel", "its pull request was closed");
+            }
+            Ok(Ci::Passed) => {
+                let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
+                if f.auto_land && t.risk == Some(tessel_proto::task::Risk::Low) {
+                    self.note(&id, "tessel", "its checks passed: merging");
+                    self.merge_pr(&id, t.pr.clone().unwrap_or_default());
+                } else {
+                    self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                    self.note(&id, "tessel", "its checks passed: Land merges it");
+                }
+            }
+            Ok(Ci::Failed(failed)) => {
+                let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
+                let names: Vec<String> = failed.iter().map(|(n, _)| n.clone()).collect();
+                let sent = t.attempts < f.fix_rounds
+                    && t.session.is_some_and(|s| {
+                        self.tell_agent(
+                            s,
+                            format!("The pull request's checks failed on GitHub:\n\n{why}\n\nFix it, commit, then stop: it's checked and pushed again."),
+                        )
+                    });
+                if sent {
+                    let t = self.tasks.get_mut(&id).unwrap();
+                    t.attempts += 1;
+                    t.state = TaskState::Running;
+                    self.note(&id, "tessel", format!("its checks failed ({}): sent back to fix", names.join(", ")));
+                } else {
+                    self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
+                    self.note(&id, "tessel", format!("its checks failed on GitHub: {}", names.join(", ")));
+                }
+            }
+        }
+        self.task_saved(&id);
+        self.dispatch();
+    }
+
+    pub(super) fn checkup(&mut self, repo: &str, reply: Option<(ClientId, u64)>) -> Result<(), RpcError> {
+        let path = std::path::Path::new(repo);
+        if !path.is_dir() {
+            return Err(RpcError::new(ErrorCode::Invalid, format!("{repo} isn't a folder here")));
+        }
+        let root = board::repo_root(path);
+        let key = root.to_string_lossy().into_owned();
+        if !self.checkups.insert(key.clone()) {
+            return Err(RpcError::new(ErrorCode::Conflict, "a checkup of it is running already"));
+        }
+        let places = crate::proof::Places {
+            holdouts: Some(crate::rules::holdouts(&self.cfg.paths.home, &root)),
+            shots: Some(self.cfg.paths.home.join("shots").join(format!("checkup-{}", root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))),
+            home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+            tessel_home: self.cfg.paths.home.clone(),
+        };
+        let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, false);
+        let (tx, backend) = (self.tx.clone(), self.backend.clone());
+        tokio::spawn(async move {
+            let (proof, failures) = crate::checkup::run(backend, root, places, room, now_ms).await;
+            let _ = tx.send(HubMsg::CheckedUp { repo: key, proof: Box::new(proof), failures, reply });
+        });
+        Ok(())
+    }
+
+    pub(super) fn checked_up(&mut self, repo: String, proof: tessel_proto::proof::Proof, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)>) {
+        self.checkups.remove(&repo);
+        let _ = std::fs::create_dir_all(self.cfg.paths.home.join("checkups"));
+        let name = std::path::Path::new(&repo).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let Ok(b) = serde_json::to_vec_pretty(&proof) {
+            let _ = std::fs::write(self.cfg.paths.home.join("checkups").join(format!("{name}.json")), b);
+        }
+        let f = board::factory(std::path::Path::new(&repo), std::path::Path::new(&repo));
+        let mut filed = Vec::new();
+        for fail in failures {
+            let open = self.tasks.values().any(|t| t.repo == repo && !t.state.finished() && t.title == fail.title);
+            if open || filed.len() >= 5 {
+                continue;
+            }
+            if let Ok(Response::Task { task }) = self.task_create(repo.clone(), fail.title, fail.spec, Vec::new(), None, f.checkup_ready, None, false) {
+                filed.push(task.id);
+            }
+        }
+        if let Some((client, id)) = reply {
+            self.respond(client, id, Ok(Response::Checkup { proof, filed }));
+        }
+    }
+
     pub(super) fn tasks_tick(&mut self) {
+        self.poll_ci();
         let over: Vec<(String, SessionId)> = self
             .tasks
             .values()

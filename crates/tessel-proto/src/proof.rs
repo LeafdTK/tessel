@@ -27,6 +27,7 @@ pub enum Check {
     Judge,
     Run { command: String },
     Match { pattern: String, within: Within, must: bool },
+    Look,
     #[serde(other)]
     Unknown,
 }
@@ -61,12 +62,46 @@ pub struct Knowledge {
     pub body: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Scenario {
+    pub id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holdout: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tried {
+    pub id: String,
+    pub title: String,
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub said: String,
+    pub ms: u64,
+    #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub holdout: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub broken: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rulebook {
     #[serde(default)]
     pub rules: Vec<Rule>,
     #[serde(default)]
     pub knowledge: Vec<Knowledge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scenarios: Vec<Scenario>,
     #[serde(default)]
     pub guidance: Vec<String>,
     #[serde(default)]
@@ -154,6 +189,12 @@ pub struct Proof {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviewers: Vec<Reviewer>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tried: Vec<Tried>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lab: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub knowledge: Vec<String>,
@@ -173,7 +214,7 @@ pub struct Proof {
 
 impl Proof {
     pub fn blocking(&self) -> usize {
-        self.findings.iter().filter(|f| f.severity == Severity::Block && f.confirmed != Some(false)).count() + self.verify.iter().filter(|v| !v.ok).count()
+        self.findings.iter().filter(|f| f.severity == Severity::Block && f.confirmed != Some(false)).count() + self.verify.iter().filter(|v| !v.ok).count() + self.tried.iter().filter(|t| !t.ok && !t.broken).count()
     }
 
     pub fn standing(&self) -> impl Iterator<Item = &Finding> {
@@ -201,6 +242,16 @@ impl Proof {
                     out.push_str(&format!("    {l}\n"));
                 }
             }
+        }
+        for t in &self.tried {
+            let mark = if t.ok { "✓" } else if t.broken { "?" } else { "✗" };
+            out.push_str(&format!("{mark} scenario {}\n", t.title));
+            if !t.ok && !t.said.is_empty() {
+                out.push_str(&format!("    {}\n", t.said.replace('\n', "\n    ")));
+            }
+        }
+        if !self.shots.is_empty() {
+            out.push_str(&format!("looked at {} screenshots\n", self.shots.len()));
         }
         for f in self.standing() {
             let sev = match f.severity {
@@ -236,6 +287,9 @@ pub const RULE_FORMAT: &str = "House rules live in the repository's .tessel/ fol
   A rule with only words is judged by a reviewer, who cites the file and line. Two kinds are checked without a model, and are cheaper:\n\
   run: <command>   (passes when the command exits 0, like a linter)\n\
   pattern: '<regex>' in single quotes, with within: added | subjects | paths   (added lines and paths must not match; commit subjects must)\n\
+  check: look   (judged on screenshots of the running product, for how things look: spacing, alignment, clipped text. needs [proof] look)\n\
+- .tessel/scenarios/<id>.md: something a user does that must keep working, checked by running it. paths: says which changes it's for (leave out for any big change). \
+With run: <command> it's a script that passes when it exits 0; without, a tester follows the steps written under the header in a sandbox and reports what happened. Write the steps and what you expect to see.\n\
 - .tessel/knowledge/<id>.md: how part of the system works and why, what is allowed and what isn't, with examples. paths: in its header says when it's relevant. Reviewers and agents read it when a change touches those paths.\n\
-- .tessel/settings.toml [proof]: verify = [\"fast, reliable commands\"], risk = [\"globs that get every reviewer\"], auto = true to check each turn's change by itself.\n\
+- .tessel/settings.toml [proof]: verify = [\"fast, reliable commands\"], risk = [\"globs that get every reviewer\"], auto = true to check each turn's change by itself, look = [\"commands that save screenshots as PNGs into $TESSEL_SHOTS\"] with look_paths = [\"globs\"] for when to take them.\n\
 Prefer a run or pattern rule when a command or a regex can check it. Keep each rule to one idea.";

@@ -46,6 +46,25 @@ fn main() {
                 print!("{}", tessel::ui::harmony::check_text(&result));
                 std::process::exit(if result.is_ok() { 0 } else { 1 });
             }
+            "--shots" => {
+                let Some(dir) = args.next() else {
+                    eprintln!("tessel: --shots needs a folder");
+                    std::process::exit(2);
+                };
+                let dark = launch.dark == Some(true);
+                match tessel::shots::run(std::path::Path::new(&dir), dark) {
+                    Ok(saved) => {
+                        for p in saved {
+                            println!("{}", p.display());
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        eprintln!("tessel: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
             "--bench-motion" => launch.bench_motion = true,
             "--bench-term" => launch.bench_term = true,
             "--dark" => launch.dark = Some(true),

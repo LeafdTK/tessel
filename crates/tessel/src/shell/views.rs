@@ -18,7 +18,8 @@ pub(crate) fn factory_view() -> Value {
             metric("Reverted later", "factory.escaped")
         ]},
         {"k": "card", "p": {"title": "Spent each day"}, "c": [{"k": "bars", "p": {"bind": "cost.daily", "unit": "$"}}]},
-        {"k": "card", "p": {"title": "Waiting on you"}, "c": [{"k": "table", "p": {"bind": "tasks.review"}}]}
+        {"k": "card", "p": {"title": "Waiting on you"}, "c": [{"k": "table", "p": {"bind": "tasks.review"}}]},
+        {"k": "card", "p": {"title": "Reviewers"}, "c": [{"k": "table", "p": {"bind": "factory.reviewers"}}]}
     ]})
 }
 
@@ -116,6 +117,17 @@ impl Shell {
                     "metric" => put("value", json!(money(by_day.last().map_or(0.0, |d| d.1)))),
                     "line" => put("points", json!(by_day.iter().map(|d| d.1).collect::<Vec<_>>())),
                     _ => put("items", json!(by_day.iter().map(|(l, v)| json!({"label": l, "value": v})).collect::<Vec<_>>())),
+                }
+            }
+            "factory.reviewers" => {
+                let m = self.metrics.clone().unwrap_or_default();
+                let pct = |n: u32, of: u32| if of == 0 { "–".to_owned() } else { format!("{:.0}%", f64::from(n) * 100.0 / f64::from(of)) };
+                match kind {
+                    "metric" => put("value", json!(m.lenses.iter().map(|g| g.found).sum::<u32>())),
+                    _ => {
+                        put("columns", json!(["Lens", "Found", "Refuted", "Fixed", "Landed anyway"]));
+                        put("rows", json!(m.lenses.iter().map(|g| json!([g.lens, g.found, pct(g.refuted, g.found), pct(g.fixed, g.found), pct(g.ignored, g.found)])).collect::<Vec<_>>()));
+                    }
                 }
             }
             b if b.starts_with("factory.") => {

@@ -242,6 +242,24 @@ impl Shell {
         )
     }
 
+    pub(crate) fn shot_answer(&mut self, result: Result<tessel_proto::Response, String>) {
+        use base64::Engine as _;
+        if let Ok(tessel_proto::Response::Shot { path, png }) = result {
+            let image = base64::engine::general_purpose::STANDARD.decode(png).ok().map(|b| std::sync::Arc::new(Image::from_bytes(ImageFormat::Png, b)));
+            self.shots.insert(path, image);
+        }
+    }
+
+    pub(crate) fn want_shots(&mut self) {
+        let Some(proof) = self.model.open_summary().and_then(|s| s.proof.clone()) else { return };
+        for path in proof.shots {
+            if !std::path::Path::new(&path).is_file() && !self.shots.contains_key(&path) {
+                self.shots.insert(path.clone(), None);
+                self.cmd(Cmd::Ask { tag: "shot", req: Request::Shot { path } });
+            }
+        }
+    }
+
     pub(crate) fn proof_section(&self, cx: &mut Context<Self>) -> Option<Div> {
         let s = self.model.open_summary()?;
         if !self.factory_on() && s.proof.is_none() {
@@ -300,6 +318,60 @@ impl Shell {
                 col = col.child(div().mx_3().mb_2().p_2().rounded(px(theme::R_TILE)).bg(p.fill).set(Type::Code).text_color(p.secondary).child(tail.join("\n")));
             }
         }
+        for (ix, t) in proof.tried.iter().enumerate() {
+            let (glyph, color) = if t.ok { ("✓", p.secondary) } else if t.broken { ("?", p.blocked) } else { ("✕", p.failed) };
+            col = col.child(
+                v_flex()
+                    .id(("proof-tried", ix))
+                    .mx_1()
+                    .px_2()
+                    .py(px(4.))
+                    .gap(px(4.))
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().w(px(12.)).flex_shrink_0().set(Type::Callout).text_color(color).child(glyph))
+                            .child(div().flex_1().min_w_0().set(Type::Callout).text_color(p.label).truncate().child(t.title.clone()))
+                            .when(t.holdout, |d| d.child(div().flex_shrink_0().px(px(6.)).rounded(px(8.)).bg(p.fill).set(Type::Subheadline).text_color(p.secondary).child("hidden"))),
+                    )
+                    .when(!t.ok && !t.said.is_empty(), |d| d.child(div().pl(px(20.)).set(Type::Subheadline).text_color(p.secondary).child(t.said.chars().take(600).collect::<String>()))),
+            );
+        }
+        if !proof.shots.is_empty() {
+            let mut row = h_flex().px_3().py_2().gap_2().flex_wrap();
+            for (ix, path) in proof.shots.iter().enumerate() {
+                let name = std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let local = std::path::Path::new(path).is_file();
+                let picture: Option<ImageSource> = if local {
+                    Some(std::path::PathBuf::from(path).into())
+                } else {
+                    self.shots.get(path).cloned().flatten().map(ImageSource::from)
+                };
+                let open = path.clone();
+                row = row.child(
+                    v_flex()
+                        .id(("proof-shot", ix))
+                        .test_support()
+                        .aria_label(SharedString::from(name.clone()))
+                        .w(px(150.))
+                        .gap(px(4.))
+                        .when(local, |d| d.cursor_pointer().on_click(move |_, _, cx| cx.open_with_system(std::path::Path::new(&open))))
+                        .child(
+                            div()
+                                .h(px(94.))
+                                .w_full()
+                                .rounded(px(theme::R_TILE))
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(p.separator)
+                                .bg(p.fill)
+                                .when_some(picture, |d, src| d.child(img(src).size_full().object_fit(ObjectFit::Cover))),
+                        )
+                        .child(div().set(Type::Subheadline).text_color(p.secondary).truncate().child(name)),
+                );
+            }
+            col = col.child(row);
+        }
         let standing: Vec<_> = proof.standing().collect();
         for (ix, f) in standing.iter().enumerate() {
             let (glyph, color) = match f.severity {
@@ -342,6 +414,7 @@ impl Shell {
                                     Button::new(ElementId::from(SharedString::from(format!("proof-rule-{ix}"))))
                                         .small()
                                         .ghost()
+                                        .my(px(-5.))
                                         .label("Make a Rule")
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.stop_propagation();

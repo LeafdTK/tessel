@@ -91,6 +91,8 @@ pub enum HubMsg {
     Seen { key: String, workflow: String, cwd: Option<String>, files: std::collections::BTreeMap<String, u128> },
     Labeled { workflow: String, cwd: Option<String>, trigger: String, issues: Vec<serde_json::Value> },
     Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
+    Ci { task: String, result: Result<crate::ci::Ci, String>, why: String },
+    CheckedUp { repo: String, proof: Box<tessel_proto::proof::Proof>, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -247,6 +249,9 @@ pub struct Hub {
     tasks: std::collections::BTreeMap<String, tessel_proto::task::Task>,
     land_queue: std::collections::VecDeque<String>,
     landing: Option<String>,
+    ci_polled: HashMap<String, std::time::Instant>,
+    ci_busy: HashSet<String>,
+    checkups: HashSet<String>,
     egress: Option<crate::egress::Egress>,
     triggers: triggers_state::State,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
@@ -345,6 +350,9 @@ impl Hub {
             tasks: Default::default(),
             land_queue: Default::default(),
             landing: None,
+            ci_polled: Default::default(),
+            ci_busy: Default::default(),
+            checkups: Default::default(),
             egress: None,
             triggers: Default::default(),
             asks: HashMap::new(),
@@ -711,6 +719,8 @@ impl Hub {
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
             HubMsg::Landed { task, result } => self.task_landed(task, result),
+            HubMsg::Ci { task, result, why } => self.task_ci(task, result, why),
+            HubMsg::CheckedUp { repo, proof, failures, reply } => self.checked_up(repo, *proof, failures, reply),
             HubMsg::Seen { key, workflow, cwd, files } => self.files_seen(key, workflow, cwd, files),
             HubMsg::Labeled { workflow, cwd, trigger, issues } => self.labeled(workflow, cwd, trigger, issues),
             HubMsg::ProofIdle { session } => {
@@ -719,6 +729,13 @@ impl Hub {
             HubMsg::Proof { session, proof } => {
                 if proof.verdict.done() {
                     self.proving.remove(&session);
+                    if let Some(live) = self.sessions.get(&session) {
+                        let repo = live.state.meta.worktree.as_ref().map_or_else(|| live.state.meta.cwd.clone(), |w| w.repo.clone());
+                        let before = live.state.proof.as_ref().filter(|p| p.verdict.done());
+                        let mut book = crate::grades::load(&self.cfg.paths.home);
+                        crate::grades::proved(&mut book, &repo, before, &proof);
+                        crate::grades::save(&self.cfg.paths.home, &book);
+                    }
                     self.task_proved(session, &proof);
                 }
                 if let Ok(body) = serde_json::to_string(&proof) {
@@ -1516,7 +1533,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::Metrics => {
                 let tasks: Vec<tessel_proto::task::Task> = self.tasks.values().cloned().collect();
                 let costs: HashMap<String, f64> = tasks.iter().map(|t| (t.id.clone(), t.proof_cost_usd + t.session.and_then(|s| self.sessions.get(&s)).map_or(0.0, |l| l.state.cost_usd()))).collect();
-                let tx = self.tx.clone();
+                let (tx, home) = (self.tx.clone(), self.cfg.paths.home.clone());
                 tokio::spawn(async move {
                     let mut repos: Vec<String> = tasks.iter().filter(|t| t.landed.is_some()).map(|t| t.repo.clone()).collect();
                     repos.sort();
@@ -1525,12 +1542,30 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     for r in repos {
                         reverted.extend(crate::views::reverted(Path::new(&r)).await);
                     }
-                    let metrics = crate::views::metrics(&tasks, |t| costs.get(&t.id).copied().unwrap_or(0.0), &reverted);
+                    let mut metrics = crate::views::metrics(&tasks, |t| costs.get(&t.id).copied().unwrap_or(0.0), &reverted);
+                    metrics.lenses = crate::grades::all(&crate::grades::load(&home));
                     let _ = tx.send(HubMsg::Reply { client, id, result: Ok(Response::Metrics { metrics }) });
                 });
                 return None;
             }
             Request::TriggerFire { workflow, event, cwd } => self.fire_by_hand(&workflow, event, cwd),
+            Request::Checkup { repo } => match self.checkup(&repo, Some((client, id))) {
+                Ok(()) => return None,
+                Err(e) => Err(e),
+            },
+            Request::Shot { path } => {
+                let shots = std::fs::canonicalize(self.cfg.paths.home.join("shots")).unwrap_or_else(|_| self.cfg.paths.home.join("shots"));
+                match std::fs::canonicalize(&path) {
+                    Ok(p) if p.starts_with(&shots) && p.extension().is_some_and(|e| e == "png") => match std::fs::read(&p) {
+                        Ok(bytes) => {
+                            use base64::Engine as _;
+                            Ok(Response::Shot { path: path.clone(), png: base64::engine::general_purpose::STANDARD.encode(bytes) })
+                        }
+                        Err(e) => Err(RpcError::new(ErrorCode::NotFound, e.to_string())),
+                    },
+                    _ => Err(RpcError::new(ErrorCode::NotFound, "there's no such screenshot")),
+                }
+            }
             Request::Keys => Ok(self.keys_response()),
             Request::KeySet { key, value } => self.key_set(key, value),
             Request::KeyRemove { name } => self.key_remove(&name),
@@ -2407,7 +2442,12 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let last = live.state.proof.as_ref().map(|p| p.fingerprint.clone());
         self.proving.insert(session);
         let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, anyway);
-        let holdouts = crate::rules::holdouts(&self.cfg.paths.home, &root);
+        let places = crate::proof::Places {
+            holdouts: Some(crate::rules::holdouts(&self.cfg.paths.home, &root)),
+            shots: Some(self.cfg.paths.home.join("shots").join(session.to_string())),
+            home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
+            tessel_home: self.cfg.paths.home.clone(),
+        };
         let (tx, backend) = (self.tx.clone(), self.backend.clone());
         tokio::spawn(async move {
             if only_if_changed {
@@ -2423,7 +2463,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             let tell = move |p: &tessel_proto::proof::Proof| {
                 let _ = tx.send(HubMsg::Proof { session, proof: Box::new(p.clone()) });
             };
-            crate::proof::prove(backend, ws, root, Some(holdouts), ask, room, now_ms, tell).await;
+            crate::proof::prove(backend, ws, root, places, ask, room, now_ms, tell).await;
         });
     }
 
@@ -2725,6 +2765,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                     Err(e) => problem = Some(e.message),
                 }
             }
+            StepDoes::Checkup(repo) => match self.checkup(&render(repo), None) {
+                Ok(()) => filed = Some("Started a checkup: anything broken becomes a task.".to_owned()),
+                Err(e) => problem = Some(e.message),
+            },
             StepDoes::Shell(cmd) => match self.open_term(Some(session), rl.folder.clone(), vec![render(cmd)], 120, 32, false) {
                 Ok(info) => term = Some(info.id),
                 Err(e) => problem = Some(e.message),

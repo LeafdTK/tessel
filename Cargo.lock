@@ -9055,6 +9055,7 @@ dependencies = [
  "tessel-agent",
  "tessel-client",
  "tessel-proto",
+ "tessel-remote",
  "tessel-term",
  "tokio",
  "tokio-rustls",

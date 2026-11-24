@@ -96,6 +96,35 @@ pub struct Released {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct Job {
+    pub prompt: String,
+    pub cwd: PathBuf,
+    pub model: String,
+    pub tools: String,
+    pub system: String,
+    pub dirs: Vec<PathBuf>,
+    pub sandbox: Option<String>,
+    pub act: bool,
+    pub minutes: u64,
+}
+
+impl Job {
+    pub fn review(prompt: String, cwd: PathBuf, model: &str) -> Job {
+        Job {
+            prompt,
+            cwd,
+            model: model.to_owned(),
+            tools: "Read,Grep,Glob".into(),
+            system: "You review code changes in this repository. You can read files with Read, Grep and Glob; you can't change anything. Be precise and brief.".into(),
+            dirs: Vec::new(),
+            sandbox: None,
+            act: false,
+            minutes: 15,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct Reviewed {
     pub text: String,
     pub cost_usd: f64,
@@ -118,7 +147,10 @@ pub trait Backend: Send + Sync + 'static {
         Box::pin(async { anyhow::bail!("this agent can't answer one-off questions") })
     }
     fn review(&self, prompt: String, cwd: PathBuf, model: &str) -> Pin<Box<dyn Future<Output = anyhow::Result<Reviewed>> + Send>> {
-        let _ = (prompt, cwd, model);
+        self.job(Job::review(prompt, cwd, model))
+    }
+    fn job(&self, job: Job) -> Pin<Box<dyn Future<Output = anyhow::Result<Reviewed>> + Send>> {
+        let _ = job;
         Box::pin(async { anyhow::bail!("this agent can't review") })
     }
     /// take over an agent another daemon let go of, carrying on where it was.

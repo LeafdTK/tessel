@@ -179,6 +179,7 @@ pub enum StepDoes {
     Ask(String),
     Shell(String),
     Task(String),
+    Checkup(String),
     #[serde(other)]
     Unknown,
 }
@@ -247,6 +248,7 @@ pub const FORMAT: &str = "A tessel workflow is a YAML file: a recipe that runs f
 - inputs: a map of id to {label, type, options, optional, placeholder, default}. types: select, multiselect, text, long, toggle, date, file (select when it has options). options are a list ([a, b] or [{value, label}]), or {tool: server.tool, args: {...}, label: \"{{name}}\", value: \"{{id}}\", keep: 1d} to fill them by calling one of the person's MCP tools directly (fast, no model), or {ask: \"a prompt\"} to have a small model list them. an input whose options mention another input ({{course}}) loads once that one is picked.\n\
 - steps: a list. each is a prompt (a string, or {prompt: ...}), {ask: ...} (you ask the person and wait for the answers), or {shell: a command}. a step may add id, name, fresh: true (a new tab, told what came before), doc: true (its final message is the run's document, saved and shown), model, effort.\n\
 - or {task: a title, repo: a folder, spec: what to do}: files a task on the board for an agent to do in a workspace of its own, proved before it lands. it's how a workflow that runs on its own changes code.\n\
+- or {checkup: a folder}: runs the repository's checks, scenarios and screenshots on its main branch, and files a task for each thing that broke. made for a nightly `on: {cron: \"0 3 * * *\"}`.\n\
 - on (optional, runs it by itself; its inputs need defaults): {cron: \"0 9 * * 1-5\"} (local time), {files: {in: a folder, paths: [globs]}}, {github: {repo: owner/name, label: a label}} (new issues with it). what started it is {{event.title}}, {{event.body}}, {{event.url}}, {{event.files}}.\n\
 - templates in any text: {{input}} is its value, {{input.label}} what the person saw, {{steps.id.text}} an earlier step's final message.\n\
 Keep it short: few inputs, few steps, and put what made a good result into the prompts themselves.";

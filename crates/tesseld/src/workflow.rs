@@ -6,7 +6,7 @@ use tessel_proto::{Choice, Input, InputKind, Options, Pick, Step, StepDoes, Work
 
 const TOP: [&str; 11] = ["name", "icon", "description", "say", "title", "folder", "model", "effort", "inputs", "steps", "on"];
 const INPUT_KEYS: [&str; 6] = ["label", "type", "optional", "options", "placeholder", "default"];
-const STEP_KEYS: [&str; 12] = ["id", "name", "prompt", "ask", "shell", "task", "repo", "spec", "fresh", "doc", "model", "effort"];
+const STEP_KEYS: [&str; 13] = ["id", "name", "prompt", "ask", "shell", "task", "checkup", "repo", "spec", "fresh", "doc", "model", "effort"];
 
 pub fn dir(home: &Path) -> PathBuf {
     home.join("workflows")
@@ -51,7 +51,7 @@ pub fn parse(id: &str, path: &str, text: &str) -> Result<Workflow, String> {
     texts.extend(w.title.iter().map(|t| ("title".to_owned(), t.clone())));
     texts.extend(w.folder.iter().map(|t| ("folder".to_owned(), t.clone())));
     for s in &w.steps {
-        if let StepDoes::Prompt(t) | StepDoes::Ask(t) | StepDoes::Shell(t) | StepDoes::Task(t) = &s.does {
+        if let StepDoes::Prompt(t) | StepDoes::Ask(t) | StepDoes::Shell(t) | StepDoes::Task(t) | StepDoes::Checkup(t) = &s.does {
             texts.push((format!("step \"{}\"", s.name), t.clone()));
         }
         for t in s.spec.iter().chain(s.repo.iter()) {
@@ -241,6 +241,7 @@ fn steps(v: &Yaml, problems: &mut Vec<String>) -> Vec<Step> {
                         "ask" => does.push(StepDoes::Ask(text_of(v))),
                         "shell" => does.push(StepDoes::Shell(text_of(v))),
                         "task" => does.push(StepDoes::Task(text_of(v))),
+                        "checkup" => does.push(StepDoes::Checkup(text_of(v))),
                         "repo" => step.repo = Some(text_of(v)),
                         "spec" => step.spec = Some(text_of(v)),
                         "fresh" => step.fresh = v.as_bool().unwrap_or(false),
@@ -263,6 +264,7 @@ fn steps(v: &Yaml, problems: &mut Vec<String>) -> Vec<Step> {
                 StepDoes::Ask(_) => "Questions".to_owned(),
                 StepDoes::Shell(c) => c.split_whitespace().next().map_or_else(|| "Run".to_owned(), |w| format!("Run {w}")),
                 StepDoes::Task(t) => format!("File: {}", name_from(t)),
+                StepDoes::Checkup(r) => format!("Check {}", std::path::Path::new(r.trim()).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
                 StepDoes::Prompt(t) => name_from(t),
                 StepDoes::Unknown => format!("Step {}", n + 1),
             };

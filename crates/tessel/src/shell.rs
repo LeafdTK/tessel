@@ -329,6 +329,7 @@ pub struct Shell {
     pub(crate) changing_task: Option<String>,
     pub(crate) saved_views: Vec<tessel_proto::views::View>,
     pub(crate) metrics: Option<tessel_proto::views::Metrics>,
+    pub(crate) shots: std::collections::HashMap<String, Option<std::sync::Arc<gpui_kit::Image>>>,
     pub(crate) view_shown: String,
     pub(crate) making_view: bool,
     /// a folder on a dev box, being browsed: where, its folders, whether it's a repository.
@@ -663,6 +664,7 @@ impl Shell {
                     for ev in batch {
                         this.apply(ev, cx);
                     }
+                    this.want_shots();
                     // commands from scripts run as soon as they arrive, with the window to hand.
                     if !this.ui_calls.is_empty() {
                         this.run_ui_calls(window, cx);
@@ -847,6 +849,7 @@ impl Shell {
             changing_task: None,
             saved_views: Vec::new(),
             metrics: None,
+            shots: Default::default(),
             view_shown: "factory".into(),
             making_view: false,
             host_folders: None,
@@ -1288,6 +1291,7 @@ impl Shell {
             UiEvent::Answer { tag: "keys", result } => self.keys_answer(result),
             UiEvent::Answer { tag: "views", result } => self.views_answer(result),
             UiEvent::Answer { tag: "metrics", result } => self.metrics_answer(result),
+            UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),

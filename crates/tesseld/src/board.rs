@@ -15,6 +15,7 @@ pub struct Factory {
     pub land: Land,
     pub auto_land: bool,
     pub fix_rounds: u32,
+    pub checkup_ready: bool,
 }
 
 pub fn factory(workspace: &Path, root: &Path) -> Factory {
@@ -29,6 +30,7 @@ pub fn factory(workspace: &Path, root: &Path) -> Factory {
         },
         auto_land: get("auto_land").and_then(toml::Value::as_bool).unwrap_or(false),
         fix_rounds: get("fix_rounds").and_then(toml::Value::as_integer).map_or(2, |n| n.clamp(0, 5) as u32),
+        checkup_ready: get("checkup").and_then(toml::Value::as_str) != Some("draft"),
     }
 }
 
@@ -148,6 +150,7 @@ mod tests {
             budget_usd: None,
             risk: None,
             landed: None,
+            pr: None,
             created_ms: at,
             updated_ms: at,
         }
@@ -183,7 +186,7 @@ mod tests {
 
     #[test]
     fn a_failed_proof_goes_back_to_the_agent_a_few_times_then_to_you() {
-        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2 };
+        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2, checkup_ready: true };
         let failed = Proof { verdict: Verdict::Failed, ..Default::default() };
         let mut t = task("a", TaskState::Proving, &[], 0);
         assert!(matches!(after_proof(&t, &failed, &f), Next::Fix(m) if m.contains("Fix the ones that are real")));
@@ -196,7 +199,7 @@ mod tests {
 
     #[test]
     fn only_a_small_clean_proven_change_lands_by_itself_and_only_when_asked_to() {
-        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2 };
+        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2, checkup_ready: true };
         let t = task("a", TaskState::Proving, &[], 0);
         let clean = Proof { verdict: Verdict::Proven, files: 2, ..Default::default() };
         assert_eq!(risk(&clean), Risk::Low);

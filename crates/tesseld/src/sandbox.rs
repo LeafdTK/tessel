@@ -24,6 +24,14 @@ fn real(p: &Path) -> PathBuf {
 }
 
 pub fn profile(work: &Path, repo: &Path, home: &Path, tessel_home: &Path) -> String {
+    profile_with(work, repo, home, tessel_home, false)
+}
+
+pub fn tester(work: &Path, repo: &Path, home: &Path, tessel_home: &Path) -> String {
+    profile_with(work, repo, home, tessel_home, true)
+}
+
+fn profile_with(work: &Path, repo: &Path, home: &Path, tessel_home: &Path, net: bool) -> String {
     let writable: Vec<PathBuf> = [
         real(work),
         real(&repo.join(".git")),
@@ -51,7 +59,11 @@ pub fn profile(work: &Path, repo: &Path, home: &Path, tessel_home: &Path) -> Str
     ]
     .into_iter()
     .collect();
-    let mut p = String::from("(version 1)\n(allow default)\n(deny network*)\n(allow network* (remote ip \"localhost:*\"))\n(allow network-outbound (remote unix-socket))\n(allow network-bind (local ip \"*:*\"))\n(allow network-inbound (local ip \"*:*\"))\n(deny file-write*)\n(allow file-write*\n");
+    let mut p = String::from("(version 1)\n(allow default)\n");
+    if !net {
+        p.push_str("(deny network*)\n(allow network* (remote ip \"localhost:*\"))\n(allow network-outbound (remote unix-socket))\n(allow network-bind (local ip \"*:*\"))\n(allow network-inbound (local ip \"*:*\"))\n");
+    }
+    p.push_str("(deny file-write*)\n(allow file-write*\n");
     for w in &writable {
         p.push_str(&format!("  (subpath {})\n", quoted(w)));
     }

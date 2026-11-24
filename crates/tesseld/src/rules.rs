@@ -2,10 +2,11 @@ use globset::{Glob, GlobSetBuilder};
 use serde_yaml_ng::Value as Yaml;
 use std::collections::BTreeMap;
 use std::path::Path;
-use tessel_proto::proof::{Check, Knowledge, Rule, Rulebook, Severity, Within};
+use tessel_proto::proof::{Check, Knowledge, Rule, Rulebook, Scenario, Severity, Within};
 
 pub const RULES: &str = ".tessel/rules";
 pub const KNOWLEDGE: &str = ".tessel/knowledge";
+pub const SCENARIOS: &str = ".tessel/scenarios";
 const GUIDANCE: [&str; 4] = ["AGENTS.md", "CLAUDE.md", ".cursor/rules", ".claude/rules"];
 const RULE_KEYS: [&str; 9] = ["id", "title", "paths", "check", "severity", "run", "pattern", "within", "must"];
 
@@ -18,6 +19,19 @@ pub struct Config {
     pub starter: bool,
     pub gate: bool,
     pub auto: bool,
+    pub look: Vec<String>,
+    pub look_paths: Vec<String>,
+    pub scenarios: Scenarios,
+    pub testers: usize,
+    pub lab: Option<String>,
+    pub lab_setup: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scenarios {
+    Matching,
+    Always,
+    Never,
 }
 
 pub const RISK: [&str; 12] = [
@@ -45,6 +59,16 @@ pub fn config(workspace: &Path, root: &Path) -> Config {
         starter: get("starter").and_then(toml::Value::as_bool).unwrap_or(true),
         gate: get("gate").and_then(toml::Value::as_bool).unwrap_or(true),
         auto: get("auto").and_then(toml::Value::as_bool).unwrap_or(false),
+        look: list(get("look")).unwrap_or_default(),
+        look_paths: list(get("look_paths")).unwrap_or_default(),
+        scenarios: match get("scenarios").and_then(toml::Value::as_str) {
+            Some("always") => Scenarios::Always,
+            Some("never") | Some("off") => Scenarios::Never,
+            _ => Scenarios::Matching,
+        },
+        testers: get("testers").and_then(toml::Value::as_integer).map_or(3, |n| n.clamp(0, 10) as usize),
+        lab: get("lab").and_then(toml::Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
+        lab_setup: list(get("lab_setup")).unwrap_or_default(),
     }
 }
 
@@ -61,6 +85,7 @@ pub fn load_with(workspace: &Path, root: &Path, holdouts: Option<&Path>) -> Rule
     let mut book = Rulebook { verify: cfg.verify.clone(), ..Default::default() };
     let mut rules: BTreeMap<String, Rule> = BTreeMap::new();
     let mut knowledge: BTreeMap<String, Knowledge> = BTreeMap::new();
+    let mut scenarios: BTreeMap<String, Scenario> = BTreeMap::new();
     if cfg.starter {
         for r in starter() {
             rules.insert(r.id.clone(), r);
@@ -83,6 +108,14 @@ pub fn load_with(workspace: &Path, root: &Path, holdouts: Option<&Path>) -> Rule
             let k = parse_knowledge(&stem(&path), &rel(dir, &path), &text);
             knowledge.insert(k.id.clone(), k);
         }
+        for (path, text) in md_files(&dir.join(SCENARIOS)) {
+            match parse_scenario(&stem(&path), &rel(dir, &path), &text) {
+                Ok(sc) => {
+                    scenarios.insert(sc.id.clone(), sc);
+                }
+                Err(e) => book.problems.push(format!("{}: {e}", rel(dir, &path))),
+            }
+        }
     }
     if let Some(dir) = holdouts {
         for (path, text) in md_files(dir) {
@@ -90,6 +123,15 @@ pub fn load_with(workspace: &Path, root: &Path, holdouts: Option<&Path>) -> Rule
                 Ok(mut r) => {
                     r.holdout = true;
                     rules.insert(r.id.clone(), r);
+                }
+                Err(e) => book.problems.push(format!("holdout {}: {e}", path.display())),
+            }
+        }
+        for (path, text) in md_files(&dir.join("scenarios")) {
+            match parse_scenario(&stem(&path), &format!("holdout/scenarios/{}", path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()), &text) {
+                Ok(mut sc) => {
+                    sc.holdout = true;
+                    scenarios.insert(sc.id.clone(), sc);
                 }
                 Err(e) => book.problems.push(format!("holdout {}: {e}", path.display())),
             }
@@ -107,7 +149,35 @@ pub fn load_with(workspace: &Path, root: &Path, holdouts: Option<&Path>) -> Rule
     }
     book.rules = rules.into_values().collect();
     book.knowledge = knowledge.into_values().collect();
+    book.scenarios = scenarios.into_values().collect();
     book
+}
+
+pub fn parse_scenario(stem: &str, path: &str, raw: &str) -> Result<Scenario, String> {
+    let (fm, body) = front(raw);
+    let map = match fm {
+        Some(fm) => match serde_yaml_ng::from_str::<Yaml>(fm) {
+            Ok(Yaml::Mapping(m)) => m,
+            Ok(Yaml::Null) => Default::default(),
+            Ok(_) => return Err("its header should be keys like `paths:` and `run:`".into()),
+            Err(e) => plain_header(fm).ok_or_else(|| format!("its header isn't valid yaml: {e}"))?,
+        },
+        None => Default::default(),
+    };
+    let get = |k: &str| map.get(Yaml::String(k.to_owned()));
+    for k in map.keys().filter_map(|k| k.as_str()) {
+        if !["id", "title", "paths", "run"].contains(&k) {
+            return Err(format!("\"{k}\" isn't something a scenario has. it has: id, title, paths, run"));
+        }
+    }
+    let id = text(get("id")).unwrap_or_else(|| stem.to_owned());
+    let body = body.trim().to_owned();
+    let run = text(get("run"));
+    if run.is_none() && body.is_empty() {
+        return Err("it says nothing: write the steps and what you expect under the header, or give it `run:`".into());
+    }
+    let title = text(get("title")).unwrap_or_else(|| title_of(&body, &id));
+    Ok(Scenario { id, title, path: path.to_owned(), paths: strings(get("paths")), run, body, holdout: false })
 }
 
 fn md_files(dir: &Path) -> Vec<(std::path::PathBuf, String)> {
@@ -218,13 +288,19 @@ pub fn parse_rule(stem: &str, path: &str, raw: &str) -> Result<Rule, String> {
             Check::Match { pattern, within, must }
         }
         (Some("match"), None, None) => return Err("a `check: match` rule needs `pattern:`".into()),
+        (Some("look"), _, _) => {
+            if body.is_empty() {
+                return Err("it says nothing: write how things should look under the header".into());
+            }
+            Check::Look
+        }
         (Some("judge") | None, _, _) => {
             if body.is_empty() {
                 return Err("it says nothing: write what the rule is under the header".into());
             }
             Check::Judge
         }
-        (Some(other), _, _) => return Err(format!("check \"{other}\" isn't one: judge, run or match")),
+        (Some(other), _, _) => return Err(format!("check \"{other}\" isn't one: judge, run, match or look")),
     };
     let title = text(get("title")).or_else(|| text(get("description"))).unwrap_or_else(|| title_of(&body, &id));
     Ok(Rule { id, title, path: path.to_owned(), paths, check, severity, body, builtin: false, holdout: false })
@@ -377,6 +453,30 @@ mod tests {
         assert!(parse_rule("x", "", "---\nseverity: maybe\n---\nhm").unwrap_err().contains("severity"));
         assert!(parse_rule("x", "", "---\npaths: a\n---\n").unwrap_err().contains("says nothing"));
         assert!(parse_rule("x", "", "---\nscope: x\n---\nbody").unwrap_err().contains("\"scope\""));
+    }
+
+    #[test]
+    fn scenarios_and_look_rules_are_read_from_the_repository_and_the_hidden_folder() {
+        let repo = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(SCENARIOS)).unwrap();
+        std::fs::create_dir_all(repo.path().join(RULES)).unwrap();
+        std::fs::write(repo.path().join(SCENARIOS).join("export.md"), "---\nrun: ./e2e/export.sh\npaths: [\"src/export/**\"]\n---\n").unwrap();
+        std::fs::write(repo.path().join(SCENARIOS).join("login.md"), "# Logging in\nOpen the app, log in, see the dashboard.\n").unwrap();
+        std::fs::write(repo.path().join(SCENARIOS).join("empty.md"), "---\npaths: x\n---\n").unwrap();
+        std::fs::write(repo.path().join(SCENARIOS).join("typo.md"), "---\nrunn: x\n---\nhi\n").unwrap();
+        std::fs::write(repo.path().join(RULES).join("roomy.md"), "---\ncheck: look\n---\nEverything gets room to breathe.\n").unwrap();
+        let hidden = holdouts(home.path(), repo.path()).join("scenarios");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("refund.md"), "# Refunds\nRefund an order.\n").unwrap();
+        let book = load_with(repo.path(), repo.path(), Some(&holdouts(home.path(), repo.path())));
+        let get = |id: &str| book.scenarios.iter().find(|s| s.id == id).unwrap();
+        assert_eq!((get("export").run.as_deref(), get("export").paths.clone()), (Some("./e2e/export.sh"), vec!["src/export/**".to_owned()]));
+        assert_eq!(get("login").title, "Logging in");
+        assert!(get("refund").holdout && get("refund").path.starts_with("holdout/"));
+        assert!(book.problems.iter().any(|p| p.contains("empty.md") && p.contains("says nothing")));
+        assert!(book.problems.iter().any(|p| p.contains("\"runn\"")));
+        assert_eq!(book.rules.iter().find(|r| r.id == "roomy").unwrap().check, Check::Look);
     }
 
     #[test]

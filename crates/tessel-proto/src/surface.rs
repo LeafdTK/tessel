@@ -168,6 +168,7 @@ pub const SOURCES: &[(&str, &str)] = &[
     ("factory.cost_per_landed", "what a landed task cost, on average"),
     ("factory.waste", "spent on tasks that were dropped"),
     ("factory.escaped", "landed tasks that were reverted later"),
+    ("factory.reviewers", "each reviewer lens: what it found, and how much of it was refuted, fixed or ignored"),
 ];
 
 pub fn source_known(bind: &str) -> bool {
