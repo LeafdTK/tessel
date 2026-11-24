@@ -45,8 +45,8 @@ impl Shell {
     }
 
     pub(crate) fn add_task(&mut self, ready: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let title = self.task_title.read(cx).value().trim().to_owned();
-        if title.is_empty() {
+        let text = self.task_title.read(cx).value().trim().to_owned();
+        if text.is_empty() && self.board_attachments.is_empty() {
             return;
         }
         let Some(repo) = self.board_repo() else {
@@ -54,13 +54,79 @@ impl Shell {
             cx.notify();
             return;
         };
-        let req = if is_issue(&title) {
-            Request::TaskFromIssue { repo, issue: title, ready }
-        } else {
-            Request::TaskCreate { repo, title, spec: String::new(), deps: Vec::new(), parent: None, ready, budget_usd: None, plan: false, from: None }
+        let attachments = std::mem::take(&mut self.board_attachments);
+        let files = std::mem::take(&mut self.board_files);
+        let with_files = |mut spec: String| {
+            if !files.is_empty() {
+                if !spec.is_empty() {
+                    spec.push_str("\n\n");
+                }
+                spec.push_str(&format!("Look at: {}", files.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", ")));
+            }
+            spec
         };
-        self.cmd(Cmd::Ask { tag: "task", req });
+        let create = |title: String, spec: String, plan: bool, attachments: Vec<Attachment>| Request::TaskCreate { repo: repo.clone(), title, spec, deps: Vec::new(), parent: None, ready, budget_usd: None, plan, from: None, attachments };
+        match split_tasks(&text) {
+            Split::Issue(issue) => self.cmd(Cmd::Ask { tag: "task", req: Request::TaskFromIssue { repo: repo.clone(), issue, ready } }),
+            Split::One(title) => self.cmd(Cmd::Ask { tag: "task", req: create(if title.is_empty() { "Look at the attached".into() } else { title }, with_files(String::new()), false, attachments) }),
+            Split::Plan { title, spec } => self.cmd(Cmd::Ask { tag: "task", req: create(title, with_files(spec), true, attachments) }),
+            Split::List { context, items } => {
+                for (i, item) in items.into_iter().enumerate() {
+                    let spec = with_files(if context.is_empty() { String::new() } else { format!("Context for this and the tasks filed with it:\n{context}") });
+                    self.cmd(Cmd::Ask { tag: "task", req: create(item, spec, false, if i == 0 { attachments.clone() } else { Vec::new() }) });
+                }
+            }
+        }
         self.task_title.update(cx, |s, cx| s.set_value("", window, cx));
+        cx.notify();
+    }
+
+    pub(crate) fn board_paste(&mut self, item: &ClipboardItem, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some(paths) = crate::drops::clipboard_files() {
+            self.board_attach_paths(paths, cx);
+            return true;
+        }
+        let mut took = false;
+        for entry in item.entries() {
+            if let ClipboardEntry::Image(image) = entry {
+                let media = match image.format {
+                    ImageFormat::Png => "image/png",
+                    ImageFormat::Jpeg => "image/jpeg",
+                    ImageFormat::Gif => "image/gif",
+                    ImageFormat::Webp => "image/webp",
+                    _ => continue,
+                };
+                if image.bytes.len() as u64 > super::composer::MAX_IMAGE {
+                    self.error = Some("That image is too big to attach.".into());
+                } else {
+                    use base64::Engine as _;
+                    let n = self.board_attachments.len() + 1;
+                    self.board_attachments.push(Attachment { name: format!("Pasted image {n}.{}", media.rsplit('/').next().unwrap_or("png")), media_type: media.into(), data: base64::engine::general_purpose::STANDARD.encode(&image.bytes), element: None });
+                }
+                took = true;
+            }
+        }
+        let _ = window;
+        cx.notify();
+        took
+    }
+
+    pub(crate) fn board_attach_paths(&mut self, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
+        use base64::Engine as _;
+        for path in paths {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+            match super::composer::media_type(&path) {
+                Some(media) => match std::fs::read(&path) {
+                    Ok(bytes) if bytes.len() as u64 <= super::composer::MAX_IMAGE * 4 => {
+                        self.board_attachments.push(Attachment { name, media_type: media.into(), data: base64::engine::general_purpose::STANDARD.encode(bytes), element: None });
+                    }
+                    Ok(_) => self.error = Some(format!("{name} is too big to attach.")),
+                    Err(e) => self.error = Some(format!("Couldn't read {name}: {e}.")),
+                },
+                None if self.on_host() => self.error = Some(format!("{name} is on this Mac, not on the box: attach pictures and PDFs, or put the file in the project.")),
+                None => self.board_files.push(path.to_string_lossy().into_owned()),
+            }
+        }
         cx.notify();
     }
 
@@ -96,24 +162,61 @@ impl Shell {
     pub(crate) fn board_el(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
         let glass = crate::glass::liquid();
-        let composer = h_flex()
+        let typed = self.task_title.read(cx).value().to_string();
+        let (start_label, draft_label) = match split_tasks(&typed) {
+            Split::List { items, .. } => (format!("Start {} Tasks", items.len()), format!("Draft {}", items.len())),
+            Split::Plan { .. } => ("Plan It".to_owned(), "Draft Plan".to_owned()),
+            _ => ("Start".to_owned(), "Draft".to_owned()),
+        };
+        let (start_label, draft_label) = (start_label.as_str(), draft_label.as_str());
+        let mut chips = h_flex().flex_wrap().gap(theme::z(8.));
+        for (i, a) in self.board_attachments.iter().enumerate() {
+            chips = chips.child(self.board_chip(&p, format!("board-att-{i}"), "image", a.name.clone(), cx.listener(move |this, _, _, cx| {
+                if i < this.board_attachments.len() {
+                    this.board_attachments.remove(i);
+                }
+                cx.notify();
+            })));
+        }
+        for (i, f) in self.board_files.iter().enumerate() {
+            let name = std::path::Path::new(f).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.clone());
+            chips = chips.child(self.board_chip(&p, format!("board-file-{i}"), "file-text", name, cx.listener(move |this, _, _, cx| {
+                if i < this.board_files.len() {
+                    this.board_files.remove(i);
+                }
+                cx.notify();
+            })));
+        }
+        let has_chips = !self.board_attachments.is_empty() || !self.board_files.is_empty();
+        let field = div().w_full().px(theme::z(6.)).text_size(theme::z(16.)).line_height(theme::z(23.)).child({
+            let me = cx.entity().downgrade();
+            gpui_kit::component::input::Textarea::new(&self.task_title).appearance(false).on_paste(move |item, window, cx| me.update(cx, |this, cx| this.board_paste(item, window, cx)).unwrap_or(false))
+        });
+        let controls = h_flex()
             .w_full()
-            .min_h(theme::z(64.))
-            .pl(theme::z(18.))
-            .pr(theme::z(12.))
-            .py(theme::z(12.))
-            .gap(theme::z(14.))
+            .gap(theme::z(8.))
             .items_center()
-            .rounded(px(theme::R_CARD + 2.))
+            .child(self.board_picker(cx))
+            .child(self.rules_button(cx))
+            .child(self.issues_button(cx))
+            .child(div().flex_1())
+            .child(big_button(&p, "task-draft", draft_label, theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
+            .child(big_button(&p, "task-start", start_label, theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx))));
+        let composer = v_flex()
+            .w_full()
+            .pt(theme::z(18.))
+            .pb(theme::z(12.))
+            .px(theme::z(12.))
+            .gap(theme::z(14.))
+            .rounded(px(theme::R_CARD + 4.))
             .border_1()
             .border_color(p.separator)
             .when(!glass, |d| d.bg(p.raised).shadow_md())
-            .when(glass, |d| d.relative().child(super::glass_spot(theme::R_CARD + 2.)))
-            .child(self.board_picker(cx))
-            .child(div().flex_1().min_w_0().text_size(theme::z(15.)).child(Input::new(&self.task_title).id("task-title").appearance(false)))
-            .child(self.issues_button(cx))
-            .child(big_button(&p, "task-draft", "Draft", theme::ButtonKind::Secondary, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
-            .child(big_button(&p, "task-start", "Start", theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx))));
+            .when(glass, |d| d.relative().child(super::glass_spot(theme::R_CARD + 4.)))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| this.board_attach_paths(paths.paths().to_vec(), cx)))
+            .child(field)
+            .when(has_chips, |d| d.child(div().px(theme::z(6.)).child(chips)))
+            .child(controls);
         let mut body = v_flex().w_full().max_w(theme::z(920.)).mx_auto().px(theme::z(28.)).pt(theme::z(24.)).pb(theme::z(40.)).child(composer);
         let mut any = false;
         for (title, states) in SECTIONS {
@@ -249,6 +352,130 @@ impl Shell {
                 }),
             )
             .child(popover)
+            .into_any_element()
+    }
+
+    pub(crate) fn board_rules_answer(&mut self, result: Result<Response, String>) {
+        if let Some((_, slot)) = &mut self.board_rules {
+            *slot = Some(match result {
+                Ok(Response::Rules { rulebook }) => Ok(rulebook),
+                Ok(_) => Err("the answer didn't make sense".into()),
+                Err(e) => Err(e),
+            });
+        }
+    }
+
+    pub(crate) fn teach_board(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.board_teach.read(cx).value().trim().to_owned();
+        let Some(repo) = self.board_repo() else { return };
+        if text.is_empty() {
+            return;
+        }
+        self.board_teach.update(cx, |s, cx| s.set_value("", window, cx));
+        self.cmd(Cmd::Create { cwd: repo, worktree: false, prompt: super::proof::teach_prompt(&text), attachments: Vec::new(), model: Some("sonnet".into()) });
+        cx.notify();
+    }
+
+    fn rules_button(&self, cx: &mut Context<Self>) -> AnyElement {
+        let me = cx.entity().downgrade();
+        let popover = Popover::new("board-rules-popover")
+            .p_0()
+            .anchor(Anchor::TopRight)
+            .trigger(
+                super::composer::tool_button("board-rules")
+                    .flex_shrink_0()
+                    .h(theme::z(34.))
+                    .px(theme::z(12.))
+                    .rounded(theme::z(theme::R_CONTROL))
+                    .child(h_flex().gap(theme::z(7.)).items_center().child(Icon::empty().path("icons/scale.svg").size(theme::z(15.))).child(div().text_size(theme::z(13.5)).font_weight(FontWeight::MEDIUM).child("Rules"))),
+            )
+            .content(move |_, _, cx| {
+                let Some(shell) = me.upgrade() else { return div().into_any_element() };
+                let this = shell.read(cx);
+                let p = this.palette.get();
+                let mut list = theme::float_list(&p).w(px(460.));
+                let Some((repo, got)) = this.board_rules.clone() else { return list.into_any_element() };
+                list = list.child(theme::float_label(&p, &format!("House rules for {}", super::projects::folder_name(&repo))));
+                let quiet = |t: String| div().px(theme::z(10.)).py(theme::z(10.)).set(Type::Callout).text_color(p.secondary).child(t);
+                match got {
+                    None => list = list.child(quiet("Reading them…".into())),
+                    Some(Err(e)) => list = list.child(quiet(e)),
+                    Some(Ok(book)) => {
+                        let mut rows = v_flex().id("board-rule-list").max_h(px(300.)).overflow_y_scroll();
+                        let mine: Vec<&tessel_proto::proof::Rule> = book.rules.iter().filter(|r| !r.builtin).collect();
+                        if mine.is_empty() && book.knowledge.is_empty() {
+                            rows = rows.child(quiet("None yet. Every change still gets the built-in checks: no secrets, no skipped tests, the commit style.".into()));
+                        }
+                        let row = |title: String, kind: &'static str, path: String| {
+                            h_flex()
+                                .min_h(theme::z(40.))
+                                .px(theme::z(10.))
+                                .gap(theme::z(10.))
+                                .child(div().w(theme::z(70.)).flex_shrink_0().set(Type::Subheadline).text_color(p.secondary).child(kind))
+                                .child(v_flex().flex_1().min_w_0().child(div().truncate().set(Type::Body).text_color(p.label).child(title)).child(div().truncate().set(Type::Subheadline).text_color(p.tertiary).child(path)))
+                        };
+                        for r in mine {
+                            let kind = match r.check {
+                                tessel_proto::proof::Check::Judge => "Reviewed",
+                                tessel_proto::proof::Check::Run { .. } => "Command",
+                                tessel_proto::proof::Check::Match { .. } => "Pattern",
+                                tessel_proto::proof::Check::Look => "Looks",
+                                tessel_proto::proof::Check::Unknown => "Rule",
+                            };
+                            rows = rows.child(row(r.title.clone(), kind, r.path.clone()));
+                        }
+                        for k in &book.knowledge {
+                            rows = rows.child(row(k.title.clone(), "Knowledge", k.path.clone()));
+                        }
+                        for sc in &book.scenarios {
+                            rows = rows.child(row(sc.title.clone(), if sc.holdout { "Hidden" } else { "Scenario" }, sc.path.clone()));
+                        }
+                        list = list.child(rows);
+                    }
+                }
+                let target = shell.downgrade();
+                let teach = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let _ = target.update(cx, |this, cx| this.teach_board(window, cx));
+                };
+                list.child(theme::float_sep(&p)).child(
+                    v_flex()
+                        .p(theme::z(8.))
+                        .gap(theme::z(8.))
+                        .child(div().h(theme::z(38.)).px(theme::z(12.)).flex().items_center().rounded(px(theme::R_CONTROL)).bg(p.fill).text_size(theme::z(14.)).child(div().w_full().child(Input::new(&this.board_teach).id("board-teach").appearance(false))))
+                        .child(
+                            h_flex()
+                                .gap(theme::z(8.))
+                                .child(div().flex_1().set(Type::Subheadline).text_color(p.secondary).child("An agent writes it into .tessel/ as a rule or as knowledge."))
+                                .child(big_button(&p, "board-teach-go", "Teach", theme::ButtonKind::Primary, teach)),
+                        ),
+                )
+                .into_any_element()
+            });
+        div()
+            .flex_shrink_0()
+            .capture_any_mouse_down(cx.listener(|this, _, _, cx| {
+                if let Some(repo) = this.board_repo() {
+                    this.board_rules = Some((repo.clone(), None));
+                    this.cmd(Cmd::Ask { tag: "board.rules", req: Request::RulesFor { repo } });
+                    cx.notify();
+                }
+            }))
+            .child(popover)
+            .into_any_element()
+    }
+
+    fn board_chip(&self, p: &Palette, id: String, icon: &str, name: String, remove: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> AnyElement {
+        h_flex()
+            .h(theme::z(32.))
+            .pl(theme::z(10.))
+            .pr(theme::z(4.))
+            .gap(theme::z(7.))
+            .items_center()
+            .rounded_full()
+            .bg(p.fill)
+            .child(Icon::empty().path(format!("icons/{icon}.svg")).size(theme::z(14.)).text_color(p.secondary))
+            .child(div().max_w(theme::z(220.)).truncate().text_size(theme::z(13.)).text_color(p.label).child(name))
+            .child(h_flex().id(SharedString::from(id)).size(theme::z(24.)).justify_center().rounded_full().cursor_pointer().text_color(p.secondary).hover(|d| d.bg(p.hover)).on_click(remove).child(Icon::empty().path("icons/x.svg").size(theme::z(12.))))
             .into_any_element()
     }
 
@@ -529,6 +756,49 @@ impl Shell {
             })
             .into_any_element()
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Split {
+    Issue(String),
+    One(String),
+    Plan { title: String, spec: String },
+    List { context: String, items: Vec<String> },
+}
+
+#[cfg(test)]
+pub(crate) fn split_for_test(text: &str) -> Split {
+    split_tasks(text)
+}
+
+fn bullet(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    let rest = ["- [ ] ", "- [x] ", "- ", "* ", "• "].iter().find_map(|m| t.strip_prefix(m)).or_else(|| {
+        let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+        (digits > 0 && digits < 4).then(|| t[digits..].strip_prefix(". ").or_else(|| t[digits..].strip_prefix(") "))).flatten()
+    })?;
+    let item = rest.trim();
+    (!item.is_empty()).then(|| item.to_owned())
+}
+
+pub(crate) fn split_tasks(text: &str) -> Split {
+    let text = text.trim();
+    if is_issue(text) {
+        return Split::Issue(text.to_owned());
+    }
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let items: Vec<String> = lines.iter().filter_map(|l| bullet(l)).collect();
+    if items.len() >= 2 {
+        let first = lines.iter().position(|l| bullet(l).is_some()).unwrap_or(0);
+        return Split::List { context: lines[..first].join("\n"), items };
+    }
+    if lines.len() >= 2 || text.chars().count() > 200 {
+        let head = lines.first().copied().unwrap_or(text).trim().trim_start_matches('#').trim();
+        let cut = head.find(". ").map_or(head, |i| &head[..i]);
+        let title: String = cut.chars().take(80).collect();
+        return Split::Plan { title, spec: text.to_owned() };
+    }
+    Split::One(text.to_owned())
 }
 
 fn is_issue(text: &str) -> bool {

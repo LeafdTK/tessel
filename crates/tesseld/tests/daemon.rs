@@ -1957,7 +1957,7 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
         git(&repo, args);
     }
     let (c, _) = d.client().await;
-    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None };
+    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![] };
     let Response::Task { task: first } = c.request(make("Count higher", vec![])).await.unwrap() else { panic!() };
     let Response::Task { task: second } = c.request(make("Then count lower", vec![first.id.clone()])).await.unwrap() else { panic!() };
 
@@ -2094,7 +2094,7 @@ async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
         git(&repo, args);
     }
     let (c, _) = d.client().await;
-    let Response::Task { task: big } = c.request(Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Add billing".into(), spec: "Stripe".into(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: true, from: None }).await.unwrap() else { panic!() };
+    let Response::Task { task: big } = c.request(Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Add billing".into(), spec: "Stripe".into(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: true, from: None, attachments: vec![] }).await.unwrap() else { panic!() };
     let reviewed = task_until(&c, &big.id, "the planner ran", |t| t.state == TaskState::Review).await;
     let planner = reviewed.session.expect("a planner chat");
     let summary = list(&c).await.into_iter().find(|s| s.id == planner).unwrap();
@@ -2102,7 +2102,7 @@ async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
     assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("Plan this task, don't do it") && l.contains("Add billing")));
     assert!(reviewed.notes.iter().any(|n| n.text.contains("filed no tasks")));
 
-    let file = |title: &str, after: Vec<String>| Request::TaskCreate { repo: "/ignored".into(), title: title.into(), spec: String::new(), deps: after, parent: None, ready: false, budget_usd: None, plan: false, from: Some(planner) };
+    let file = |title: &str, after: Vec<String>| Request::TaskCreate { repo: "/ignored".into(), title: title.into(), spec: String::new(), deps: after, parent: None, ready: false, budget_usd: None, plan: false, from: Some(planner), attachments: vec![] };
     let Response::Task { task: one } = c.request(file("Add the plans table", vec![])).await.unwrap() else { panic!() };
     let Response::Task { task: two } = c.request(file("Charge monthly", vec![one.id.clone()])).await.unwrap() else { panic!() };
     assert_eq!((one.parent.as_deref(), one.repo.clone()), (Some(big.id.as_str()), big.repo.clone()), "the planner's tasks are the big one's, in its repository");

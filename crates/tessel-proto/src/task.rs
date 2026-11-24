@@ -78,6 +78,8 @@ pub struct Task {
     pub pr: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issue: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }

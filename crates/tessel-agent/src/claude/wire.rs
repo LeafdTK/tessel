@@ -51,6 +51,7 @@ A one-line answer stays a line.";
 
 pub const TASK_NOTE: &str = "\n\nThis chat is a task from the board, in a workspace of its own. Make the whole change, commit it with a message in the repository's style, then stop with one line saying what you did. tessel checks your work when you stop (don't run tessel_prove yourself) and lands it after review.";
 
+pub const NO_COMMENTS_NOTE: &str = "\n- Don't write code comments: no inline comments, doc comments, docstrings or explanatory notes in code. Clear names carry the meaning, and the commit message carries the why. Leave existing comments as they are unless you're changing that code.";
 pub const PROVE_NOTE: &str = "\n- This repository has house rules (.tessel/rules): when a change is finished, check it with tessel_prove, fix the real findings, and check again (twice at most).";
 
 /// visual mode, said to the agent: the person is watching, so its commands

@@ -1534,10 +1534,23 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 self.start_proof(session, anyway, false);
                 Ok(Response::Ack)
             }
-            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd, plan, from } => self.task_create_from(repo, title, spec, deps, parent, ready, budget_usd, plan, from),
+            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd, plan, from, attachments } => {
+                if attachments.is_empty() {
+                    self.task_create_from(repo, title, spec, deps, parent, ready, budget_usd, plan, from)
+                } else {
+                    match self.task_create(repo, title, spec, deps, parent, false, budget_usd, plan) {
+                        Ok(Response::Task { task }) => self.task_attach(&task.id, attachments, ready),
+                        other => other,
+                    }
+                }
+            }
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::RulesFor { repo } => {
+                let root = crate::board::repo_root(Path::new(&repo));
+                Ok(Response::Rules { rulebook: crate::rules::load_with(&root, &root, Some(&crate::rules::holdouts(&self.cfg.paths.home, &root))) })
+            }
             Request::IssueList { repo } => {
                 let root = crate::board::repo_root(Path::new(&repo));
                 let tx = self.tx.clone();
@@ -2359,7 +2372,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             model: live.state.model.clone(),
             permission_mode: live.state.permission_mode.clone(),
             effort: live.state.effort.clone(),
-            fast: live.state.fast,
+            fast: live.state.fast, no_comments: self.settings.no_comments,
             visual: live.state.visual,
             add_dirs: live.state.meta.linked_dirs.iter().map(Into::into).collect(),
             env: workspace_env,
@@ -2477,6 +2490,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             shots: Some(self.cfg.paths.home.join("shots").join(session.to_string())),
             home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
             tessel_home: self.cfg.paths.home.clone(),
+            no_comments: self.settings.no_comments,
         };
         let (tx, backend) = (self.tx.clone(), self.backend.clone());
         tokio::spawn(async move {

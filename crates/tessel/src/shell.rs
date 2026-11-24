@@ -32,6 +32,8 @@ mod palette;
 mod panel;
 mod proof;
 mod board;
+#[cfg(test)]
+pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
 mod keys;
 pub(crate) mod views;
@@ -322,10 +324,14 @@ pub struct Shell {
     making: bool,
     project_name: Entity<InputState>,
     project_parent: Entity<InputState>,
-    pub(crate) task_title: Entity<InputState>,
+    pub(crate) task_title: Entity<gpui_kit::component::input::TextareaState>,
+    pub(crate) board_attachments: Vec<Attachment>,
+    pub(crate) board_files: Vec<String>,
     pub(crate) board_project: Option<String>,
     pub(crate) board_issues: Option<(String, Result<Vec<tessel_proto::task::IssueInfo>, String>)>,
     pub(crate) issues_loading: bool,
+    pub(crate) board_rules: Option<(String, Option<Result<tessel_proto::proof::Rulebook, String>>)>,
+    pub(crate) board_teach: Entity<InputState>,
     pub(crate) key_inputs: keys::KeyForm,
     pub(crate) keys: Option<(Vec<tessel_proto::keys::KeyInfo>, Vec<tessel_proto::keys::KeyUse>)>,
     pub(crate) task_change: Entity<InputState>,
@@ -503,7 +509,8 @@ impl Shell {
         let projects_home = std::env::var("TESSEL_PROJECTS").unwrap_or_else(|_| "~/tessel/projects".into());
         let project_parent = cx.new(|cx| InputState::new(window, cx).default_value(projects_home));
         let github_repo = cx.new(|cx| InputState::new(window, cx).placeholder("owner/repo"));
-        let task_title = cx.new(|cx| InputState::new(window, cx).placeholder("Describe a change, or paste an issue like #42…"));
+        let board_teach = cx.new(|cx| InputState::new(window, cx).placeholder("Something every change should follow, like \"use the design system in docs/design.md\"…"));
+        let task_title = cx.new(|cx| gpui_kit::component::input::TextareaState::new(window, cx).auto_grow(1, 10).submit_on_enter(true).placeholder("Describe a change, paste a list or a spec, or an issue like #42…"));
         let key_inputs = keys::KeyForm::new(window, cx);
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
 
@@ -546,7 +553,7 @@ impl Shell {
                 }
             }),
             cx.subscribe_in(&task_title, window, |this, _, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { secondary, .. } = ev {
+                if let InputEvent::PressEnter { shift: false, secondary } = ev {
                     this.add_task(*secondary, window, cx);
                 }
             }),
@@ -846,6 +853,8 @@ impl Shell {
             project_name,
             project_parent,
             task_title,
+            board_attachments: Vec::new(),
+            board_files: Vec::new(),
             key_inputs,
             keys: None,
             task_change,
@@ -856,6 +865,8 @@ impl Shell {
             board_project: None,
             board_issues: None,
             issues_loading: false,
+            board_rules: None,
+            board_teach,
             shots: Default::default(),
             view_shown: "factory".into(),
             making_view: false,
@@ -1300,6 +1311,7 @@ impl Shell {
             UiEvent::Answer { tag: "metrics", result } => self.metrics_answer(result),
             UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
             UiEvent::Answer { tag: "issues", result } => self.issues_answer(result),
+            UiEvent::Answer { tag: "board.rules", result } => self.board_rules_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),
             UiEvent::Answer { tag: "rewind", result } => self.rewind_answer(result),
             UiEvent::Answer { tag: "browser.engine" | "browser.install", result } => self.browser_answer(result),

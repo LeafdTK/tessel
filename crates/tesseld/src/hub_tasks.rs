@@ -79,6 +79,7 @@ impl Hub {
             landed: None,
             pr: None,
             issue: None,
+            attachments: Vec::new(),
             created_ms: now,
             updated_ms: now,
         };
@@ -208,6 +209,7 @@ impl Hub {
         let Some(t) = self.tasks.get_mut(id) else { return };
         t.state = TaskState::Running;
         let (repo, title, prompt) = (t.repo.clone(), t.title.clone(), board::task_prompt(t));
+        let attachments = crate::board::load_attachments(&self.cfg.paths.home, t);
         let f = board::factory(std::path::Path::new(&repo), std::path::Path::new(&repo));
         self.task_saved(id);
         let create = Create {
@@ -215,7 +217,7 @@ impl Hub {
             cwd: repo,
             goal: Some(title.clone()),
             prompt: Some(prompt),
-            attachments: Vec::new(),
+            attachments,
             model: Some(f.model),
             parent: None,
             fork: None,
@@ -560,6 +562,7 @@ impl Hub {
             shots: Some(self.cfg.paths.home.join("shots").join(format!("checkup-{}", root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))),
             home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
             tessel_home: self.cfg.paths.home.clone(),
+            no_comments: self.settings.no_comments,
         };
         let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, false);
         let (tx, backend) = (self.tx.clone(), self.backend.clone());
@@ -591,6 +594,19 @@ impl Hub {
         if let Some((client, id)) = reply {
             self.respond(client, id, Ok(Response::Checkup { proof, filed }));
         }
+    }
+
+    pub(super) fn task_attach(&mut self, id: &str, attachments: Vec<tessel_proto::Attachment>, ready: bool) -> Result<Response, RpcError> {
+        let names = crate::board::save_attachments(&self.cfg.paths.home, id, &attachments).map_err(|e| RpcError::new(ErrorCode::Internal, format!("couldn't keep the attachments: {e}")))?;
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.attachments = names;
+            if ready {
+                t.state = TaskState::Ready;
+            }
+        }
+        self.task_saved(id);
+        self.dispatch();
+        Ok(Response::Task { task: self.tasks[id].clone() })
     }
 
     pub(super) fn issue_fetched(&mut self, repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)>) {

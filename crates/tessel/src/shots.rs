@@ -113,6 +113,7 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         landed: landed.map(str::to_owned),
         pr: pr.map(str::to_owned),
         issue: (id == "t7a8b").then(|| "https://github.com/you/shop/issues/57".to_owned()),
+        attachments: vec![],
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }

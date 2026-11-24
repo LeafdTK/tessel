@@ -53,7 +53,7 @@ pub(crate) fn mode_name(mode: Option<&str>) -> &'static str {
 }
 
 /// images over this size are refused by the api, so we refuse them first and say why.
-const MAX_IMAGE: u64 = 5 * 1024 * 1024;
+pub(crate) const MAX_IMAGE: u64 = 5 * 1024 * 1024;
 const MAX_PDF: u64 = 20 * 1024 * 1024;
 
 /// what a file would be sent as. `None` is a kind the agent can't be handed

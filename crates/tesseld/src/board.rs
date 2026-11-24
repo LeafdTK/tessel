@@ -102,7 +102,7 @@ pub fn after_proof(task: &Task, p: &Proof, f: &Factory) -> Next {
 
 pub fn plan_prompt(t: &Task) -> String {
     let mut p = format!(
-        "Plan this task, don't do it: split it into 2 to 6 small tasks that each make one change and can be checked on their own. Read only what you need to plan well. \
+        "Plan this task, don't do it: split it into as many small tasks as it takes (usually 2 to 8, at most 15), each making one change that can be checked on its own. If it's already a list of separate things, file one task per item. Read only what you need to plan well. \
 File them in order with tessel_task (op add, ready: true, and after: the ids of tasks each one needs done first), each with a title and a spec that says what done looks like. \
 Don't change any files. Then stop with one line listing what you filed.\n\n{}",
         t.title
@@ -112,6 +112,39 @@ Don't change any files. Then stop with one line listing what you filed.\n\n{}",
         p.push_str(t.spec.trim());
     }
     p
+}
+
+fn attachment_dir(home: &Path, id: &str) -> std::path::PathBuf {
+    home.join("tasks").join(id)
+}
+
+pub fn save_attachments(home: &Path, id: &str, attachments: &[tessel_proto::Attachment]) -> std::io::Result<Vec<String>> {
+    use base64::Engine as _;
+    let dir = attachment_dir(home, id);
+    std::fs::create_dir_all(&dir)?;
+    let mut names = Vec::new();
+    for (n, a) in attachments.iter().enumerate() {
+        let base = Path::new(&a.name).file_name().map(|f| f.to_string_lossy().into_owned()).filter(|f| !f.is_empty() && !f.starts_with('.')).unwrap_or_else(|| format!("file-{n}"));
+        let name = if names.contains(&base) { format!("{n}-{base}") } else { base };
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&a.data).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(dir.join(&name), bytes)?;
+        std::fs::write(dir.join(format!(".{name}.type")), &a.media_type)?;
+        names.push(name);
+    }
+    Ok(names)
+}
+
+pub fn load_attachments(home: &Path, t: &Task) -> Vec<tessel_proto::Attachment> {
+    use base64::Engine as _;
+    let dir = attachment_dir(home, &t.id);
+    t.attachments
+        .iter()
+        .filter_map(|name| {
+            let bytes = std::fs::read(dir.join(name)).ok()?;
+            let media_type = std::fs::read_to_string(dir.join(format!(".{name}.type"))).unwrap_or_else(|_| "application/octet-stream".into());
+            Some(tessel_proto::Attachment { name: name.clone(), media_type, data: base64::engine::general_purpose::STANDARD.encode(bytes), element: None })
+        })
+        .collect()
 }
 
 pub fn task_prompt(t: &Task) -> String {
@@ -154,6 +187,7 @@ mod tests {
             landed: None,
             pr: None,
             issue: None,
+            attachments: vec![],
             created_ms: at,
             updated_ms: at,
         }
@@ -214,6 +248,20 @@ mod tests {
         let warned = Proof { findings: vec![Finding { lens: "scope".into(), rule: None, file: None, line: None, severity: Severity::Warn, title: "x".into(), why: String::new(), confirmed: None }], ..clean.clone() };
         assert_eq!(risk(&warned), Risk::Medium);
         assert_eq!(risk(&Proof { files: 30, ..clean }), Risk::Medium);
+    }
+
+    #[test]
+    fn a_task_s_attachments_are_kept_beside_it_and_come_back_whole() {
+        use base64::Engine as _;
+        let home = tempfile::tempdir().unwrap();
+        let a = |name: &str, bytes: &[u8]| tessel_proto::Attachment { name: name.into(), media_type: "image/png".into(), data: base64::engine::general_purpose::STANDARD.encode(bytes), element: None };
+        let names = save_attachments(home.path(), "t1", &[a("../../etc/shot.png", b"one"), a("shot.png", b"two")]).unwrap();
+        assert_eq!(names, vec!["shot.png", "1-shot.png"], "a name can't climb out of the task's folder, and two don't clash");
+        let mut t = task("t1", TaskState::Ready, &[], 0);
+        t.attachments = names;
+        let back = load_attachments(home.path(), &t);
+        assert_eq!(back.iter().map(|x| (x.name.as_str(), x.media_type.as_str())).collect::<Vec<_>>(), vec![("shot.png", "image/png"), ("1-shot.png", "image/png")]);
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(&back[1].data).unwrap(), b"two");
     }
 
     #[test]

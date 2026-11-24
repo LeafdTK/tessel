@@ -456,6 +456,27 @@ impl Shell {
             },
         ));
 
+        let comments = self.daemon_settings.as_ref().map(|d| !d.no_comments);
+        let agents_rows = agents_rows.child(self.setting_row(
+            "Agents write code comments",
+            match comments {
+                Some(true) => "On: agents comment code as they see fit.",
+                Some(false) => "Off: agents write no comments, and proof flags any that get added. Applies as each agent next starts.",
+                None => "The daemon running now is too old to set this. Restart it to get it.",
+            },
+            {
+                let me = cx.entity().downgrade();
+                Switch::new("agent-comments").checked(comments.unwrap_or(true)).disabled(comments.is_none()).on_click(move |on, window, cx| {
+                    let on = *on;
+                    let _ = me.update(cx, |this, cx| {
+                        if let Err(e) = this.exec("daemon.set", &json!({"no_comments": !on}), window, cx) {
+                            this.error = Some(e);
+                        }
+                    });
+                })
+            },
+        ));
+
         let notched = crate::notch::has_notch();
         let notch_about = if notched {
             "The agents at work, around the camera. Hover it to see each one; click one to go to it."

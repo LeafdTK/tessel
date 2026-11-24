@@ -627,7 +627,7 @@ async fn run() -> anyhow::Result<()> {
                     let ready = args.flag("--ready");
                     let plan = args.flag("--plan");
                     let title = args.rest.join(" ");
-                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None }).await?)?;
+                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None, attachments: Vec::new() }).await?)?;
                     println!("{}", line(&t));
                 }
                 "solve" => {

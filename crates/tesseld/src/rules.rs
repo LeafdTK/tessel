@@ -331,6 +331,25 @@ pub fn parse_knowledge(stem: &str, path: &str, raw: &str) -> Knowledge {
     Knowledge { id: stem.to_owned(), title: text(get("title")).unwrap_or_else(|| title_of(&body, stem)), path: path.to_owned(), paths, body }
 }
 
+pub fn no_comments() -> Vec<Rule> {
+    let globs = |exts: &[&str]| exts.iter().map(|e| format!("**/*.{e}")).collect::<Vec<String>>();
+    let body = "Code here carries no comments: no inline comments, doc comments or docstrings. Names carry the meaning and the commit message carries the why.";
+    let kinds: [(&[&str], &str); 4] = [
+        (&["rs", "go", "js", "jsx", "ts", "tsx", "mjs", "cjs", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "scala", "dart", "php", "zig", "css", "scss", "svelte", "vue"], r"^\s*(//|/\*)"),
+        (&["py", "rb", "sh", "bash", "zsh", "tf", "hcl", "yaml", "yml", "toml", "r", "pl", "ex", "exs", "nix"], r"^\s*#([^!\[{]|$)"),
+        (&["sql", "lua", "hs"], r"^\s*--"),
+        (&["html", "svelte", "vue", "xml"], r"^\s*<!--"),
+    ];
+    kinds
+        .into_iter()
+        .map(|(exts, pattern)| {
+            let mut r = builtin("no-comments", "No code comments", Check::Match { pattern: pattern.to_owned(), within: Within::Added, must: false }, Severity::Block, body);
+            r.paths = globs(exts);
+            r
+        })
+        .collect()
+}
+
 fn builtin(id: &str, title: &str, check: Check, severity: Severity, body: &str) -> Rule {
     Rule { id: id.into(), title: title.into(), path: String::new(), paths: Vec::new(), check, severity, body: body.into(), builtin: true, holdout: false }
 }

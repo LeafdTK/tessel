@@ -238,6 +238,9 @@ impl ClaudeBackend {
                 if opts.env.iter().any(|(k, _)| k == "TESSEL_TASK") {
                     args[i].push_str(wire::TASK_NOTE);
                 }
+                if opts.no_comments {
+                    args[i].push_str(wire::NO_COMMENTS_NOTE);
+                }
                 if tessel_proto::proof::has_house_rules(&opts.cwd) {
                     args[i].push_str(wire::PROVE_NOTE);
                 }
@@ -683,7 +686,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tessel-handoff-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let backend = echo_agent(&dir);
-        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
+        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, no_comments: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
         let Spawned { agent, mut output } = backend.spawn(opts).unwrap();
         agent.send_user("before", &[]);
         assert!(matches!(next(&mut output).await, Some(AgentOutput::Events(_) | AgentOutput::Alive)), "it talks");
@@ -727,7 +730,7 @@ mod tests {
         std::fs::write(&script, format!("#!/bin/sh\nn=1\nwhile IFS= read -r l; do cat '{}'/out-$n; n=$((n+1)); done\n", dir.display())).unwrap();
         std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let backend = ClaudeBackend { program: script, env: None, extra_args: vec![] };
-        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
+        let opts = SpawnOpts { cwd: dir.clone(), agent_session_id: "a".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, no_comments: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
         let Spawned { agent, mut output } = backend.spawn(opts).unwrap();
         assert!(agent.can_hand_over());
         agent.send_user("go", &[]);
@@ -777,18 +780,26 @@ mod tests {
         assert_eq!(parse_models(r#"{"type":"system","subtype":"init"}"#, "tessel-models"), None);
     }
 
+    fn tessel_agent_tools() -> crate::backend::AgentTools {
+        crate::backend::AgentTools { command: "/bin/tesselctl".into(), env: vec![] }
+    }
+
     #[test]
     fn effort_and_fast_mode_are_asked_for_at_start() {
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: Some("xhigh".into()), fast: true, no_comments: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--effort", "xhigh"]));
         let settings = |args: &[String]| serde_json::from_str::<serde_json::Value>(&args[args.iter().position(|a| a == "--settings").unwrap() + 1]).unwrap();
         assert_eq!(settings(&args)["fastMode"], serde_json::json!(true));
-        let plain = ClaudeBackend::args(&SpawnOpts { effort: None, fast: false, ..opts });
+        let plain_opts = || SpawnOpts { effort: None, fast: false, ..opts.clone() };
+        let plain = ClaudeBackend::args(&plain_opts());
         assert!(!plain.iter().any(|a| a == "--effort"));
         assert!(settings(&plain).get("fastMode").is_none());
         assert_eq!(settings(&plain)["includeCoAuthoredBy"], serde_json::json!(false), "commits are yours, with no co-author added");
         assert_eq!(settings(&plain)["attribution"], serde_json::json!({"commit": "", "pr": ""}));
+        let quiet = ClaudeBackend::args(&SpawnOpts { no_comments: true, tools: Some(tessel_agent_tools()), ..plain_opts() });
+        assert!(quiet.iter().any(|a| a.contains("Don't write code comments")), "with comments off, the agent is told");
+        assert!(!ClaudeBackend::args(&SpawnOpts { tools: Some(tessel_agent_tools()), ..plain_opts() }).iter().any(|a| a.contains("Don't write code comments")));
     }
 
     #[test]
@@ -807,7 +818,7 @@ mod tests {
     #[test]
     fn an_agent_given_tessels_tools_gets_them_scoped_to_its_session_and_is_told_why() {
         let tools = crate::backend::AgentTools { command: "/opt/tessel/tesselctl".into(), env: vec![("TESSEL_SESSION".into(), "s-1".into())] };
-        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: Some(tools), env: vec![], sandbox: None };
+        let opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, no_comments: false, visual: false, add_dirs: vec![], raw_log: None, tools: Some(tools), env: vec![], sandbox: None };
         let args = ClaudeBackend::args(&opts);
         // not on the command line: that makes the agent wait for every server before starting.
         assert!(!args.iter().any(|a| a == "--mcp-config"));
@@ -833,7 +844,7 @@ mod tests {
 
     #[test]
     fn first_spawn_names_the_session_and_later_ones_resume_it() {
-        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
+        let mut opts = SpawnOpts { cwd: "/tmp".into(), agent_session_id: "abc".into(), resume: false, fork: false, resume_at: None, model: None, permission_mode: None, effort: None, fast: false, no_comments: false, visual: false, add_dirs: vec![], raw_log: None, tools: None, env: vec![], sandbox: None };
         let args = ClaudeBackend::args(&opts);
         assert!(args.windows(2).any(|w| w == ["--session-id", "abc"]));
         assert!(!args.iter().any(|a| a == "--resume"));

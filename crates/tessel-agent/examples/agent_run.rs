@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         fork: false,
         resume_at: None,
         model,
-        permission_mode: None, effort: None, fast: false, visual: false, add_dirs: vec![],
+        permission_mode: None, effort: None, fast: false, no_comments: false, visual: false, add_dirs: vec![],
         raw_log: None,
         tools: None,
         env: vec![], sandbox: None,

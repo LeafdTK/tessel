@@ -1239,7 +1239,7 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None,
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false,
                 agent_tools: true,
                 models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
             }),
@@ -1304,7 +1304,7 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
         ],
     );
     rig.shell.update(cx, |s, cx| {
@@ -1946,7 +1946,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, agent_tools: true, ..Default::default() })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { projects: None, parallel: None, no_comments: false, agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
@@ -3292,7 +3292,7 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     rig.settle(cx);
     let t = |id: &str, state: TaskState, deps: &[&str], session: Option<SessionId>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: deps.iter().map(|d| (*d).to_owned()).collect(),
-        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, created_ms: 1, updated_ms: 1,
+        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("t1", TaskState::Review, &[], Some(a.id)),
@@ -3391,7 +3391,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     assert!(tessel_proto::surface::validate(&built_in).is_empty(), "the built-in view is a valid surface");
     assert!(built_in.to_string().matches("\"bind\"").count() >= 8);
 
-    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, created_ms: 1, updated_ms: 1 };
+    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], created_ms: 1, updated_ms: 1 };
     rig.feed(cx, vec![
         UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
         UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, ..Default::default() } }) },
@@ -3443,7 +3443,7 @@ fn big_tasks_are_planned_from_the_board_and_a_review_can_become_a_rule(cx: &mut 
     rig.settle(cx);
     let t = |id: &str, state: TaskState, parent: Option<&str>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: parent.map(str::to_owned), session: Some(a.id),
-        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, created_ms: 1, updated_ms: 1,
+        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("big", TaskState::Planned, None), t("k1", TaskState::Landed, Some("big")), t("k2", TaskState::Running, Some("big")),
@@ -3460,4 +3460,22 @@ fn big_tasks_are_planned_from_the_board_and_a_review_can_become_a_rule(cx: &mut 
     let asked = rig.asked();
     assert!(asked.iter().any(|c| matches!(c, Cmd::Ask { tag: "task", req: tessel_proto::Request::TaskAct { id, act: TaskAct::Change { text } } } if id == "rev" && text == "never log tokens")), "the change goes to the agent");
     assert!(asked.iter().any(|c| matches!(c, Cmd::Create { cwd, prompt, worktree: false, .. } if cwd == "/work/api" && prompt.contains("never log tokens") && prompt.contains("House rules live in"))), "and may become a house rule: {asked:?}");
+}
+
+#[test]
+fn pasted_text_becomes_one_task_a_task_per_item_or_a_plan() {
+    use crate::shell::board_split_for_test as split;
+    use crate::shell::Split;
+    assert_eq!(split("Add dark mode"), Split::One("Add dark mode".into()));
+    assert_eq!(split("#12"), Split::Issue("#12".into()));
+    assert_eq!(
+        split("Before launch:\n- Fix the cart badge\n- [ ] Add a sitemap\n2. Cache the product images"),
+        Split::List { context: "Before launch:".into(), items: vec!["Fix the cart badge".into(), "Add a sitemap".into(), "Cache the product images".into()] }
+    );
+    match split("# Checkout v2\nCoupons, saved cards and a one-page flow. Keep the old flow behind a flag.") {
+        Split::Plan { title, spec } => assert!(title == "Checkout v2" && spec.contains("saved cards")),
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(split(&"word ".repeat(60)), Split::Plan { .. }), "a long paragraph is planned too");
+    assert_eq!(split("- just one"), Split::One("- just one".into()), "one bullet is just a task");
 }

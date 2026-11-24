@@ -261,6 +261,8 @@ pub enum Request {
         plan: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<crate::Attachment>,
     },
     TaskEdit {
         id: String,
@@ -279,6 +281,9 @@ pub enum Request {
     },
     TaskList,
     IssueList {
+        repo: String,
+    },
+    RulesFor {
         repo: String,
     },
     TaskFromIssue {
@@ -723,6 +728,9 @@ pub struct DaemonSettings {
     pub projects: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel: Option<u32>,
+    /// agents write no code comments, and proof flags any that are added.
+    #[serde(default)]
+    pub no_comments: bool,
 }
 
 /// a model in the loadout, and how it runs when picked.
@@ -742,7 +750,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false }
     }
 }
 

@@ -406,6 +406,7 @@ pub struct Places {
     pub shots: Option<PathBuf>,
     pub home: PathBuf,
     pub tessel_home: PathBuf,
+    pub no_comments: bool,
 }
 
 pub fn big(c: &Change) -> bool {
@@ -588,6 +589,9 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
     let cfg = crate::rules::config(&ws, &root);
     p.risky = !cfg.risk.is_empty() && crate::rules::applies(&cfg.risk, &change.paths);
     let mut rules: Vec<Rule> = book.rules.into_iter().filter(|r| r.check != Check::Unknown).collect();
+    if places.no_comments {
+        rules.extend(crate::rules::no_comments());
+    }
     if cfg.starter
         && let Some(r) = crate::rules::commit_style(&change.history)
         && !rules.iter().any(|x| x.id == r.id)
@@ -1033,6 +1037,17 @@ mod tests {
         let p = Proof { tried: vec![unsure], ..Default::default() };
         assert_eq!(verdict(&p), Verdict::Concerns, "couldn't tell isn't a failure, but it isn't proven either");
         assert!(tester_prompt(&sc, &Ask { goal: "add coupons".into(), said: vec![] }, &Change::default()).contains("Don't edit, commit or delete"));
+    }
+
+    #[test]
+    fn with_comments_off_an_added_comment_is_caught_in_each_language_and_code_is_not() {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,5 @@\n+// explains it\n+#[derive(Debug)]\n+let url = \"https://x\";\n+    /* block */\n+fn f() {}\n\
+diff --git a/run.sh b/run.sh\n--- a/run.sh\n+++ b/run.sh\n@@ -1,1 +1,3 @@\n+#!/bin/sh\n+# start it\n+echo hi\n\
+diff --git a/q.sql b/q.sql\n--- a/q.sql\n+++ b/q.sql\n@@ -1,1 +1,2 @@\n+-- the users\n+select 1;\n\
+diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,1 @@\n+# Title\n";
+        let c = Change { diff: diff.into(), added: added_lines(diff), paths: vec!["src/a.rs".into(), "run.sh".into(), "q.sql".into(), "README.md".into()], ..Default::default() };
+        let found: Vec<(String, u32)> = matched(&crate::rules::no_comments(), &c).into_iter().map(|f| (f.file.unwrap(), f.line.unwrap())).collect();
+        assert_eq!(found, vec![("src/a.rs".into(), 1), ("src/a.rs".into(), 4), ("run.sh".into(), 2), ("q.sql".into(), 1)], "not attributes, urls, shebangs or markdown headings");
     }
 
     #[test]

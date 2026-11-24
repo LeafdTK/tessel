@@ -25,6 +25,7 @@ pub struct SpawnOpts {
     pub effort: Option<String>,
     /// fast mode.
     pub fast: bool,
+    pub no_comments: bool,
     /// visual mode: the person watches, and the agent is told so. (its Bash
     /// commands reach their terminal through the shell prefix in `env`.)
     pub visual: bool,

@@ -682,7 +682,7 @@ async fn session(
                             let result = match client.request(req).await {
                                 Ok(Response::Choices { choices }) => Ok(choices),
                                 Ok(_) => Err("this machine's tessel is too old for workflows: update it".to_owned()),
-                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(ClientError::Rpc(e)) => Err(older(e.message)),
                                 Err(e) => Err(e.to_string()),
                             };
                             let _ = ui.send(UiEvent::Choices { workflow, input, result });
@@ -694,7 +694,7 @@ async fn session(
                         tokio::spawn(async move {
                             let result = match client.request(req).await {
                                 Ok(r) => Ok(r),
-                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(ClientError::Rpc(e)) => Err(older(e.message)),
                                 Err(e) => Err(e.to_string()),
                             };
                             let _ = ui.send(UiEvent::Answer { tag, result });
@@ -728,7 +728,7 @@ async fn session(
                             let result = match client.request(Request::ChatImage { session, path: path.clone() }).await {
                                 Ok(Response::Bytes { data, .. }) => base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string()),
                                 Ok(_) => Err("this machine's tessel is too old to show it".into()),
-                                Err(ClientError::Rpc(e)) => Err(e.message),
+                                Err(ClientError::Rpc(e)) => Err(older(e.message)),
                                 Err(e) => Err(e.to_string()),
                             };
                             let _ = ui.send(UiEvent::ChatImage { session, path, result });
@@ -843,4 +843,12 @@ fn decode_frame(jpeg: &str) -> Option<(Vec<u8>, u32, u32)> {
     }
     let (w, h) = rgba.dimensions();
     Some((rgba.into_raw(), w, h))
+}
+
+fn older(message: String) -> String {
+    if message == "this daemon does not know that request" {
+        "The tessel on this machine is older than the app. Update it: Settings › Hosts, or `tesselctl host update`.".to_owned()
+    } else {
+        message
+    }
 }
