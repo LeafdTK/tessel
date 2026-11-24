@@ -206,47 +206,25 @@ impl Shell {
         let default = self.daemon_settings.as_ref().map_or_else(|| "main".to_owned(), |d| d.land.clone());
         let chosen = self.board_land.clone().unwrap_or(default.clone());
         let label = if chosen == "branch" { "Merge into a branch".to_owned() } else { tessel_proto::task::land_word(&chosen) };
-        let me = cx.entity().downgrade();
-        let picker = Popover::new("board-land-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
-            .p_0()
-            .anchor(Anchor::BottomLeft)
-            .trigger(
-                super::composer::tool_button("board-land")
-                    .h(theme::z(36.))
-                    .px(theme::z(12.))
-                    .bg(p.fill)
-                    .child(h_flex().gap(theme::z(8.)).items_center().child(div().text_size(theme::z(14.)).text_color(p.label).child(label)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(13.)).text_color(p.secondary))),
-            )
-            .content(move |_, _, cx| {
-                let popover = cx.entity();
-                let Some(shell) = me.upgrade() else { return div().into_any_element() };
-                let this = shell.read(cx);
-                let p = this.palette.get();
-                let current = this.board_land.clone().unwrap_or(default.clone());
-                let mut rows = v_flex();
-                for (i, (value, label)) in [("main", "Land on main"), ("pr", "Open a pull request"), ("branch", "Merge into a branch"), ("keep", "Keep the branch")].into_iter().enumerate() {
-                    let on = current == value;
-                    let (me, popover) = (me.clone(), popover.clone());
-                    rows = rows.child(
-                        theme::float_item(&p, format!("board-land-option-{i}"), None, label, None, on)
-                            .on_click(move |_, window, cx| {
-                                popover.update(cx, |st, cx| st.dismiss(window, cx));
-                                let _ = me.update(cx, |this, cx| {
-                                    this.board_land = Some(value.to_owned());
-                                    cx.notify();
-                                });
-                            })
-                            .test_support(),
-                    );
-                }
-                theme::float_list(&p).w(px(240.)).child(rows).into_any_element()
-            });
+        let picker = self.select(
+            super::select::Select {
+                id: "board-land",
+                label,
+                options: [("main", "Land on main"), ("pr", "Open a pull request"), ("branch", "Merge into a branch"), ("keep", "Keep the branch")].iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect(),
+                current: chosen.clone(),
+                width: Some(210.),
+                height: 36.,
+                up: false,
+            },
+            std::rc::Rc::new(|this: &mut Shell, value: &str, _: &mut Window, _: &mut Context<Shell>| this.board_land = Some(value.to_owned())),
+            cx,
+        );
         h_flex()
             .gap(theme::z(8.))
             .items_center()
             .child(picker)
             .when(chosen == "branch", |d| {
-                d.child(div().w(theme::z(180.)).h(theme::z(36.)).px(theme::z(10.)).flex().items_center().rounded(theme::z(theme::R_CONTROL)).border_1().border_color(p.separator).text_size(theme::z(14.)).child(div().w_full().child(Input::new(&self.board_branch).id("board-branch").appearance(false))))
+                d.child(div().w(theme::z(180.)).h(theme::z(36.)).px(theme::z(10.)).flex().items_center().rounded(theme::z(theme::by_height(36.))).border_1().border_color(p.separator).text_size(theme::z(14.)).child(div().w_full().child(Input::new(&self.board_branch).id("board-branch").appearance(false))))
             })
             .into_any_element()
     }

@@ -203,6 +203,8 @@ const SCREENS: &[Screen] = &[
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
     Screen { name: "home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
     Screen { name: "board-swatches", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "menu-land", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "menu-bother", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-new", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
@@ -263,6 +265,14 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
         }
         if screen.name == "board-open" {
             let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("tab12".into()));
+        }
+        if let Some(id) = screen.name.strip_prefix("menu-") {
+            if id == "land" {
+                let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("new".into()));
+            }
+            settle(&mut cx, &window);
+            let id: &'static str = if id == "bother" { "bother" } else { "board-land" };
+            let _ = cx.update_window(window.into(), |_, window, cx| window.click(id, cx));
         }
         if screen.name == "board-new" {
             let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("new".into()));

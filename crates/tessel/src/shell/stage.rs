@@ -361,54 +361,33 @@ impl Shell {
             "custom" if !rule.trim().is_empty() => rule.clone(),
             other => BOTHER.iter().find(|(v, _)| *v == other).map_or("Only critical decisions", |(_, l)| l).to_owned(),
         };
-        let me = cx.entity().downgrade();
-        let (measure, wide) = (self.bother_w.clone(), self.bother_w.clone());
-        let picker = gpui_kit::component::popover::Popover::new("bother-popover").rounded(crate::theme::z(crate::theme::R_FLOAT))
-            .p_0()
-            .anchor(gpui_kit::Anchor::TopLeft)
-            .trigger(
-                super::composer::tool_button("bother")
-                    .w_full()
-                    .h(theme::z(theme::SIDE_ROW_H))
-                    .px(theme::z(theme::SIDE_PAD))
-                    .rounded(theme::z(theme::by_height(theme::SIDE_ROW_H)))
-                    .bg(p.fill)
-                    .child(h_flex().w_full().gap(theme::z(8.)).items_center().child(div().flex_1().min_w_0().truncate().text_left().text_size(theme::z(14.)).text_color(p.label).child(label)).child(Icon::empty().path("icons/chevron-down.svg").size(theme::z(13.)).text_color(p.secondary)))
-                    .child(canvas(move |b, _, _| measure.set(f32::from(b.size.width)), |_, _, _, _| {}).absolute().inset_0()),
-            )
-            .content(move |_, _, cx| {
-                let popover = cx.entity();
-                let Some(shell) = me.upgrade() else { return div().into_any_element() };
-                let this = shell.read(cx);
-                let p = this.palette.get();
-                let current = this.daemon_settings.as_ref().map_or_else(|| "agent".to_owned(), |d| d.autonomy.clone());
-                let mut rows = v_flex();
-                for (i, (value, label)) in BOTHER.iter().enumerate() {
-                    let on = current == *value;
-                    let (me, popover) = (me.clone(), popover.clone());
-                    rows = rows.child(theme::float_item(&p, format!("bother-option-{i}"), None, *label, None, on).on_click(move |_, window, cx| {
-                        popover.update(cx, |st, cx| st.dismiss(window, cx));
-                        let _ = me.update(cx, |this, cx| {
-                            if *value == "custom" {
-                                this.editing_bother = true;
-                                let rule = this.daemon_settings.as_ref().map(|d| d.bother.clone()).unwrap_or_default();
-                                this.bother_input.update(cx, |s, cx| {
-                                    s.set_value(rule, window, cx);
-                                    s.focus(window, cx);
-                                });
-                            } else {
-                                this.editing_bother = false;
-                                if let Err(e) = this.exec("daemon.set", &serde_json::json!({"autonomy": value}), window, cx) {
-                                    this.error = Some(e);
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }));
+        let picker = self.select(
+            super::select::Select {
+                id: "bother",
+                label,
+                options: BOTHER.iter().map(|(v, l)| ((*v).to_owned(), (*l).to_owned())).collect(),
+                current: mode,
+                width: None,
+                height: theme::SIDE_ROW_H,
+                up: false,
+            },
+            std::rc::Rc::new(|this: &mut Shell, value: &str, window: &mut Window, cx: &mut Context<Shell>| {
+                if value == "custom" {
+                    this.editing_bother = true;
+                    let rule = this.daemon_settings.as_ref().map(|d| d.bother.clone()).unwrap_or_default();
+                    this.bother_input.update(cx, |s, cx| {
+                        s.set_value(rule, window, cx);
+                        s.focus(window, cx);
+                    });
+                } else {
+                    this.editing_bother = false;
+                    if let Err(e) = this.exec("daemon.set", &serde_json::json!({"autonomy": value}), window, cx) {
+                        this.error = Some(e);
+                    }
                 }
-                let w = wide.get();
-                theme::float_list(&p).w(px(if w > 0. { w } else { 268. })).child(rows).into_any_element()
-            });
+            }),
+            cx,
+        );
         v_flex()
             .w_full()
             .gap(theme::z(8.))

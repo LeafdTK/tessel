@@ -33,6 +33,7 @@ mod panel;
 mod proof;
 mod board;
 mod stage;
+mod select;
 #[cfg(test)]
 pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
@@ -347,7 +348,7 @@ pub struct Shell {
     pub(crate) task_change: Entity<InputState>,
     pub(crate) bother_input: Entity<InputState>,
     pub(crate) editing_bother: bool,
-    pub(crate) bother_w: std::rc::Rc<std::cell::Cell<f32>>,
+    pub(crate) select_w: std::cell::RefCell<std::collections::HashMap<&'static str, std::rc::Rc<std::cell::Cell<f32>>>>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
     pub(crate) saved_views: Vec<tessel_proto::views::View>,
@@ -883,7 +884,7 @@ impl Shell {
             task_change,
             bother_input,
             editing_bother: false,
-            bother_w: Default::default(),
+            select_w: Default::default(),
             tasks: Vec::new(),
             changing_task: None,
             saved_views: Vec::new(),
