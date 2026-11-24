@@ -42,6 +42,7 @@ pub struct Config {
     /// how long an interrupt gets before we stop the process outright.
     pub interrupt_grace: Duration,
     pub tick: Duration,
+    pub watch_every: Duration,
     /// `tesselctl`, to give every agent tessel's tools. none: agents get none.
     pub tools_bin: Option<std::path::PathBuf>,
     pub titles: bool,
@@ -62,6 +63,7 @@ impl Config {
             idle_reap: Duration::from_secs(15 * 60),
             interrupt_grace: Duration::from_secs(8),
             tick: Duration::from_millis(500),
+            watch_every: Duration::from_secs(5),
             tools_bin: None,
             titles: false,
             adopted: HashSet::new(),
@@ -86,6 +88,8 @@ pub enum HubMsg {
     RunAdvance { run: SessionId },
     Proof { session: SessionId, proof: Box<tessel_proto::proof::Proof> },
     ProofIdle { session: SessionId },
+    Seen { key: String, workflow: String, cwd: Option<String>, files: std::collections::BTreeMap<String, u128> },
+    Labeled { workflow: String, cwd: Option<String>, trigger: String, issues: Vec<serde_json::Value> },
     Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
@@ -244,6 +248,7 @@ pub struct Hub {
     land_queue: std::collections::VecDeque<String>,
     landing: Option<String>,
     egress: Option<crate::egress::Egress>,
+    triggers: triggers_state::State,
     asks: HashMap<(SessionId, String), (ClientId, u64)>,
     choices_kept: HashMap<String, (Millis, Vec<tessel_proto::Choice>)>,
     /// asked to restart: handed over once no agent is mid-turn, or the wait runs out.
@@ -341,6 +346,7 @@ impl Hub {
             land_queue: Default::default(),
             landing: None,
             egress: None,
+            triggers: Default::default(),
             asks: HashMap::new(),
             choices_kept: HashMap::new(),
             next_term: 1,
@@ -705,6 +711,8 @@ impl Hub {
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
             HubMsg::RunAdvance { run } => self.advance_run(run),
             HubMsg::Landed { task, result } => self.task_landed(task, result),
+            HubMsg::Seen { key, workflow, cwd, files } => self.files_seen(key, workflow, cwd, files),
+            HubMsg::Labeled { workflow, cwd, trigger, issues } => self.labeled(workflow, cwd, trigger, issues),
             HubMsg::ProofIdle { session } => {
                 self.proving.remove(&session);
             }
@@ -1503,6 +1511,8 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::Triggers => Ok(self.triggers_response()),
+            Request::TriggerFire { workflow, event, cwd } => self.fire_by_hand(&workflow, event, cwd),
             Request::Keys => Ok(self.keys_response()),
             Request::KeySet { key, value } => self.key_set(key, value),
             Request::KeyRemove { name } => self.key_remove(&name),
@@ -2683,7 +2693,17 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let mut term = None;
         let mut message = None;
         let mut problem = None;
+        let mut filed = None;
         match &step.does {
+            StepDoes::Task(title) => {
+                let repo = step.repo.as_deref().map(render).unwrap_or_default();
+                let spec = step.spec.as_deref().map(render).unwrap_or_default();
+                match self.task_create(repo, render(title), spec, Vec::new(), None, true, None) {
+                    Ok(Response::Task { task }) => filed = Some(format!("Filed {}: {}", task.id, task.title)),
+                    Ok(_) => {}
+                    Err(e) => problem = Some(e.message),
+                }
+            }
             StepDoes::Shell(cmd) => match self.open_term(Some(session), rl.folder.clone(), vec![render(cmd)], 120, 32, false) {
                 Ok(info) => term = Some(info.id),
                 Err(e) => problem = Some(e.message),
@@ -2743,6 +2763,22 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         }
         if let Some(p) = problem {
             self.fail_run(run_id, p);
+            return;
+        }
+        if let Some(text) = filed
+            && let Some(rl) = self.runs.get_mut(&run_id)
+        {
+            let s = &mut rl.run.steps[at];
+            s.state = StepState::Done;
+            s.finished_ms = Some(now_ms());
+            rl.texts.insert(step.id.clone(), text);
+            rl.run.at += 1;
+            if rl.run.at >= rl.run.steps.len() {
+                self.finish_run(run_id);
+            } else {
+                self.sync_run(run_id);
+                self.start_step(run_id);
+            }
         }
     }
 
@@ -2949,6 +2985,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
 
     fn tick(&mut self) {
         self.tasks_tick();
+        self.triggers_tick();
         let now = now_ms();
         // every half a minute, while agents run, a look at what's under them:
         // so what they start is known even if it outlives them between looks.
@@ -3157,6 +3194,9 @@ const SIGN_INS: [(&str, &str); 2] = [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token")
 
 #[path = "hub_tasks.rs"]
 mod tasks;
+
+#[path = "hub_triggers.rs"]
+mod triggers_state;
 
 fn load_settings(path: &std::path::Path) -> tessel_proto::DaemonSettings {
     let mut s = load_settings_as_saved(path);

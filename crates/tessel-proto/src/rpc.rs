@@ -274,6 +274,14 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    Triggers,
+    TriggerFire {
+        workflow: String,
+        #[serde(default)]
+        event: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+    },
     Keys,
     KeySet {
         key: crate::keys::KeyInfo,
@@ -867,6 +875,9 @@ pub enum Response {
     },
     Tasks {
         tasks: Vec<crate::task::Task>,
+    },
+    Triggers {
+        triggers: Vec<crate::workflow::TriggerInfo>,
     },
     Keys {
         keys: Vec<crate::keys::KeyInfo>,

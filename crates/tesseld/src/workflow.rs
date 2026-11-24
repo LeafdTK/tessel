@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use tessel_proto::{Choice, Input, InputKind, Options, Pick, Step, StepDoes, Workflow};
 
-const TOP: [&str; 10] = ["name", "icon", "description", "say", "title", "folder", "model", "effort", "inputs", "steps"];
+const TOP: [&str; 11] = ["name", "icon", "description", "say", "title", "folder", "model", "effort", "inputs", "steps", "on"];
 const INPUT_KEYS: [&str; 6] = ["label", "type", "optional", "options", "placeholder", "default"];
-const STEP_KEYS: [&str; 9] = ["id", "name", "prompt", "ask", "shell", "fresh", "doc", "model", "effort"];
+const STEP_KEYS: [&str; 12] = ["id", "name", "prompt", "ask", "shell", "task", "repo", "spec", "fresh", "doc", "model", "effort"];
 
 pub fn dir(home: &Path) -> PathBuf {
     home.join("workflows")
@@ -30,6 +30,7 @@ pub fn parse(id: &str, path: &str, text: &str) -> Result<Workflow, String> {
             "effort" => w.effort = Some(text_of(v)),
             "inputs" => w.inputs = inputs(v, &mut problems),
             "steps" => w.steps = steps(v, &mut problems),
+            "on" => w.on = triggers(v, &mut problems),
             other => problems.push(format!("\"{other}\" isn't something a workflow has. it has: {}", TOP.join(", "))),
         }
     }
@@ -39,13 +40,25 @@ pub fn parse(id: &str, path: &str, text: &str) -> Result<Workflow, String> {
     if w.steps.is_empty() {
         problems.push("it has no steps: give it at least one, like `steps: [\"what to do\"]`".into());
     }
-    let declared: Vec<&str> = w.inputs.iter().map(|i| i.id.as_str()).collect();
+    let mut declared: Vec<&str> = w.inputs.iter().map(|i| i.id.as_str()).collect();
+    if !w.on.is_empty() {
+        declared.push("event");
+        for i in w.inputs.iter().filter(|i| !i.optional && i.default.is_none()) {
+            problems.push(format!("it runs by itself, so \"{}\" needs a default", i.id));
+        }
+    }
     let mut texts: Vec<(String, String)> = Vec::new();
     texts.extend(w.title.iter().map(|t| ("title".to_owned(), t.clone())));
     texts.extend(w.folder.iter().map(|t| ("folder".to_owned(), t.clone())));
     for s in &w.steps {
-        if let StepDoes::Prompt(t) | StepDoes::Ask(t) | StepDoes::Shell(t) = &s.does {
+        if let StepDoes::Prompt(t) | StepDoes::Ask(t) | StepDoes::Shell(t) | StepDoes::Task(t) = &s.does {
             texts.push((format!("step \"{}\"", s.name), t.clone()));
+        }
+        for t in s.spec.iter().chain(s.repo.iter()) {
+            texts.push((format!("step \"{}\"", s.name), t.clone()));
+        }
+        if matches!(s.does, StepDoes::Task(_)) && s.repo.as_deref().is_none_or(|r| r.trim().is_empty()) {
+            problems.push(format!("step \"{}\" files a task: say which repository with `repo:`", s.name));
         }
     }
     for i in &w.inputs {
@@ -214,7 +227,7 @@ fn steps(v: &Yaml, problems: &mut Vec<String>) -> Vec<Step> {
     };
     let mut out = Vec::new();
     for (n, item) in items.into_iter().enumerate() {
-        let mut step = Step { id: format!("step{}", n + 1), name: String::new(), does: StepDoes::Unknown, fresh: false, doc: false, model: None, effort: None };
+        let mut step = Step { id: format!("step{}", n + 1), name: String::new(), does: StepDoes::Unknown, fresh: false, doc: false, model: None, effort: None, repo: None, spec: None };
         match item {
             Yaml::String(s) => step.does = StepDoes::Prompt(s.clone()),
             Yaml::Mapping(m) => {
@@ -227,6 +240,9 @@ fn steps(v: &Yaml, problems: &mut Vec<String>) -> Vec<Step> {
                         "prompt" => does.push(StepDoes::Prompt(text_of(v))),
                         "ask" => does.push(StepDoes::Ask(text_of(v))),
                         "shell" => does.push(StepDoes::Shell(text_of(v))),
+                        "task" => does.push(StepDoes::Task(text_of(v))),
+                        "repo" => step.repo = Some(text_of(v)),
+                        "spec" => step.spec = Some(text_of(v)),
                         "fresh" => step.fresh = v.as_bool().unwrap_or(false),
                         "doc" => step.doc = v.as_bool().unwrap_or(false),
                         "model" => step.model = Some(text_of(v)),
@@ -246,11 +262,53 @@ fn steps(v: &Yaml, problems: &mut Vec<String>) -> Vec<Step> {
             step.name = match &step.does {
                 StepDoes::Ask(_) => "Questions".to_owned(),
                 StepDoes::Shell(c) => c.split_whitespace().next().map_or_else(|| "Run".to_owned(), |w| format!("Run {w}")),
+                StepDoes::Task(t) => format!("File: {}", name_from(t)),
                 StepDoes::Prompt(t) => name_from(t),
                 StepDoes::Unknown => format!("Step {}", n + 1),
             };
         }
         out.push(step);
+    }
+    out
+}
+
+fn triggers(v: &Yaml, problems: &mut Vec<String>) -> Vec<tessel_proto::Trigger> {
+    use tessel_proto::Trigger;
+    let Yaml::Mapping(m) = v else {
+        problems.push("on: say when it runs, like {cron: \"0 9 * * 1-5\"}".into());
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (k, v) in m {
+        match text_of(k).as_str() {
+            "cron" => {
+                for at in list_of(v) {
+                    match crate::triggers::Cron::parse(&at) {
+                        Ok(_) => out.push(Trigger::Cron { at }),
+                        Err(e) => problems.push(format!("on.cron \"{at}\": {e}")),
+                    }
+                }
+            }
+            "files" => {
+                let folder = v.get("in").map(text_of).unwrap_or_default();
+                let paths = v.get("paths").map(list_of).unwrap_or_default();
+                if folder.is_empty() || paths.is_empty() {
+                    problems.push("on.files needs in (a folder) and paths (globs in it)".into());
+                } else {
+                    out.push(Trigger::Files { folder, paths });
+                }
+            }
+            "github" => {
+                let repo = v.get("repo").map(text_of).unwrap_or_default();
+                let label = v.get("label").map(text_of).unwrap_or_default();
+                if !repo.contains('/') || label.is_empty() {
+                    problems.push("on.github needs repo (owner/name) and label".into());
+                } else {
+                    out.push(Trigger::Label { repo, label });
+                }
+            }
+            other => problems.push(format!("on: \"{other}\" isn't one: cron, files or github")),
+        }
     }
     out
 }
@@ -289,6 +347,7 @@ pub fn render(text: &str, picked: &BTreeMap<String, Pick>, steps: &HashMap<Strin
         let p = picked.get(head)?;
         Some(match field {
             Some("label") => p.label.clone(),
+            Some(f) if p.value.is_object() => p.value.get(f).map(plain).unwrap_or_default(),
             _ => plain(&p.value),
         })
     })

@@ -267,6 +267,10 @@ impl Shell {
                     .when(broken, |d| d.opacity(0.55))
                     .child(Icon::empty().path(format!("icons/{}.svg", w.icon.as_deref().unwrap_or("workflow"))).size(theme::z(14.)).text_color(p.secondary))
                     .child(div().set(Type::Callout).text_color(p.label).child(w.name.clone()))
+                    .when(!w.on.is_empty(), |d| {
+                        let when: Vec<String> = w.on.iter().map(|t| t.describe()).collect();
+                        d.aria_label(SharedString::from(format!("{}, runs by itself {}", w.name, when.join(" and ")))).child(Icon::empty().path("icons/clock.svg").size(theme::z(12.)).text_color(p.tertiary))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Err(e) = this.open_workflow(&id, window, cx) {
                             this.error = Some(e);

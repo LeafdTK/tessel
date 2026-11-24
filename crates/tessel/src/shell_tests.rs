@@ -3004,7 +3004,7 @@ fn typing_what_a_workflow_does_offers_it_and_its_form_runs_it(cx: &mut TestAppCo
             tessel_proto::Input { id: "exam".into(), label: "Exam".into(), kind: tessel_proto::InputKind::Select, optional: false, options: Some(tessel_proto::Options::Tool { server: "canvas".into(), tool: "list_assignments".into(), args: serde_json::json!({"course_id": "{{course}}"}), label: None, value: None, keep_secs: None }), placeholder: None, default: None },
             tessel_proto::Input { id: "focus".into(), label: "Focus".into(), kind: tessel_proto::InputKind::Text, optional: true, options: None, placeholder: None, default: None },
         ],
-        steps: vec![tessel_proto::Step { id: "step1".into(), name: "Write it".into(), does: tessel_proto::StepDoes::Prompt("Write it".into()), fresh: false, doc: true, model: None, effort: None }],
+        steps: vec![tessel_proto::Step { id: "step1".into(), name: "Write it".into(), does: tessel_proto::StepDoes::Prompt("Write it".into()), fresh: false, doc: true, model: None, effort: None, repo: None, spec: None }],
         ..Default::default()
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "workflows", result: Ok(tessel_proto::Response::Workflows { workflows: vec![w] }) }]);

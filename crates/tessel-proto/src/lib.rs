@@ -34,7 +34,7 @@ pub use item::*;
 pub use rpc::*;
 pub use state::*;
 pub use workspace::*;
-pub use workflow::{Choice, Input, InputKind, Options, Pick, Run, RunStep, Step, StepDoes, StepState, Workflow};
+pub use workflow::{Choice, Input, InputKind, Options, Pick, Run, RunStep, Step, StepDoes, StepState, Trigger, Workflow};
 
 /// bump major on a breaking wire change, minor on an additive one.
 pub const PROTO_MAJOR: u16 = 0;

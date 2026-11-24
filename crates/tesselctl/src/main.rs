@@ -57,6 +57,10 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl key ls|rm NAME|uses             your keys, and what used them
   tesselctl host keys NAME [--off]          share your keys with a vercel box: its firewall adds them, so
                                             they never enter it
+  tesselctl fire WORKFLOW [--title T] [--event JSON]   run a workflow as its trigger would (from a webhook,
+                                            a script, anything that can run a command)
+  tesselctl triggers [--json]               workflows that run by themselves, and when they last did
+  tesselctl daemon install|uninstall [--print]   start tesseld at login, so triggers run with the app closed
   tesselctl prove SESSION [--json]          check a chat's change: its verify commands, the house rules
                                             (.tessel/rules), and independent reviewers. exits 1 when it fails
   tesselctl rules SESSION [--json]          the rules, knowledge and checks that apply where it works
@@ -279,6 +283,29 @@ async fn run() -> anyhow::Result<()> {
                         }
                     }
                     other => bail!("unexpected reply {other:?}"),
+                }
+                Ok(())
+            }
+            "install" | "uninstall" => {
+                let bin = tessel_client::daemon_binary();
+                let print = args.flag("--print");
+                let (path, text) = service_file(&home, &bin);
+                if print {
+                    println!("{text}");
+                    return Ok(());
+                }
+                if what == "uninstall" {
+                    let _ = std::fs::remove_file(&path);
+                    println!("removed {}: tessel starts with the app again", path.display());
+                    return Ok(());
+                }
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(&path, text)?;
+                println!("wrote {}: tesseld starts at login and comes back if it stops, so triggers run with the app closed", path.display());
+                if cfg!(target_os = "macos") {
+                    println!("load it now: launchctl bootstrap gui/$(id -u) {}", path.display());
+                } else {
+                    println!("load it now: systemctl --user enable --now tesseld");
                 }
                 Ok(())
             }
@@ -671,6 +698,35 @@ async fn run() -> anyhow::Result<()> {
                     show(&keys.into_iter().filter(|k| k.name == name).collect::<Vec<_>>());
                 }
                 other => bail!("key {other}? ls, add, rm or uses"),
+            }
+        }
+        "fire" => {
+            let workflow = args.next("a workflow")?;
+            let mut event = match args.opt("--event")? {
+                Some(j) => serde_json::from_str(&j).context("--event is JSON")?,
+                None => serde_json::json!({}),
+            };
+            if let Some(t) = args.opt("--title")? {
+                event["title"] = serde_json::json!(t);
+            }
+            if event.get("title").is_none() {
+                event["title"] = serde_json::json!("by hand");
+            }
+            let cwd = Some(std::env::current_dir()?.to_string_lossy().into_owned());
+            match client.request(Request::TriggerFire { workflow, event, cwd }).await? {
+                Response::Session { summary } => println!("{}  {}", &summary.id.to_string()[..8], summary.goal),
+                other => println!("{other:?}"),
+            }
+        }
+        "triggers" => {
+            let Response::Triggers { triggers } = client.request(Request::Triggers).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&triggers)?);
+            } else if triggers.is_empty() {
+                println!("no workflow runs by itself: give one `on:` (tesselctl help has the format)");
+            }
+            for t in triggers.iter().filter(|_| !json) {
+                println!("{:<24} {}{}", t.name, t.trigger.describe(), t.last.as_deref().map(|l| format!("  (last: {l})")).unwrap_or_default());
             }
         }
         "prove" => {
@@ -1395,4 +1451,20 @@ mod tests {
 pub(crate) fn key_secret(name: &str) -> Option<String> {
     let out = std::process::Command::new("security").args(["find-generic-password", "-s", "tessel", "-a", &format!("key:{name}"), "-w"]).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim_end_matches('\n').to_owned()).filter(|s| !s.is_empty())
+}
+
+pub(crate) fn service_file(home: &std::path::Path, bin: &std::path::Path) -> (std::path::PathBuf, String) {
+    let user = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let (bin, home) = (bin.to_string_lossy(), home.to_string_lossy());
+    if cfg!(target_os = "macos") {
+        let path = user.join("Library/LaunchAgents/dev.tessel.tesseld.plist");
+        let text = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>dev.tessel.tesseld</string>\n  <key>ProgramArguments</key><array><string>{bin}</string></array>\n  <key>EnvironmentVariables</key><dict><key>TESSEL_HOME</key><string>{home}</string></dict>\n  <key>RunAtLoad</key><true/>\n  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n  <key>ProcessType</key><string>Background</string>\n</dict>\n</plist>\n"
+        );
+        (path, text)
+    } else {
+        let path = user.join(".config/systemd/user/tesseld.service");
+        let text = format!("[Unit]\nDescription=tessel daemon\n\n[Service]\nExecStart={bin}\nEnvironment=TESSEL_HOME={home}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n");
+        (path, text)
+    }
 }

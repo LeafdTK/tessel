@@ -2013,3 +2013,71 @@ async fn agents_get_placeholders_never_secrets_and_a_sealed_repository_seals_the
         assert!(profile.contains("(deny network*)") && profile.contains(&*std::fs::canonicalize(&repo).unwrap().to_string_lossy()));
     }
 }
+
+fn workflow_file(d: &Daemon, name: &str, yaml: &str) {
+    let dir = d.cfg.paths.home.join("workflows");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{name}.yaml")), yaml).unwrap();
+}
+
+#[tokio::test]
+async fn a_schedule_runs_a_workflow_once_a_minute_and_a_file_change_runs_one_once() {
+    let d = Daemon::start_with(&["plain+"], |cfg| cfg.watch_every = Duration::from_millis(30)).await;
+    let notes = d.cfg.paths.home.join("notes");
+    std::fs::create_dir_all(&notes).unwrap();
+    std::fs::write(notes.join("a.md"), "a").unwrap();
+    workflow_file(&d, "minutely", "name: Minutely\non: {cron: \"* * * * *\"}\nsteps:\n  - \"Say hi, it's {{event.title}}\"\n");
+    workflow_file(&d, &"watch", &format!("name: Watch\non:\n  files: {{in: \"{}\", paths: [\"*.md\"]}}\nsteps:\n  - \"These changed: {{{{event.files}}}}\"\n", notes.display()));
+    let (c, _) = d.client().await;
+    let wrote = |needle: &str| d.backend.written.lock().unwrap().iter().filter(|l| l.contains(needle)).count();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while wrote("Say hi, it's Minutely at") == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "the schedule never ran");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(wrote("Say hi, it's Minutely at"), 1, "once in its minute, however often it's checked");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    std::fs::write(notes.join("b.md"), "b").unwrap();
+    std::fs::write(notes.join("ignored.txt"), "x").unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while wrote("These changed: b.md") == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "the change never ran it: {:?}", d.backend.written.lock().unwrap().iter().filter(|l| l.contains("changed")).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(wrote("These changed:"), 1);
+    let Response::Triggers { triggers } = c.request(Request::Triggers).await.unwrap() else { panic!() };
+    assert!(triggers.iter().any(|t| t.name == "Watch" && t.last.as_deref() == Some("ran")));
+}
+
+#[tokio::test]
+async fn a_triggered_workflow_changes_code_only_by_filing_a_task() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("web");
+    std::fs::create_dir_all(&repo).unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["commit", "-q", "--allow-empty", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    workflow_file(&d, "triage", &format!("name: Triage\non: {{github: {{repo: acme/web, label: agent}}}}\nsteps:\n  - task: \"Fix {{{{event.title}}}}\"\n    repo: \"{}\"\n    spec: \"From {{{{event.url}}}}: {{{{event.body}}}}\"\n", repo.display()));
+    workflow_file(&d, "broken", "name: Broken\non: {cron: \"0 9 * * *\"}\ninputs:\n  who: {label: Who}\nsteps: [\"hi {{who}}\"]\n");
+    let (c, _) = d.client().await;
+    let event = serde_json::json!({"title": "the login bug", "url": "https://github.com/acme/web/issues/7", "body": "it 500s"});
+    c.request(Request::TriggerFire { workflow: "triage".into(), event, cwd: None }).await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let task = loop {
+        let Response::Tasks { tasks } = c.request(Request::TaskList).await.unwrap() else { panic!() };
+        if let Some(t) = tasks.into_iter().find(|t| t.title == "Fix the login bug") {
+            break t;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no task was filed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert!(task.spec.contains("issues/7") && task.spec.contains("it 500s"));
+    assert_ne!(task.state, TaskState::Draft, "ready to be picked up");
+    let Response::Workflows { workflows } = c.request(Request::Workflows { cwd: None }).await.unwrap() else { panic!() };
+    let broken = workflows.iter().find(|w| w.name == "Broken").unwrap();
+    assert!(broken.problems.iter().any(|p| p.contains("\"who\" needs a default")), "{:?}", broken.problems);
+}

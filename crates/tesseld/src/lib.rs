@@ -26,6 +26,7 @@ pub mod setup;
 pub mod ship;
 pub mod store;
 pub mod term;
+pub mod triggers;
 pub mod voice;
 pub mod workspace;
 pub mod workflow;
