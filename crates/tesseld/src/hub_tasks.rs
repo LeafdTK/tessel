@@ -7,6 +7,22 @@ const NOBODY: ClientId = ClientId::MAX;
 pub const DEFAULT_PARALLEL: u32 = 3;
 
 const PAUSED: &str = "paused";
+
+fn first_problem(p: &tessel_proto::proof::Proof) -> Option<String> {
+    if let Some(v) = p.verify.iter().find(|v| !v.ok) {
+        return Some(format!("`{}` fails", v.command));
+    }
+    if let Some(t) = p.tried.iter().find(|t| !t.ok && !t.broken) {
+        return Some(format!("{} doesn't work", t.title));
+    }
+    let blocking: Vec<&tessel_proto::proof::Finding> = p.standing().filter(|f| f.severity == tessel_proto::proof::Severity::Block).collect();
+    let first = blocking.first()?;
+    let at = first.file.as_ref().map(|f| format!(" in {f}")).unwrap_or_default();
+    Some(match blocking.len() {
+        1 => format!("{}{at}", first.title),
+        n => format!("{}{at}, and {} more", first.title, n - 1),
+    })
+}
 const WAITING: &str = "finished while paused: it's checked when the factory resumes";
 
 impl Hub {
@@ -83,6 +99,11 @@ impl Hub {
             pr: None,
             issue: None,
             attachments: Vec::new(),
+            land: None,
+            ask: None,
+            summary: None,
+            changes: Vec::new(),
+            review: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -186,6 +207,11 @@ impl Hub {
             }
             TaskAct::Unknown => return Err(RpcError::new(ErrorCode::Invalid, "tessel doesn't know that")),
         }
+        if let Some(t) = self.tasks.get_mut(id)
+            && t.state != TaskState::Review
+        {
+            t.ask = None;
+        }
         self.task_saved(id);
         self.dispatch();
         self.pump_land();
@@ -224,7 +250,7 @@ impl Hub {
             goal: Some(title.clone()),
             prompt: Some(prompt),
             attachments,
-            model: Some(f.model),
+            model: Some(f.model.clone().unwrap_or_else(|| self.settings.role("build"))),
             parent: None,
             fork: None,
             task: Some(id.to_owned()),
@@ -244,7 +270,7 @@ impl Hub {
             goal: Some(format!("Plan: {title}")),
             prompt: Some(prompt),
             attachments: Vec::new(),
-            model: Some(f.model),
+            model: Some(f.model.clone().unwrap_or_else(|| self.settings.role("plan"))),
             parent: None,
             fork: None,
             task: Some(id.to_owned()),
@@ -327,7 +353,17 @@ impl Hub {
             self.dispatch();
             return true;
         }
-        self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
+        let said = self.sessions.get(&session).and_then(|l| {
+            l.state.items().iter().rev().find_map(|i| match &i.body {
+                tessel_proto::ItemBody::Text { text, .. } if !text.trim().is_empty() => Some(text.trim().chars().take(1500).collect::<String>()),
+                _ => None,
+            })
+        });
+        let t = self.tasks.get_mut(&id).unwrap();
+        t.state = TaskState::Proving;
+        if said.is_some() {
+            t.summary = said;
+        }
         self.task_saved(&id);
         if !self.proving.contains(&session) {
             self.start_proof(session, false, false);
@@ -357,19 +393,20 @@ impl Hub {
                 continue;
             }
             match last.as_deref() {
-                Some(PAUSED) => {
+                Some(WAITING) => {}
+                _ if self.sessions.get(&s).is_some_and(|l| l.agent.is_none()) || last.as_deref() == Some(PAUSED) => {
                     self.note(&id, "tessel", "resumed");
                     if !self.tell_agent(s, "The factory was paused while you worked. Carry on with the task where you left off.".into()) {
                         self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
                     }
                 }
-                Some(WAITING) => {
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
-                    if !self.proving.contains(&s) {
-                        self.start_proof(s, false, false);
-                    }
-                }
                 _ => {}
+            }
+            if last.as_deref() == Some(WAITING) {
+                self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
+                if !self.proving.contains(&s) {
+                    self.start_proof(s, false, false);
+                }
             }
             self.task_saved(&id);
         }
@@ -389,6 +426,7 @@ impl Hub {
             let t = self.tasks.get_mut(&id).unwrap();
             t.proof_cost_usd += proof.cost_usd;
             t.risk = Some(board::risk(proof));
+            t.changes = proof.changes.clone();
         }
         let word = crate::proof::verdict_word(proof);
         match next {
@@ -402,16 +440,87 @@ impl Hub {
                 }
             }
             Next::Review(why) => {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
-                self.note(&id, "tessel", match why {
-                    Some(w) => format!("{word}: {w}"),
+                let why = match why {
+                    Some(w) if proof.verdict == tessel_proto::proof::Verdict::Failed => format!("It still fails its checks after {} tries: {}", t.attempts, first_problem(proof).unwrap_or(w)),
+                    Some(w) => format!("It couldn't be checked: {w}"),
                     None => word,
-                });
+                };
+                self.escalate(&id, why);
             }
-            Next::Land => {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Landing;
-                self.note(&id, "tessel", format!("{word}: low risk, landing it"));
-                self.land_queue.push_back(id.clone());
+            Next::Land => self.final_review(&id, session, proof),
+        }
+        self.task_saved(&id);
+        self.dispatch();
+        self.pump_land();
+    }
+
+    fn escalate(&mut self, id: &str, why: String) {
+        if let Some(t) = self.tasks.get_mut(id) {
+            t.state = TaskState::Review;
+            t.ask = Some(why.clone());
+        }
+        self.note(id, "tessel", why);
+    }
+
+    fn final_review(&mut self, id: &str, session: SessionId, proof: &tessel_proto::proof::Proof) {
+        if self.settings.autonomy == "me" {
+            self.escalate(id, "Done and checked. You review finished work yourself (Factory settings).".into());
+            return;
+        }
+        let Some(t) = self.tasks.get(id).cloned() else { return };
+        let Some(ws) = self.sessions.get(&session).map(|l| std::path::PathBuf::from(&l.state.meta.cwd)) else {
+            self.escalate(id, "Its workspace is gone.".into());
+            return;
+        };
+        self.note(id, "tessel", "in final review");
+        let (tx, backend, model, report, task) = (self.tx.clone(), self.backend.clone(), self.settings.role("review"), proof.report(), id.to_owned());
+        tokio::spawn(async move {
+            let diff = crate::proof::change(&ws).await.map(|c| c.diff).unwrap_or_default();
+            let mut job = tessel_agent::backend::Job::review(board::final_review_prompt(&t, &report, &diff), ws, &model);
+            job.system = "You decide whether finished work lands, for a person who trusts you to. Be decisive and brief.".into();
+            let result = backend.job(job).await.map(|r| (board::read_decision(&r.text), r.cost_usd)).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(HubMsg::Reviewed { task, result });
+        });
+    }
+
+    pub(super) fn task_reviewed(&mut self, id: String, result: Result<(board::Decision, f64), String>) {
+        let Some(t) = self.tasks.get(&id).cloned() else { return };
+        if t.state != TaskState::Proving {
+            return;
+        }
+        let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
+        let risky = t.risk == Some(tessel_proto::task::Risk::High);
+        match result {
+            Err(e) => self.escalate(&id, format!("The final review couldn't finish: {e}")),
+            Ok((decision, cost)) => {
+                self.tasks.get_mut(&id).unwrap().proof_cost_usd += cost;
+                match decision {
+                    board::Decision::Land(why) if risky && self.settings.autonomy != "full" => {
+                        self.tasks.get_mut(&id).unwrap().review = Some(why.clone());
+                        self.escalate(&id, format!("It touches risky code (auth, secrets, migrations or infra), so it's yours to land. The reviewer says: {why}"));
+                    }
+                    board::Decision::Land(why) => {
+                        let task = self.tasks.get_mut(&id).unwrap();
+                        task.review = Some(why.clone());
+                        task.state = TaskState::Landing;
+                        self.note(&id, "tessel", format!("approved: {why}"));
+                        self.land_queue.push_back(id.clone());
+                    }
+                    board::Decision::Change(why, change) if t.attempts < f.fix_rounds && t.session.is_some_and(|s| self.sessions.contains_key(&s)) => {
+                        let session = t.session.unwrap();
+                        let task = self.tasks.get_mut(&id).unwrap();
+                        task.attempts += 1;
+                        task.review = Some(why.clone());
+                        self.note(&id, "tessel", format!("sent back by the reviewer: {why}"));
+                        if self.tell_agent(session, format!("The final review sent this back: {why}\n\nChange: {change}\n\nMake the change, commit, then stop: it's checked again.")) {
+                            self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
+                        } else {
+                            self.escalate(&id, why);
+                        }
+                    }
+                    board::Decision::Change(why, _) => self.escalate(&id, format!("The reviewer still wants changes after {} tries: {why}", t.attempts)),
+                    board::Decision::Ask(why) => self.escalate(&id, why),
+                }
             }
         }
         self.task_saved(&id);
@@ -434,7 +543,7 @@ impl Hub {
             let root = std::path::PathBuf::from(&t.repo);
             let (pr, issue) = (t.pr.clone(), t.issue.clone());
             let verify = crate::rules::config(std::path::Path::new(&ws), &root).verify;
-            let mode = board::factory(std::path::Path::new(&ws), &root).land;
+            let mode = t.land.as_deref().map(board::parse_land).or(board::factory(std::path::Path::new(&ws), &root).land).unwrap_or_else(|| board::parse_land(&self.settings.land));
             self.landing = Some(id.clone());
             let (tx, backend) = (self.tx.clone(), self.backend.clone());
             tokio::spawn(async move {
@@ -457,6 +566,12 @@ impl Hub {
                 t.landed = Some(sha);
                 self.note(&id, "tessel", said);
                 self.grade_landed(&id);
+            }
+            Ok(Landed::Kept { branch, said }) => {
+                let t = self.tasks.get_mut(&id).unwrap();
+                t.state = TaskState::Landed;
+                t.landed = Some(branch);
+                self.note(&id, "tessel", said);
             }
             Ok(Landed::Opened { url, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
@@ -622,6 +737,9 @@ impl Hub {
             home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
             tessel_home: self.cfg.paths.home.clone(),
             no_comments: self.settings.no_comments,
+            check_model: self.settings.role("check"),
+            look_model: self.settings.role("look"),
+            test_model: self.settings.role("test"),
         };
         let room = crate::proof::room(&self.usage, (now_ms() / 1000) as i64, false);
         let (tx, backend) = (self.tx.clone(), self.backend.clone());

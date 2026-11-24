@@ -114,6 +114,11 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         pr: pr.map(str::to_owned),
         issue: (id == "t7a8b").then(|| "https://github.com/you/shop/issues/57".to_owned()),
         attachments: vec![],
+        land: None,
+        ask: (state == TaskState::Review).then(|| "It changes how coupons stack with sales, which the task didn't say. Should a coupon apply on top of a sale price?".to_owned()),
+        summary: Some("Added a coupon field to the cart. Codes are checked on the server; percent and fixed discounts apply before tax, and expired codes are refused with a message under the field.".to_owned()),
+        changes: vec![tessel_proto::task::FileStat { path: "src/cart/coupon.rs".into(), added: 84, removed: 3 }, tessel_proto::task::FileStat { path: "src/cart/view.rs".into(), added: 22, removed: 9 }, tessel_proto::task::FileStat { path: "tests/coupon.rs".into(), added: 61, removed: 0 }],
+        review: (state == TaskState::Landed).then(|| "Does what was asked, and the tests cover both kinds of discount.".to_owned()),
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }
@@ -183,7 +188,9 @@ const SCREENS: &[Screen] = &[
     Screen { name: "board", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
     Screen { name: "home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
+    Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
     Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
+    Screen { name: "settings-factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.settings", r#"{"section": "factory"}"#)] },
     Screen { name: "board-empty", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "board", "pane": "@focused"}"#)] },
 ];
 
@@ -237,6 +244,12 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             UiEvent::Usage(vec![UsageWindow { name: "five_hour".into(), used: 0.42, resets_at: Some((now() / 1000) as i64 + 3 * 3600 + 600), status: "allowed".into() }]),
         ] {
             let _ = events.send(ev);
+        }
+        if screen.name == "board-open" {
+            let _ = window.update(&mut cx, |s, _, _| {
+                s.open_task = Some("t1a2b".into());
+                s.show_working = true;
+            });
         }
         settle(&mut cx, &window);
         while cmds.try_recv().is_ok() {}

@@ -10,6 +10,7 @@ use crate::ship::git;
 pub enum Landed {
     Merged { sha: String, said: String },
     Opened { url: String, said: String },
+    Kept { branch: String, said: String },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +46,19 @@ async fn subject(backend: &Arc<dyn Backend>, ws: &Path, main: &str, title: &str)
     }
 }
 
+async fn checked_out_in(root: &Path, branch: &str) -> Option<std::path::PathBuf> {
+    let list = git(root, &["worktree", "list", "--porcelain"]).await.ok()?;
+    let mut path = None;
+    for line in list.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(std::path::PathBuf::from(p));
+        } else if line.strip_prefix("branch refs/heads/") == Some(branch) {
+            return path;
+        }
+    }
+    None
+}
+
 pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str, verify: &[String], mode: Land, pr: Option<&str>, issue: Option<&str>) -> Result<Landed, Stuck> {
     let main = crate::ship::main_branch(ws).await;
     let other = |e: String| Stuck::Other(e);
@@ -55,7 +69,18 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
         let message = subject(&backend, ws, &main, title).await;
         git(ws, &["commit", "-q", "-m", &message]).await.map_err(other)?;
     }
-    if git(ws, &["rebase", &main]).await.is_err() {
+    let branch = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
+    if mode == Land::Keep {
+        return Ok(Landed::Kept { branch: branch.clone(), said: format!("Kept on {branch}.") });
+    }
+    let target = match &mode {
+        Land::Branch(b) => b.clone(),
+        _ => main.clone(),
+    };
+    if git(ws, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{target}")]).await.is_err() {
+        git(root, &["branch", &target, &main]).await.map_err(other)?;
+    }
+    if git(ws, &["rebase", &target]).await.is_err() {
         let files: Vec<String> = git(ws, &["diff", "--name-only", "--diff-filter=U"]).await.unwrap_or_default().lines().map(str::to_owned).collect();
         let _ = git(ws, &["rebase", "--abort"]).await;
         return Err(Stuck::Conflict(files));
@@ -66,33 +91,40 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             return Err(Stuck::Checks(format!("{command}\n{}", v.output)));
         }
     }
-    let message = subject(&backend, ws, &main, title).await;
+    let message = subject(&backend, ws, &target, title).await;
     let closes = match issue {
-        Some(url) => crate::issues::closes(root, url).await.map(|n| format!("Closes #{n}")),
-        None => None,
+        Some(url) if target == main => crate::issues::closes(root, url).await.map(|n| format!("Closes #{n}")),
+        _ => None,
     };
     match mode {
-        Land::Main => {
-            let here = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
-            if here != main {
-                return Err(Stuck::Other(format!("the main checkout is on {here}, not {main}")));
-            }
-            if !git(root, &["status", "--porcelain", "--untracked-files=no"]).await.map_err(other)?.is_empty() {
-                return Err(Stuck::Other("the main checkout has changes of its own".into()));
-            }
-            if git(ws, &["rev-list", "--count", &format!("{main}..HEAD")]).await.map_err(other)?.trim() == "0" {
+        Land::Main | Land::Branch(_) => {
+            if git(ws, &["rev-list", "--count", &format!("{target}..HEAD")]).await.map_err(other)?.trim() == "0" {
                 return Err(Stuck::Other("there's nothing to land".into()));
             }
-            let branch = git(ws, &["rev-parse", "--abbrev-ref", "HEAD"]).await.map_err(other)?;
-            git(ws, &["reset", "--soft", &main]).await.map_err(other)?;
+            let there = checked_out_in(root, &target).await;
+            if let Some(dir) = &there
+                && !git(dir, &["status", "--porcelain", "--untracked-files=no"]).await.map_err(other)?.is_empty()
+            {
+                return Err(Stuck::Other(format!("{target} is checked out with changes of its own")));
+            }
+            git(ws, &["reset", "--soft", &target]).await.map_err(other)?;
             let whole = match &closes {
                 Some(c) => format!("{message}\n\n{c}"),
                 None => message.clone(),
             };
             git(ws, &["commit", "-q", "-m", &whole]).await.map_err(other)?;
-            git(root, &["merge", "--ff-only", &branch]).await.map_err(other)?;
-            let sha = git(root, &["rev-parse", "--short", "HEAD"]).await.unwrap_or_default();
-            Ok(Landed::Merged { sha, said: format!("Merged into {main}.") })
+            match &there {
+                Some(dir) => {
+                    git(dir, &["merge", "--ff-only", &branch]).await.map_err(other)?;
+                }
+                None => {
+                    let old = git(ws, &["rev-parse", &format!("refs/heads/{target}")]).await.map_err(other)?;
+                    let new = git(ws, &["rev-parse", "HEAD"]).await.map_err(other)?;
+                    git(ws, &["update-ref", &format!("refs/heads/{target}"), &new, &old]).await.map_err(other)?;
+                }
+            }
+            let sha = git(ws, &["rev-parse", "--short", &format!("refs/heads/{target}")]).await.unwrap_or_default();
+            Ok(Landed::Merged { sha, said: format!("Merged into {target}.") })
         }
         Land::PullRequest if let Some(url) = pr => {
             let remote = crate::ship::home(root).await.remote;
@@ -103,6 +135,7 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             let (said, url) = crate::ship::ship(ws, root, title, ShipStep::PullRequest { title: message, body: closes.unwrap_or_default(), draft: false }).await.map_err(other)?;
             Ok(Landed::Opened { url: url.unwrap_or_default(), said })
         }
+        Land::Keep => unreachable!(),
     }
 }
 
@@ -190,5 +223,20 @@ mod tests {
         assert!(matches!(&stuck, Stuck::Checks(out) if out.contains("error: nope")), "{stuck:?}");
         assert_eq!(sh(&root, &["rev-parse", "HEAD"]), before);
         assert_eq!(subject(&backend(), &ws, "main", "x").await, "fix: b", "a single typed commit keeps its own subject, for free");
+    }
+
+    #[tokio::test]
+    async fn a_task_can_land_on_another_branch_or_stay_on_its_own() {
+        let (_base, root, ws) = repo();
+        std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+        sh(&ws, &["commit", "-q", "-am", "fix: two"]);
+        let Landed::Merged { said, .. } = land(backend(), &ws, &root, "Two", &[], Land::Branch("staging".into()), None, None).await.unwrap() else { panic!() };
+        assert_eq!(said, "Merged into staging.");
+        assert_eq!(sh(&root, &["log", "-1", "--format=%s", "staging"]), "fix: two", "a branch nobody has checked out is moved along");
+        assert_eq!(sh(&root, &["log", "-1", "--format=%s", "main"]), "feat: start", "main is left alone");
+        std::fs::write(ws.join("b.txt"), "kept\n").unwrap();
+        let Landed::Kept { branch, .. } = land(backend(), &ws, &root, "Keep", &[], Land::Keep, None, None).await.unwrap() else { panic!() };
+        assert_eq!(branch, "tessel/t1");
+        assert_eq!(sh(&ws, &["status", "--porcelain"]), "", "its work is committed on its own branch");
     }
 }

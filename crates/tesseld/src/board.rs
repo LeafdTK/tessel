@@ -3,16 +3,29 @@ use std::path::Path;
 use tessel_proto::proof::{Proof, Verdict};
 use tessel_proto::task::{Risk, Task, TaskState};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Land {
     Main,
     PullRequest,
+    Branch(String),
+    Keep,
+}
+
+pub fn parse_land(s: &str) -> Land {
+    match s.trim() {
+        "pr" | "pull-request" => Land::PullRequest,
+        "keep" => Land::Keep,
+        other => match other.strip_prefix("branch:").map(str::trim).filter(|b| !b.is_empty()) {
+            Some(b) => Land::Branch(b.to_owned()),
+            None => Land::Main,
+        },
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Factory {
-    pub model: String,
-    pub land: Land,
+    pub model: Option<String>,
+    pub land: Option<Land>,
     pub auto_land: bool,
     pub fix_rounds: u32,
     pub checkup_ready: bool,
@@ -24,13 +37,10 @@ pub fn factory(workspace: &Path, root: &Path) -> Factory {
     let f = t.get("factory").and_then(toml::Value::as_table);
     let get = |k: &str| f.and_then(|f| f.get(k));
     Factory {
-        model: get("model").and_then(toml::Value::as_str).unwrap_or("sonnet").to_owned(),
-        land: match get("land").and_then(toml::Value::as_str) {
-            Some("pr") | Some("pull-request") => Land::PullRequest,
-            _ => Land::Main,
-        },
+        model: get("model").and_then(toml::Value::as_str).map(str::to_owned),
+        land: get("land").and_then(toml::Value::as_str).map(parse_land),
         auto_land: get("auto_land").and_then(toml::Value::as_bool).unwrap_or(false),
-        fix_rounds: get("fix_rounds").and_then(toml::Value::as_integer).map_or(2, |n| n.clamp(0, 5) as u32),
+        fix_rounds: get("fix_rounds").and_then(toml::Value::as_integer).map_or(3, |n| n.clamp(0, 5) as u32),
         checkup_ready: get("checkup").and_then(toml::Value::as_str) != Some("draft"),
         issues: get("issues").and_then(toml::Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned),
     }
@@ -95,8 +105,50 @@ pub fn after_proof(task: &Task, p: &Proof, f: &Factory) -> Next {
         )),
         Verdict::Failed => Next::Review(Some(format!("still failing after {} fix rounds", task.attempts))),
         Verdict::Broken => Next::Review(Some(p.problem.clone().unwrap_or_else(|| "it couldn't be checked".into()))),
-        Verdict::Proven if f.auto_land && risk(p) == Risk::Low => Next::Land,
-        _ => Next::Review(None),
+        _ => Next::Land,
+    }
+}
+
+pub fn final_review_prompt(t: &Task, report: &str, diff: &str) -> String {
+    let mut p = String::from(
+        "You are the final reviewer of a change an agent made, deciding for the person who asked for it so they don't have to look. \
+Land it if it does what was asked, completely, and nothing in it is wrong or unsafe. \
+Send it back with \"change\" when something specific is wrong or missing that the agent can fix: say exactly what. \
+Ask the person with \"ask\" only for a decision only they can make: a product or design choice, a risk you can't judge, or a task that's unclear. \
+You can read the repository (Read, Grep, Glob).\n",
+    );
+    p.push_str(&format!("\n## The task\n{}\n", t.title));
+    if !t.spec.trim().is_empty() {
+        p.push_str(&format!("\n{}\n", t.spec.trim()));
+    }
+    for n in t.notes.iter().filter(|n| n.by == "you") {
+        p.push_str(&format!("\nAlso asked: {}\n", n.text));
+    }
+    if let Some(s) = &t.summary {
+        p.push_str(&format!("\n## What the agent says it did\n{s}\n"));
+    }
+    p.push_str(&format!("\n## What the checks found\n{report}\n"));
+    let diff: String = diff.chars().take(100_000).collect();
+    p.push_str(&format!("\n## The change\n```diff\n{diff}\n```\n"));
+    p.push_str("\n## Answer\nEnd with one ```json block and nothing after it: {\"decision\": \"land\" | \"change\" | \"ask\", \"why\": \"one plain sentence the person reads\", \"change\": \"what to change, when you send it back\"}.\n");
+    p
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Decision {
+    Land(String),
+    Change(String, String),
+    Ask(String),
+}
+
+pub fn read_decision(text: &str) -> Decision {
+    let v = crate::proof::json_tail(text).unwrap_or_default();
+    let s = |k: &str| v.get(k).and_then(serde_json::Value::as_str).map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned);
+    let why = s("why").unwrap_or_else(|| "the reviewer didn't say why".into());
+    match s("decision").as_deref() {
+        Some("land") => Decision::Land(why),
+        Some("change") => Decision::Change(why.clone(), s("change").unwrap_or(why)),
+        _ => Decision::Ask(why),
     }
 }
 
@@ -188,9 +240,25 @@ mod tests {
             pr: None,
             issue: None,
             attachments: vec![],
+            land: None,
+            ask: None,
+            summary: None,
+            changes: vec![],
+            review: None,
             created_ms: at,
             updated_ms: at,
         }
+    }
+
+    #[test]
+    fn the_final_reviewer_lands_sends_back_or_asks_and_says_why() {
+        assert_eq!(read_decision("ok\n```json\n{\"decision\": \"land\", \"why\": \"Does what was asked.\"}\n```"), Decision::Land("Does what was asked.".into()));
+        assert_eq!(read_decision("```json\n{\"decision\": \"change\", \"why\": \"Misses the empty cart.\", \"change\": \"Handle an empty cart.\"}\n```"), Decision::Change("Misses the empty cart.".into(), "Handle an empty cart.".into()));
+        assert!(matches!(read_decision("I'm not sure"), Decision::Ask(_)), "anything unclear goes to the person");
+        let mut t = task("a", TaskState::Proving, &[], 0);
+        t.summary = Some("Added coupons.".into());
+        let p = final_review_prompt(&t, "proven", "+x");
+        assert!(p.contains("Added coupons.") && p.contains("\"decision\"") && p.contains("+x"));
     }
 
     #[test]
@@ -223,7 +291,7 @@ mod tests {
 
     #[test]
     fn a_failed_proof_goes_back_to_the_agent_a_few_times_then_to_you() {
-        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2, checkup_ready: true, issues: None };
+        let f = Factory { model: None, land: Some(Land::Main), auto_land: true, fix_rounds: 2, checkup_ready: true, issues: None };
         let failed = Proof { verdict: Verdict::Failed, ..Default::default() };
         let mut t = task("a", TaskState::Proving, &[], 0);
         assert!(matches!(after_proof(&t, &failed, &f), Next::Fix(m) if m.contains("Fix the ones that are real")));
@@ -236,15 +304,13 @@ mod tests {
 
     #[test]
     fn only_a_small_clean_proven_change_lands_by_itself_and_only_when_asked_to() {
-        let f = Factory { model: "sonnet".into(), land: Land::Main, auto_land: true, fix_rounds: 2, checkup_ready: true, issues: None };
+        let f = Factory { model: None, land: Some(Land::Main), auto_land: true, fix_rounds: 2, checkup_ready: true, issues: None };
         let t = task("a", TaskState::Proving, &[], 0);
         let clean = Proof { verdict: Verdict::Proven, files: 2, ..Default::default() };
         assert_eq!(risk(&clean), Risk::Low);
-        assert_eq!(after_proof(&t, &clean, &f), Next::Land);
-        assert_eq!(after_proof(&t, &clean, &Factory { auto_land: false, ..f.clone() }), Next::Review(None));
+        assert_eq!(after_proof(&t, &clean, &f), Next::Land, "a passing proof goes on to the final review");
         let near_auth = Proof { risky: true, ..clean.clone() };
         assert_eq!(risk(&near_auth), Risk::High);
-        assert_eq!(after_proof(&t, &near_auth, &f), Next::Review(None));
         let warned = Proof { findings: vec![Finding { lens: "scope".into(), rule: None, file: None, line: None, severity: Severity::Warn, title: "x".into(), why: String::new(), confirmed: None }], ..clean.clone() };
         assert_eq!(risk(&warned), Risk::Medium);
         assert_eq!(risk(&Proof { files: 30, ..clean }), Risk::Medium);

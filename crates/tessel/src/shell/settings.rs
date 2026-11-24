@@ -22,7 +22,7 @@ const ACCENTS: [(&str, &str, Option<&str>); 7] = [
 ];
 
 /// the pages of settings, in the rail.
-pub(crate) const SECTIONS: [(&str, &str, &str); 10] = [
+pub(crate) const SECTIONS: [(&str, &str, &str); 11] = [
     ("appearance", "Appearance", "icons/sun-moon.svg"),
     ("themes", "Themes", "icons/swatch-book.svg"),
     ("conversation", "Conversation", "icons/message-square.svg"),
@@ -31,6 +31,7 @@ pub(crate) const SECTIONS: [(&str, &str, &str); 10] = [
     ("agents", "Agents", "icons/bot.svg"),
     ("scripts", "Scripts", "icons/play.svg"),
     ("hosts", "Hosts", "icons/server.svg"),
+    ("factory", "Software factory", "icons/factory.svg"),
     ("keys", "Keys", "icons/key-round.svg"),
     ("customize", "Customize", "icons/layout-dashboard.svg"),
 ];
@@ -517,12 +518,13 @@ impl Shell {
             "scripts" => ("Scripts", self.scripts_settings(cx)),
             "hosts" => ("Hosts", self.hosts_settings(cx)),
             "keys" => ("Keys", self.keys_settings(cx)),
+            "factory" => ("Software factory", self.factory_settings(cx)),
             "customize" => ("Customize", customize_rows),
             _ => ("Appearance", appearance_rows),
         };
         let mut rail = v_flex().w(px(180.)).flex_shrink_0().p_2().gap(px(2.)).border_r_1().border_color(p.separator);
         for (id, name, icon) in SECTIONS {
-            if id == "keys" && !self.factory_on() {
+            if (id == "keys" || id == "factory") && !self.factory_on() {
                 continue;
             }
             let on = id == current;
@@ -657,6 +659,52 @@ impl Shell {
                     let _ = this.exec("terminal.look", &json!({"colors": v}), w, cx);
                 }),
             ))
+    }
+
+    fn factory_settings(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette.get();
+        let Some(d) = self.daemon_settings.clone() else {
+            return v_flex().child(div().p_4().set(Type::Callout).text_color(p.secondary).child("The daemon running now is too old for these. Restart it to get them."));
+        };
+        let choice = |key: String, current: String, options: &[(&'static str, &'static str)], set: std::rc::Rc<dyn Fn(&str) -> serde_json::Value>, cx: &mut Context<Self>| {
+            let mut tray = theme::tray(&p);
+            for (value, label) in options.iter().copied() {
+                let set = set.clone();
+                tray = tray.child(theme::segment(&p, SharedString::from(format!("{key}-{value}")), label, current == value).test_support().on_click(cx.listener(move |this, _, window, cx| {
+                    if let Err(e) = this.exec("daemon.set", &set(value), window, cx) {
+                        this.error = Some(e);
+                    }
+                })));
+            }
+            tray
+        };
+        let models: [(&str, &str); 4] = [("haiku", "Haiku"), ("sonnet", "Sonnet"), ("opus", "Opus"), ("claude-fable-5-2", "Fable")];
+        let mut col = v_flex();
+        for (job, name, _) in tessel_proto::ROLES {
+            let current = d.role(job);
+            let mut options: Vec<(&str, &str)> = Vec::new();
+            if job == "check" {
+                options.push(("auto", "By size"));
+            }
+            options.extend(models);
+            let roles = d.roles.clone();
+            let set: std::rc::Rc<dyn Fn(&str) -> serde_json::Value> = std::rc::Rc::new(move |m: &str| {
+                let mut r = roles.clone();
+                r.insert(job.to_owned(), m.to_owned());
+                json!({"roles": r})
+            });
+            col = col.child(self.setting_row(name, "", choice(format!("role-{job}"), current, &options, set, cx)));
+        }
+        let autonomy_hint = match d.autonomy.as_str() {
+            "me" => "You decide on everything that finishes.",
+            "full" => "The reviewer decides everything, risky code included.",
+            _ => "The reviewer decides; anything touching auth, secrets, migrations or infra comes to you.",
+        };
+        col = col.child(self.setting_row("Who decides on finished work", autonomy_hint, choice("autonomy".into(), d.autonomy.clone(), &[("me", "Me"), ("agent", "Reviewer"), ("full", "Reviewer, always")], std::rc::Rc::new(|v: &str| json!({"autonomy": v})), cx)));
+        col = col.child(self.setting_row("When a task is done", "", choice("land".into(), d.land.clone(), &[("main", "Land on main"), ("pr", "Open a PR"), ("keep", "Keep the branch")], std::rc::Rc::new(|v: &str| json!({"land": v})), cx)));
+        let parallel = d.parallel.unwrap_or(3).to_string();
+        col = col.child(self.setting_row("Tasks at once", "", choice("parallel".into(), parallel, &[("1", "1"), ("2", "2"), ("3", "3"), ("4", "4"), ("6", "6"), ("8", "8")], std::rc::Rc::new(|v: &str| json!({"parallel": v.parse::<u32>().unwrap_or(3)})), cx)));
+        col
     }
 
     pub(crate) fn setting_row(&self, label: &'static str, hint: &'static str, control: impl IntoElement) -> Div {

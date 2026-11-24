@@ -47,6 +47,7 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl secret groq|vercel [--remove]   keep a key in the keychain: groq tidies dictation (fast);
                                             vercel makes dev boxes in vercel sandboxes
   tesselctl task add TITLE… [--spec TEXT] [--after ID]… [--ready] [--plan] [--budget USD] [--repo DIR]
+             [--land main|pr|keep|branch:NAME]   where it goes when it's done
                                             --plan: an agent splits it into small tasks first
                                             a task for the board; ready ones are worked on in workspaces of
                                             their own, proved, and wait for you to land them
@@ -629,8 +630,9 @@ async fn run() -> anyhow::Result<()> {
                     }
                     let ready = args.flag("--ready");
                     let plan = args.flag("--plan");
+                    let land = args.opt("--land")?;
                     let title = args.rest.join(" ");
-                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None, attachments: Vec::new() }).await?)?;
+                    let t = one(client.request(Request::TaskCreate { repo, title, spec, deps, parent: None, ready, budget_usd, plan, from: None, attachments: Vec::new(), land }).await?)?;
                     println!("{}", line(&t));
                 }
                 "issues" => {

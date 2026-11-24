@@ -92,6 +92,7 @@ pub enum HubMsg {
     Labeled { workflow: String, cwd: Option<String>, trigger: String, issues: Vec<serde_json::Value> },
     Landed { task: String, result: Result<crate::land::Landed, crate::land::Stuck> },
     Ci { task: String, result: Result<crate::ci::Ci, String>, why: String },
+    Reviewed { task: String, result: Result<(crate::board::Decision, f64), String> },
     Issue { repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)> },
     Issues { repo: String, issues: Vec<crate::issues::Issue> },
     CheckedUp { repo: String, proof: Box<tessel_proto::proof::Proof>, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)> },
@@ -724,6 +725,7 @@ impl Hub {
             HubMsg::RunAdvance { run } => self.advance_run(run),
             HubMsg::Landed { task, result } => self.task_landed(task, result),
             HubMsg::Ci { task, result, why } => self.task_ci(task, result, why),
+            HubMsg::Reviewed { task, result } => self.task_reviewed(task, result),
             HubMsg::Issue { repo, result, ready, reply } => self.issue_fetched(repo, result, ready, reply),
             HubMsg::Issues { repo, issues } => {
                 for i in issues {
@@ -1534,15 +1536,21 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
                 self.start_proof(session, anyway, false);
                 Ok(Response::Ack)
             }
-            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd, plan, from, attachments } => {
-                if attachments.is_empty() {
+            Request::TaskCreate { repo, title, spec, deps, parent, ready, budget_usd, plan, from, attachments, land } => {
+                let made = if attachments.is_empty() && land.is_none() {
                     self.task_create_from(repo, title, spec, deps, parent, ready, budget_usd, plan, from)
                 } else {
                     match self.task_create(repo, title, spec, deps, parent, false, budget_usd, plan) {
-                        Ok(Response::Task { task }) => self.task_attach(&task.id, attachments, ready),
+                        Ok(Response::Task { task }) => {
+                            if let Some(t) = self.tasks.get_mut(&task.id) {
+                                t.land = land;
+                            }
+                            self.task_attach(&task.id, attachments, ready)
+                        }
                         other => other,
                     }
-                }
+                };
+                made
             }
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
@@ -2492,6 +2500,9 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         let places = crate::proof::Places {
             holdouts: Some(crate::rules::holdouts(&self.cfg.paths.home, &root)),
             shots: Some(self.cfg.paths.home.join("shots").join(session.to_string())),
+            check_model: self.settings.role("check"),
+            look_model: self.settings.role("look"),
+            test_model: self.settings.role("test"),
             home: std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()),
             tessel_home: self.cfg.paths.home.clone(),
             no_comments: self.settings.no_comments,

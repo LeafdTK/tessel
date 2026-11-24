@@ -263,6 +263,8 @@ pub enum Request {
         from: Option<SessionId>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         attachments: Vec<crate::Attachment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        land: Option<String>,
     },
     TaskEdit {
         id: String,
@@ -734,6 +736,38 @@ pub struct DaemonSettings {
     /// the software factory is paused: nothing new starts, nothing lands, triggers wait.
     #[serde(default)]
     pub paused: bool,
+    /// the model for each of the factory's jobs: build, plan, check, look, test, review.
+    #[serde(default)]
+    pub roles: std::collections::BTreeMap<String, String>,
+    /// who decides about finished work: "me", "agent" (risky work still comes to you) or "full".
+    #[serde(default = "agent")]
+    pub autonomy: String,
+    /// where finished work goes unless a task says otherwise: "main", "pr", "keep" or "branch:NAME".
+    #[serde(default = "main")]
+    pub land: String,
+}
+
+fn agent() -> String {
+    "agent".into()
+}
+
+fn main() -> String {
+    "main".into()
+}
+
+pub const ROLES: [(&str, &str, &str); 6] = [
+    ("build", "Building", "sonnet"),
+    ("plan", "Planning and research", "opus"),
+    ("check", "Checking changes", "auto"),
+    ("look", "Judging screenshots", "sonnet"),
+    ("test", "Trying scenarios", "sonnet"),
+    ("review", "Final review", "opus"),
+];
+
+impl DaemonSettings {
+    pub fn role(&self, job: &str) -> String {
+        self.roles.get(job).cloned().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| ROLES.iter().find(|r| r.0 == job).map_or("sonnet", |r| r.2).to_owned())
+    }
 }
 
 /// a model in the loadout, and how it runs when picked.
@@ -753,7 +787,7 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false, roles: Default::default(), autonomy: agent(), land: main() }
     }
 }
 

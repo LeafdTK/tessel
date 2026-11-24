@@ -80,6 +80,16 @@ pub struct Task {
     pub issue: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub land: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<FileStat>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }
@@ -104,4 +114,23 @@ pub struct IssueInfo {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FileStat {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+pub fn land_word(land: &str) -> String {
+    match land {
+        "main" | "" => "Land on main".into(),
+        "pr" => "Open a pull request".into(),
+        "keep" => "Keep the branch".into(),
+        other => match other.strip_prefix("branch:") {
+            Some(b) => format!("Merge into {b}"),
+            None => other.to_owned(),
+        },
+    }
 }

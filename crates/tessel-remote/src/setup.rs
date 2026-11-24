@@ -106,9 +106,13 @@ pub async fn setup(local_home: &Path, host: &mut Host, opts: &Options, say: &mut
 
     say(Said::Step("Starting tessel's service".into()));
     // a newer daemon takes over from the one running (terminals and agents carry on).
-    let restart = if copied { "if [ -S \"$HOME/.tessel/tesseld.sock\" ]; then \"$HOME/.tessel/bin/tesselctl\" daemon restart >/dev/null 2>&1 || true; fi\n" } else { "" };
+    let restart = if copied { "if [ -S \"$HOME/.tessel/tesseld.sock\" ]; then \"$HOME/.tessel/bin/tesselctl\" daemon restart --now 2>&1 | sed 's/^/restart: /' || true; fi\n" } else { "" };
     let r = ssh::run(&dest, &format!("{restart}\"$HOME/.tessel/bin/tesselctl\" remote install --port {}\n", opts.port), Duration::from_secs(60)).await?;
     anyhow::ensure!(r.ok, "starting the service: {}{}", r.err.trim(), r.out.trim());
+    let restarted: Vec<&str> = r.out.lines().filter_map(|l| l.strip_prefix("restart: ")).collect();
+    if !restarted.is_empty() && !restarted.iter().any(|l| l.contains("took over")) {
+        say(Said::Note(format!("the daemon there kept running the old version: {}", restarted.last().unwrap_or(&"").trim())));
+    }
     let mut fingerprint = None;
     for line in r.out.lines() {
         match line.strip_prefix("fingerprint ") {

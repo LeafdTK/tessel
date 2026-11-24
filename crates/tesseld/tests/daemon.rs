@@ -1957,7 +1957,7 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
         git(&repo, args);
     }
     let (c, _) = d.client().await;
-    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![] };
+    let make = |title: &str, deps: Vec<String>| Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: title.into(), spec: "keep it small".into(), deps, parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![], land: None };
     let Response::Task { task: first } = c.request(make("Count higher", vec![])).await.unwrap() else { panic!() };
     let Response::Task { task: second } = c.request(make("Then count lower", vec![first.id.clone()])).await.unwrap() else { panic!() };
 
@@ -1971,9 +1971,10 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
     let ws = PathBuf::from(&summary.cwd);
     std::fs::write(ws.join("broken"), "x\n").unwrap();
     c.request(Request::TaskAct { id: first.id.clone(), act: TaskAct::Change { text: "also count to three".into() } }).await.unwrap();
-    let sent_back = task_until(&c, &first.id, "sent back twice, then yours", |t| t.state == TaskState::Review && t.attempts == 2).await;
-    assert!(sent_back.notes.iter().any(|n| n.text.contains("still failing after 2 fix rounds")));
-    assert_eq!(d.backend.written.lock().unwrap().iter().filter(|l| l.contains("Checking your change found problems")).count(), 2);
+    let sent_back = task_until(&c, &first.id, "sent back three times, then yours", |t| t.state == TaskState::Review && t.attempts == 3).await;
+    assert_eq!(sent_back.ask.as_deref(), Some("It still fails its checks after 3 tries: `test ! -f broken` fails"), "it says which check, in words");
+    assert_eq!(sent_back.changes.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), vec!["broken"], "and what the change touches");
+    assert_eq!(d.backend.written.lock().unwrap().iter().filter(|l| l.contains("Checking your change found problems")).count(), 3);
 
     std::fs::remove_file(ws.join("broken")).unwrap();
     std::fs::write(ws.join("a.txt"), "two\n").unwrap();
@@ -1981,6 +1982,7 @@ async fn a_task_runs_in_its_own_workspace_is_proved_sent_back_and_landed_in_orde
     c.request(Request::TaskAct { id: first.id.clone(), act: TaskAct::Land }).await.unwrap();
     let landed = task_until(&c, &first.id, "landed", |t| t.state.finished()).await;
     assert_eq!(landed.state, TaskState::Landed, "{:?}", landed.notes);
+    assert!(landed.ask.is_none(), "landing answers its question");
     assert_eq!(git(&repo, &["log", "-1", "--format=%s"]), "fix: count higher");
     assert_eq!(std::fs::read_to_string(repo.join("a.txt")).unwrap(), "two\n");
     assert!(task_until(&c, &second.id, "now it starts", |t| t.session.is_some()).await.state != TaskState::Ready);
@@ -2094,7 +2096,7 @@ async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
         git(&repo, args);
     }
     let (c, _) = d.client().await;
-    let Response::Task { task: big } = c.request(Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Add billing".into(), spec: "Stripe".into(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: true, from: None, attachments: vec![] }).await.unwrap() else { panic!() };
+    let Response::Task { task: big } = c.request(Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Add billing".into(), spec: "Stripe".into(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: true, from: None, attachments: vec![], land: None }).await.unwrap() else { panic!() };
     let reviewed = task_until(&c, &big.id, "the planner ran", |t| t.state == TaskState::Review).await;
     let planner = reviewed.session.expect("a planner chat");
     let summary = list(&c).await.into_iter().find(|s| s.id == planner).unwrap();
@@ -2102,7 +2104,7 @@ async fn a_big_task_is_planned_into_small_ones_and_lands_when_they_all_have() {
     assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("Plan this task, don't do it") && l.contains("Add billing")));
     assert!(reviewed.notes.iter().any(|n| n.text.contains("filed no tasks")));
 
-    let file = |title: &str, after: Vec<String>| Request::TaskCreate { repo: "/ignored".into(), title: title.into(), spec: String::new(), deps: after, parent: None, ready: false, budget_usd: None, plan: false, from: Some(planner), attachments: vec![] };
+    let file = |title: &str, after: Vec<String>| Request::TaskCreate { repo: "/ignored".into(), title: title.into(), spec: String::new(), deps: after, parent: None, ready: false, budget_usd: None, plan: false, from: Some(planner), attachments: vec![], land: None };
     let Response::Task { task: one } = c.request(file("Add the plans table", vec![])).await.unwrap() else { panic!() };
     let Response::Task { task: two } = c.request(file("Charge monthly", vec![one.id.clone()])).await.unwrap() else { panic!() };
     assert_eq!((one.parent.as_deref(), one.repo.clone()), (Some(big.id.as_str()), big.repo.clone()), "the planner's tasks are the big one's, in its repository");
@@ -2220,7 +2222,7 @@ async fn a_paused_factory_starts_nothing_until_it_resumes() {
     let (c, _) = d.client().await;
     let Response::Settings { settings } = c.request(Request::SetSettings { patch: serde_json::json!({"paused": true}) }).await.unwrap() else { panic!() };
     assert!(settings.paused);
-    let make = Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Count higher".into(), spec: String::new(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![] };
+    let make = Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Count higher".into(), spec: String::new(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![], land: None };
     let Response::Task { task } = c.request(make).await.unwrap() else { panic!() };
     tokio::time::sleep(Duration::from_millis(600)).await;
     let waiting = task_until(&c, &task.id, "waits", |t| t.state == TaskState::Ready).await;
@@ -2228,4 +2230,33 @@ async fn a_paused_factory_starts_nothing_until_it_resumes() {
     c.request(Request::SetSettings { patch: serde_json::json!({"paused": false}) }).await.unwrap();
     let going = task_until(&c, &task.id, "starts once resumed", |t| t.session.is_some()).await;
     assert_ne!(going.state, TaskState::Ready);
+}
+
+#[tokio::test]
+async fn a_finished_task_is_landed_sent_back_or_brought_to_you_by_the_final_reviewer() {
+    use tessel_proto::task::TaskState;
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = d.cfg.paths.home.join("repo");
+    std::fs::create_dir_all(repo.join(".tessel")).unwrap();
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    std::fs::write(repo.join(".tessel/settings.toml"), "[proof]\nlenses = [\"correctness\"]\n").unwrap();
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"], &["add", "-A"], &["commit", "-q", "-m", "feat: start"]] {
+        git(&repo, args);
+    }
+    let (c, _) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"roles": {"review": "opus"}}) }).await.unwrap();
+    d.backend.reviews.lock().unwrap().push(("final reviewer".to_owned(), "```json\n{\"decision\": \"land\", \"why\": \"Does what was asked.\"}\n```".to_owned()));
+    let make = Request::TaskCreate { repo: repo.to_string_lossy().into_owned(), title: "Count higher".into(), spec: String::new(), deps: vec![], parent: None, ready: true, budget_usd: None, plan: false, from: None, attachments: vec![], land: Some("branch:staging".into()) };
+    let Response::Task { task } = c.request(make).await.unwrap() else { panic!() };
+    let running = task_until(&c, &task.id, "working", |t| t.session.is_some()).await;
+    let ws = PathBuf::from(list(&c).await.into_iter().find(|s| Some(s.id) == running.session).unwrap().cwd);
+    std::fs::write(ws.join("a.txt"), "two\n").unwrap();
+    git(&ws, &["commit", "-q", "-am", "fix: count higher"]);
+    let done = task_until(&c, &task.id, "approved and landed", |t| t.state.finished()).await;
+    assert_eq!(done.state, TaskState::Landed, "{:?}", done.notes);
+    assert_eq!(done.review.as_deref(), Some("Does what was asked."));
+    assert!(done.ask.is_none(), "nobody had to look");
+    assert_eq!(git(&repo, &["log", "-1", "--format=%s", "staging"]), "fix: count higher", "it went where this task said");
+    assert_eq!(git(&repo, &["log", "-1", "--format=%s", "main"]), "feat: start");
+    assert!(d.backend.asked.lock().unwrap().iter().any(|(q, m)| q.contains("final reviewer") && m == "opus"), "on the review model");
 }

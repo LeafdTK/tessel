@@ -701,9 +701,14 @@ pub async fn setup(home: &Path, host: &mut Host, opts: &Options, say: &mut (dyn 
     let net = crate::net::Net::load(home);
     let env = service_env(&there, sb.path.as_deref());
     let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let _ = acct
-        .run(&session.id, "sh", &["-c", "pkill -f 'tesselctl remote serve-ws'; if [ -S \"$TESSEL_HOME/tesseld.sock\" ]; then tesselctl daemon restart >/dev/null 2>&1; fi; true"], &env)
-        .await;
+    if let Ok((_, out)) = acct
+        .run(&session.id, "sh", &["-c", "pkill -f 'tesselctl remote serve-ws'; if [ -S \"$TESSEL_HOME/tesseld.sock\" ]; then tesselctl daemon restart --now 2>&1; else echo fresh; fi; true"], &env)
+        .await
+        && !out.contains("took over")
+        && !out.contains("fresh")
+    {
+        say(Said::Note(format!("the daemon there kept running the old version: {}", out.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("it didn't say why").trim())));
+    }
     start_service(&acct, &session.id, &there, sb.path.as_deref(), &net).await?;
 
     say(Said::Step("Connecting".into()));

@@ -192,6 +192,8 @@ pub struct Proof {
     pub tried: Vec<Tried>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<crate::task::FileStat>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lab: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

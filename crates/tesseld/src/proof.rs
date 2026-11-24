@@ -85,6 +85,27 @@ pub async fn change(ws: &Path) -> Result<Change, String> {
     Ok(Change { base, head, diff, added, changed, paths, subjects, history })
 }
 
+pub fn file_stats(diff: &str) -> Vec<tessel_proto::task::FileStat> {
+    let mut out: Vec<tessel_proto::task::FileStat> = Vec::new();
+    for l in diff.lines() {
+        if let Some(f) = l.strip_prefix("+++ ") {
+            let path = f.strip_prefix("b/").unwrap_or(f).to_owned();
+            if path != "/dev/null" {
+                out.push(tessel_proto::task::FileStat { path, added: 0, removed: 0 });
+            }
+        } else if l.starts_with("--- ") || l.starts_with("diff --git") {
+            continue;
+        } else if let Some(last) = out.last_mut() {
+            if l.starts_with('+') {
+                last.added += 1;
+            } else if l.starts_with('-') {
+                last.removed += 1;
+            }
+        }
+    }
+    out
+}
+
 pub fn changed_lines(diff: &str) -> usize {
     diff.lines().filter(|l| (l.starts_with('+') && !l.starts_with("+++")) || (l.starts_with('-') && !l.starts_with("---"))).count()
 }
@@ -426,6 +447,9 @@ pub struct Places {
     pub home: PathBuf,
     pub tessel_home: PathBuf,
     pub no_comments: bool,
+    pub check_model: String,
+    pub look_model: String,
+    pub test_model: String,
 }
 
 pub fn big(c: &Change) -> bool {
@@ -596,6 +620,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
     p.base = change.base.clone();
     p.fingerprint = change.fingerprint();
     p.files = change.paths.len() as u32;
+    p.changes = file_stats(&change.diff);
     if change.diff.trim().is_empty() {
         p.verdict = Verdict::Proven;
         p.problem = Some("nothing has changed yet".into());
@@ -725,6 +750,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
         let look_rules: Vec<&Rule> = applying.iter().filter(|r| r.check == Check::Look).collect();
         let model = match cfg.model.as_str() {
             "auto" | "haiku" | "sonnet" | "opus" if room.used >= 0.8 && !room.anyway => "haiku".to_owned(),
+            "auto" | "haiku" if !places.look_model.is_empty() => places.look_model.clone(),
             "auto" | "haiku" => "sonnet".to_owned(),
             other => other.to_owned(),
         };
@@ -763,6 +789,7 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
     if !testing.is_empty() {
         let model = match cfg.model.as_str() {
             _ if room.used >= 0.8 && !room.anyway => "haiku".to_owned(),
+            "auto" | "haiku" if !places.test_model.is_empty() => places.test_model.clone(),
             "auto" | "haiku" => "sonnet".to_owned(),
             other => other.to_owned(),
         };
@@ -781,8 +808,9 @@ pub async fn prove(backend: Arc<dyn Backend>, ws: PathBuf, root: PathBuf, places
 
     let judged = applying.iter().any(|r| r.check == Check::Judge);
     let calls = panel(&cfg, &change, judged);
-    let model = match cfg.model.as_str() {
-        "haiku" | "sonnet" | "opus" | "auto" => model_for(&cfg.model, &calls, room).to_owned(),
+    let chosen = if cfg.model == "auto" && !places.check_model.is_empty() { places.check_model.clone() } else { cfg.model.clone() };
+    let model = match chosen.as_str() {
+        "haiku" | "sonnet" | "opus" | "auto" => model_for(&chosen, &calls, room).to_owned(),
         custom => custom.to_owned(),
     };
     p.stage = match calls.len() {
