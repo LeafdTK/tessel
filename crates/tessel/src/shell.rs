@@ -3645,6 +3645,7 @@ impl Shell {
                     || self.done_at.get(&s.id).is_some_and(|t| now_ms().saturating_sub(*t) < GLOW_FADE_MS))
         };
         self.model.sessions.iter().any(|s| matches!(s.run_state, RunState::Working | RunState::Starting) || working_below(s) || fading(s))
+            || self.tasks.iter().any(|t| matches!(t.state, tessel_proto::task::TaskState::Running | tessel_proto::task::TaskState::Proving | tessel_proto::task::TaskState::Landing | tessel_proto::task::TaskState::Checking))
     }
 
     /// keep redrawing on the display's frames while something turns, at most
