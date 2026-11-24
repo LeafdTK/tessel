@@ -109,6 +109,18 @@ pub async fn remove(repo: &str, path: &str) -> Result<(), String> {
 }
 
 /// lowercase words joined by dashes, at most 32 chars. empty if nothing usable.
+pub fn shared_build(ws: &Path, root: &Path) -> Vec<(String, String)> {
+    let same = |a: &Path, b: &Path| std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(a, b)| a == b);
+    if same(ws, root) || !root.join("Cargo.toml").is_file() || std::env::var_os("CARGO_TARGET_DIR").is_some_and(|v| !v.is_empty()) {
+        return Vec::new();
+    }
+    let (t, _) = crate::setup::merged(ws, root);
+    if t.get("factory").and_then(|f| f.get("share_build")).and_then(toml::Value::as_bool) == Some(false) {
+        return Vec::new();
+    }
+    vec![("CARGO_TARGET_DIR".into(), root.join("target").to_string_lossy().into_owned())]
+}
+
 pub fn slug(s: &str) -> String {
     let mut out = String::new();
     for c in s.chars() {

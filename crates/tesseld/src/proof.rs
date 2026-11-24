@@ -169,8 +169,9 @@ pub async fn run_check(ws: &Path, command: &str, rule: Option<String>) -> Verifi
 
 pub async fn run_with(ws: &Path, command: &str, rule: Option<String>, env: &[(&str, &str)]) -> Verified {
     let start = Instant::now();
+    let shared = crate::worktree::shared_build(ws, &crate::board::repo_root(ws));
     let mut cmd = tokio::process::Command::new("sh");
-    cmd.args(["-c", command]).current_dir(ws).env("PYTHONDONTWRITEBYTECODE", "1").envs(env.iter().copied()).stdin(std::process::Stdio::null()).kill_on_drop(true);
+    cmd.args(["-c", command]).current_dir(ws).env("PYTHONDONTWRITEBYTECODE", "1").envs(shared).envs(env.iter().copied()).stdin(std::process::Stdio::null()).kill_on_drop(true);
     let (ok, output) = match tokio::time::timeout(std::time::Duration::from_secs(20 * 60), cmd.output()).await {
         Ok(Ok(o)) => {
             let mut all = String::from_utf8_lossy(&o.stdout).into_owned();
@@ -542,6 +543,7 @@ pub async fn try_scenario(backend: &Arc<dyn Backend>, ws: &Path, root: &Path, pl
         sandbox,
         act: true,
         minutes: 15,
+        env: crate::worktree::shared_build(ws, root),
     };
     let got = backend.job(job).await;
     put_back(ws, &before).await;
@@ -977,6 +979,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(ws.join("b.txt")).unwrap(), "b\n");
         assert_eq!(std::fs::read_to_string(ws.join("new.txt")).unwrap(), "agent's new file\n");
         assert!(!ws.join("junk.log").exists());
+    }
+
+    #[tokio::test]
+    async fn a_worktree_of_a_rust_repository_builds_into_the_main_checkout_s_target_not_a_new_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, ws) = (dir.path().join("root"), dir.path().join("ws"));
+        std::fs::create_dir_all(&root).unwrap();
+        let sh = |at: &Path, args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(at).args(args).status().unwrap().success());
+        for a in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "t"], &["config", "user.email", "t@example.invalid"]] {
+            sh(&root, a);
+        }
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        sh(&root, &["add", "-A"]);
+        sh(&root, &["commit", "-q", "-m", "start"]);
+        sh(&root, &["worktree", "add", "-q", "-b", "t", ws.to_str().unwrap()]);
+        let target = std::fs::canonicalize(&root).unwrap().join("target");
+        let check = format!("test \"$CARGO_TARGET_DIR\" = '{}'", target.display());
+        assert!(run_check(&ws, &check, None).await.ok, "a task's worktree shares it");
+        assert!(run_check(&root, "test -z \"$CARGO_TARGET_DIR\"", None).await.ok, "the main checkout keeps its own as usual");
+        std::fs::create_dir_all(ws.join(".tessel")).unwrap();
+        std::fs::write(ws.join(".tessel/settings.toml"), "[factory]\nshare_build = false\n").unwrap();
+        assert!(run_check(&ws, "test -z \"$CARGO_TARGET_DIR\"", None).await.ok, "a repository can say no");
     }
 
     #[test]

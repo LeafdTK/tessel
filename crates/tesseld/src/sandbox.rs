@@ -35,6 +35,7 @@ fn profile_with(work: &Path, repo: &Path, home: &Path, tessel_home: &Path, net: 
     let writable: Vec<PathBuf> = [
         real(work),
         real(&repo.join(".git")),
+        real(&repo.join("target")),
         home.join(".claude"),
         home.join(".cache"),
         home.join(".npm"),
@@ -103,6 +104,8 @@ mod tests {
         let w = work.to_string_lossy().into_owned();
         assert!(run(&profile, &format!("echo hi > '{w}/a.txt'"), &[]).0, "its own workspace");
         assert!(run(&profile, &format!("echo hi > '{}/objects'", repo.join(".git").display()), &[]).0, "its repository's git dir, to commit");
+        std::fs::create_dir_all(repo.join("target")).unwrap();
+        assert!(run(&profile, &format!("echo hi > '{}/build'", repo.join("target").display()), &[]).0, "the build folder its worktree shares");
         let (wrote, _) = run(&profile, &format!("echo hi > '{}/b.txt'", base.path().join("elsewhere").display()), &[]);
         assert!(!wrote, "nowhere else");
         let (read, out) = run(&profile, &format!("cat '{}'", home.join(".ssh/id").display()), &[]);

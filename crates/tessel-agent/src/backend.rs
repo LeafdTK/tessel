@@ -106,6 +106,7 @@ pub struct Job {
     pub sandbox: Option<String>,
     pub act: bool,
     pub minutes: u64,
+    pub env: Vec<(String, String)>,
 }
 
 impl Job {
@@ -120,6 +121,7 @@ impl Job {
             sandbox: None,
             act: false,
             minutes: 15,
+            env: Vec::new(),
         }
     }
 }

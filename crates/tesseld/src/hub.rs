@@ -2300,6 +2300,7 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
         }
         let (cwd0, repo0) = self.sessions.get(&session).map(|l| (l.state.meta.cwd.clone(), l.state.meta.worktree.as_ref().map_or_else(|| l.state.meta.cwd.clone(), |w| w.repo.clone()))).ok_or_else(|| not_found(session))?;
         let (egress_env, sandbox) = self.egress_for(session, &cwd0, &repo0);
+        workspace_env.extend(crate::worktree::shared_build(Path::new(&cwd0), Path::new(&repo0)));
         workspace_env.extend(egress_env);
         let live = self.sessions.get_mut(&session).ok_or_else(|| not_found(session))?;
         let cwd = live.state.meta.cwd.clone();

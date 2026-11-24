@@ -118,7 +118,7 @@ pub async fn run(backend: Arc<dyn Backend>, root: PathBuf, places: Places, room:
             }
         }
         for sc in book.scenarios.iter().filter(|s| s.run.is_none()).take(cfg.testers.max(1) * 2) {
-            let t = crate::proof::try_scenario(&backend, &scratch, &scratch, &places, sc, &ask, &change, &model).await;
+            let t = crate::proof::try_scenario(&backend, &scratch, &root, &places, sc, &ask, &change, &model).await;
             p.cost_usd += t.cost_usd;
             p.tried.push(t);
         }

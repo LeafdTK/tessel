@@ -358,6 +358,7 @@ impl Backend for ClaudeBackend {
         if let Some(env) = &self.env {
             cmd.env_clear().envs(env.iter().map(|(k, v)| (k, v)));
         }
+        cmd.envs(job.env.iter().map(|(k, v)| (k, v)));
         let (prompt, minutes) = (job.prompt, job.minutes.max(1));
         Box::pin(async move {
             let mut child = cmd.spawn().context("could not start the agent")?;
