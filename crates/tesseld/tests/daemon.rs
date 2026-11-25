@@ -2465,3 +2465,121 @@ async fn a_rule_of_your_own_decides_what_comes_to_you_and_trouble_still_does() {
     let stuck = task_until(&c, &lower.id, "comes to you", |t| t.state == TaskState::Review).await;
     assert_eq!(stuck.ask.as_deref(), Some("The reviewer still wants changes after 0 tries: Misses zero."), "not set aside: {:?}", stuck.notes);
 }
+
+fn fake_slack(messages: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Arc<dyn tesseld::slack::Api> {
+    let api = move |method: &str, params: &[(&str, String)]| -> Result<serde_json::Value, tesseld::slack::Fail> {
+        let get = |k: &str| params.iter().find(|(n, _)| *n == k).map(|(_, v)| v.clone());
+        let after = |m: &serde_json::Value| get("oldest").is_none_or(|o| tesseld::slack::newer(m["ts"].as_str().unwrap(), &o));
+        let all = messages.lock().unwrap().clone();
+        let ok = |mut v: serde_json::Value| {
+            v["ok"] = serde_json::json!(true);
+            Ok(v)
+        };
+        match method {
+            "auth.test" => ok(serde_json::json!({"url": "https://acme.slack.com/"})),
+            "conversations.list" => ok(serde_json::json!({"channels": [
+                {"id": "C0SHOPBUG", "name": "shop-bugs", "is_member": true},
+                {"id": "C0RANDOM1", "name": "random", "is_member": false},
+            ]})),
+            "conversations.info" => match get("channel").as_deref() {
+                Some("C0SHOPBUG") => ok(serde_json::json!({"channel": {"id": "C0SHOPBUG", "name": "shop-bugs", "is_member": true}})),
+                _ => Err(tesseld::slack::Fail::Said("channel_not_found".into())),
+            },
+            "conversations.history" => {
+                assert_eq!(get("channel").as_deref(), Some("C0SHOPBUG"));
+                let mut top: Vec<serde_json::Value> = all.iter().filter(|m| m.get("thread_ts").is_none_or(|t| t == &m["ts"]) && after(m)).cloned().collect();
+                top.reverse();
+                ok(serde_json::json!({"messages": top, "has_more": false}))
+            }
+            "conversations.replies" => {
+                let root = get("ts").unwrap();
+                let thread: Vec<serde_json::Value> = all.iter().filter(|m| (m["ts"] == root.as_str() || m["thread_ts"] == root.as_str()) && after(m)).cloned().collect();
+                ok(serde_json::json!({"messages": thread, "has_more": false}))
+            }
+            "users.info" => ok(serde_json::json!({"user": {"name": "x", "profile": {"display_name": if get("user").as_deref() == Some("U1") { "ana" } else { "bo" }}}})),
+            other => Err(tesseld::slack::Fail::Said(format!("unknown_method {other}"))),
+        }
+    };
+    Arc::new(api)
+}
+
+#[tokio::test]
+async fn a_slack_channel_becomes_tasks_and_nothing_is_filed_twice() {
+    use tessel_proto::task::TaskState;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let ts = |ago: u64| format!("{}.000100", now - ago);
+    let (safari, firefox, lunch, dark) = (ts(3600), ts(3000), ts(2000), ts(1000));
+    let messages = Arc::new(std::sync::Mutex::new(vec![
+        serde_json::json!({"ts": safari, "user": "U1", "text": "the checkout button does nothing on safari", "reply_count": 1, "thread_ts": safari}),
+        serde_json::json!({"ts": firefox, "user": "U2", "text": "same on <@U1>'s firefox", "thread_ts": safari}),
+        serde_json::json!({"ts": ts(2500), "user": "U3", "subtype": "channel_join", "text": "<@U3> has joined the channel"}),
+        serde_json::json!({"ts": ts(2400), "bot_id": "B1", "text": "deploy finished"}),
+        serde_json::json!({"ts": lunch, "user": "U2", "text": "lunch?"}),
+        serde_json::json!({"ts": dark, "user": "U1", "text": "please add a dark mode"}),
+    ]));
+    let api = fake_slack(messages.clone());
+    let d = Daemon::start_with(&["plain"], move |cfg| cfg.slack = Some(api)).await;
+    let repo = task_repo(&d, "shop", "");
+    let answer = serde_json::json!({"tasks": [
+        {"title": "Fix the checkout button on Safari and Firefox", "spec": "Checkout works in both.", "from": [safari, firefox]},
+        {"title": "Add a dark mode", "spec": "A dark theme.", "from": [dark]},
+        {"title": " ", "spec": "lunch", "from": [lunch]},
+    ]});
+    d.backend.reviews.lock().unwrap().push(("turn its requests, bugs and decisions".to_owned(), format!("Two things.\n```json\n{answer}\n```")));
+    let (c, _) = d.client().await;
+
+    let Response::SlackChannels { channels } = c.request(Request::SlackChannels).await.unwrap() else { panic!() };
+    assert_eq!(channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["shop-bugs"], "only the ones the bot is in");
+
+    let read = |channel: &str, since: Option<i64>| Request::SlackRead { repo: repo.to_string_lossy().into_owned(), channel: channel.into(), since, note: String::new(), ready: false };
+    let err = c.request(read("random", None)).await.unwrap_err();
+    assert!(err.to_string().contains("The bot isn't in #random: invite it with /invite @YourApp"), "{err}");
+
+    let Response::SlackRead { read: n, filed, skipped, channel } = c.request(read("#shop-bugs", None)).await.unwrap() else { panic!() };
+    assert_eq!((n, filed.len(), skipped, channel.as_str()), (4, 2, 0, "#shop-bugs"));
+    let asked = d.backend.asked.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(asked.1, "sonnet", "triage reads the channel");
+    assert!(asked.0.contains(&format!("[{safari}]")) && asked.0.contains(" ana: the checkout button") && asked.0.contains("same on @ana's firefox"), "{}", asked.0);
+    assert!(asked.0.contains(&format!("    [{firefox}]")), "a reply sits under its message: {}", asked.0);
+    assert!(!asked.0.contains("deploy finished") && !asked.0.contains("has joined"), "no bots, no joins");
+
+    let Response::Tasks { tasks } = c.request(Request::TaskList).await.unwrap() else { panic!() };
+    let fix = tasks.iter().find(|t| t.title.starts_with("Fix the checkout")).unwrap();
+    let link = format!("https://acme.slack.com/archives/C0SHOPBUG/p{}", safari.replace('.', ""));
+    assert_eq!(fix.source.as_deref(), Some(link.as_str()));
+    assert!(fix.spec.contains(&format!("From Slack: {link} https://acme.slack.com/archives/C0SHOPBUG/p{}?thread_ts={safari}&cid=C0SHOPBUG", firefox.replace('.', ""))), "{}", fix.spec);
+    assert_eq!(fix.state, TaskState::Draft);
+    assert!(fix.notes.iter().any(|n| n.text == "filed from Slack #shop-bugs"));
+    let ledger: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(tesseld::slack::ledger_path(&d.cfg.paths.home, &tasks[0].repo)).unwrap()).unwrap();
+    assert_eq!(ledger["channels"]["C0SHOPBUG"]["used"][&safari], fix.id.as_str());
+    assert_eq!(ledger["channels"]["C0SHOPBUG"]["last_read_ts"], dark.as_str());
+
+    let Response::SlackRead { read: n, filed, skipped, .. } = c.request(read("C0SHOPBUG", Some((now - 86_400) as i64))).await.unwrap() else { panic!() };
+    assert_eq!((n, filed.len(), skipped), (4, 0, 3), "read again, what was filed is left out and nothing is filed twice");
+    let again = d.backend.asked.lock().unwrap().last().cloned().unwrap().0;
+    assert!(!again.contains("safari") && again.contains("lunch?"), "{again}");
+    assert!(again.contains("- Fix the checkout button on Safari and Firefox"), "the board's tasks are named so they aren't filed again");
+
+    let Response::SlackRead { read: n, filed, .. } = c.request(read("shop-bugs", None)).await.unwrap() else { panic!() };
+    assert_eq!((n, filed.len()), (0, 0), "from where it left off, nothing new");
+
+    let ios = format!("{}.000200", now + 5);
+    messages.lock().unwrap().push(serde_json::json!({"ts": ios, "user": "U2", "text": "on iOS too, the whole page freezes", "thread_ts": safari}));
+    let follow = serde_json::json!({"tasks": [{"title": "Unfreeze checkout on iOS", "spec": "It loads.", "from": [ios]}]});
+    d.backend.reviews.lock().unwrap().insert(0, ("(follow-up on task".to_owned(), format!("```json\n{follow}\n```")));
+    let Response::SlackRead { read: n, filed, skipped, .. } = c.request(read("shop-bugs", None)).await.unwrap() else { panic!() };
+    assert_eq!((n, filed.len(), skipped), (1, 1, 0), "a newer reply in a filed thread is read as a follow-up");
+    let last = d.backend.asked.lock().unwrap().last().cloned().unwrap().0;
+    assert!(last.contains(&format!("(follow-up on task {} \"Fix the checkout button on Safari and Firefox\")", fix.id)), "{last}");
+}
+
+#[tokio::test]
+async fn reading_slack_without_its_key_says_how_to_connect_it() {
+    let d = Daemon::start(&["plain"]).await;
+    let repo = task_repo(&d, "shop", "");
+    let (c, _) = d.client().await;
+    let err = c.request(Request::SlackRead { repo: repo.to_string_lossy().into_owned(), channel: "#shop-bugs".into(), since: None, note: String::new(), ready: false }).await.unwrap_err();
+    assert!(err.to_string().contains("Slack isn't connected: add a key named slack in Settings › Keys"), "{err}");
+    let err = c.request(Request::SlackChannels).await.unwrap_err();
+    assert!(err.to_string().contains("Slack isn't connected"), "{err}");
+}

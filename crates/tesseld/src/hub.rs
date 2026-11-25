@@ -53,6 +53,7 @@ pub struct Config {
     pub lock_fd: Option<i32>,
     /// set once everything has been handed over: the socket path is the new daemon's now.
     pub handed_over: Arc<std::sync::atomic::AtomicBool>,
+    pub slack: Option<Arc<dyn crate::slack::Api>>,
 }
 
 impl Config {
@@ -70,6 +71,7 @@ impl Config {
             carried: HashSet::new(),
             lock_fd: None,
             handed_over: Default::default(),
+            slack: None,
         }
     }
 }
@@ -98,6 +100,7 @@ pub enum HubMsg {
     Issue { repo: String, result: Result<crate::issues::Issue, String>, ready: bool, reply: Option<(ClientId, u64)> },
     Issues { repo: String, issues: Vec<crate::issues::Issue> },
     CheckedUp { repo: String, proof: Box<tessel_proto::proof::Proof>, failures: Vec<crate::checkup::Failure>, reply: Option<(ClientId, u64)> },
+    SlackRead { repo: String, result: Result<Box<crate::slack::Outcome>, String>, ready: bool, reply: Option<(ClientId, u64)> },
     Named { session: SessionId, was: String, goal: String },
     RunResume { run: SessionId },
     Choices { client: ClientId, id: u64, keep: Option<String>, result: Result<Vec<tessel_proto::Choice>, String> },
@@ -258,6 +261,7 @@ pub struct Hub {
     ci_busy: HashSet<String>,
     shooting: HashSet<String>,
     checkups: HashSet<String>,
+    slack_reads: HashSet<String>,
     issues_polled: Option<std::time::Instant>,
     egress: Option<crate::egress::Egress>,
     triggers: triggers_state::State,
@@ -362,6 +366,7 @@ impl Hub {
             ci_busy: Default::default(),
             shooting: Default::default(),
             checkups: Default::default(),
+            slack_reads: Default::default(),
             issues_polled: None,
             egress: None,
             triggers: Default::default(),
@@ -755,6 +760,7 @@ impl Hub {
                 }
             }
             HubMsg::CheckedUp { repo, proof, failures, reply } => self.checked_up(repo, *proof, failures, reply),
+            HubMsg::SlackRead { repo, result, ready, reply } => self.slack_read_done(repo, result, ready, reply),
             HubMsg::Seen { key, workflow, cwd, files } => self.files_seen(key, workflow, cwd, files),
             HubMsg::Labeled { workflow, cwd, trigger, issues } => self.labeled(workflow, cwd, trigger, issues),
             HubMsg::ProofIdle { session } => {
@@ -1623,6 +1629,14 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             }
             Request::TriggerFire { workflow, event, cwd } => self.fire_by_hand(&workflow, event, cwd),
             Request::Checkup { repo } => match self.checkup(&repo, Some((client, id))) {
+                Ok(()) => return None,
+                Err(e) => Err(e),
+            },
+            Request::SlackChannels => {
+                self.slack_channels(client, id);
+                return None;
+            }
+            Request::SlackRead { repo, channel, since, note, ready } => match self.slack_read(&repo, channel, since, note, ready, Some((client, id))) {
                 Ok(()) => return None,
                 Err(e) => Err(e),
             },
@@ -3346,6 +3360,9 @@ mod tasks;
 
 #[path = "hub_triggers.rs"]
 mod triggers_state;
+
+#[path = "hub_slack.rs"]
+mod slack_reads;
 
 fn load_settings(path: &std::path::Path) -> tessel_proto::DaemonSettings {
     let mut s = load_settings_as_saved(path);

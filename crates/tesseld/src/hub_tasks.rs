@@ -36,7 +36,7 @@ fn lower_first(s: &str) -> String {
 }
 
 impl Hub {
-    fn task_saved(&mut self, id: &str) {
+    pub(super) fn task_saved(&mut self, id: &str) {
         let Some(t) = self.tasks.get_mut(id) else { return };
         t.updated_ms = now_ms();
         let t = t.clone();
@@ -46,7 +46,7 @@ impl Hub {
         self.tell_everyone(Event::TaskUpdated { task: t });
     }
 
-    fn note(&mut self, id: &str, by: &str, text: impl Into<String>) {
+    pub(super) fn note(&mut self, id: &str, by: &str, text: impl Into<String>) {
         if let Some(t) = self.tasks.get_mut(id) {
             t.notes.push(TaskNote { at_ms: now_ms(), by: by.to_owned(), text: text.into() });
         }
@@ -118,6 +118,7 @@ impl Hub {
             shots: Vec::new(),
             options: Vec::new(),
             building: None,
+            source: None,
             created_ms: now,
             updated_ms: now,
         };

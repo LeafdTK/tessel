@@ -3292,7 +3292,7 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     rig.settle(cx);
     let t = |id: &str, state: TaskState, deps: &[&str], session: Option<SessionId>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: deps.iter().map(|d| (*d).to_owned()).collect(),
-        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, created_ms: 1, updated_ms: 1,
+        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("t1", TaskState::Review, &[], Some(a.id)),
@@ -3409,7 +3409,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     assert!(tessel_proto::surface::validate(&built_in).is_empty(), "the built-in view is a valid surface");
     assert!(built_in.to_string().matches("\"bind\"").count() >= 8);
 
-    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, created_ms: 1, updated_ms: 1 };
+    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, created_ms: 1, updated_ms: 1 };
     rig.feed(cx, vec![
         UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
         UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, spend: vec![(crate::shell::now_ms() - 60_000, 1.5), (crate::shell::now_ms() - 40 * 86_400_000, 900.0)], ..Default::default() } }) },
@@ -3461,7 +3461,7 @@ fn big_tasks_are_planned_from_the_board_and_a_review_can_become_a_rule(cx: &mut 
     rig.settle(cx);
     let t = |id: &str, state: TaskState, parent: Option<&str>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: parent.map(str::to_owned), session: Some(a.id),
-        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, created_ms: 1, updated_ms: 1,
+        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("big", TaskState::Planned, None), t("k1", TaskState::Landed, Some("big")), t("k2", TaskState::Running, Some("big")),

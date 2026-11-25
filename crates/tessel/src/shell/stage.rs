@@ -111,6 +111,15 @@ impl Shell {
 
     pub(crate) fn stage_main(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
+        if matches!(self.stage_focus(), Focus::New) && self.slack_channels.is_none() {
+            let me = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                let _ = me.update(cx, |this, cx| {
+                    this.want_slack();
+                    cx.notify();
+                });
+            });
+        }
         if matches!(self.stage_focus(), Focus::New)
             && let Some(repo) = self.board_repo()
             && self.board_issues.as_ref().is_none_or(|(r, _)| *r != repo)
@@ -722,6 +731,9 @@ impl Shell {
         let mut row = h_flex().flex_shrink_0().gap(theme::z(2.)).items_center();
         if let Some(url) = t.pr.clone() {
             row = row.child(small(SharedString::from(format!("task-pr-{id}")), "Pull Request", Box::new(move |_, _, cx| cx.open_url(&url))));
+        }
+        if let Some(url) = t.source.clone() {
+            row = row.child(small(SharedString::from(format!("task-source-{id}")), if url.contains("slack.com") { "Slack" } else { "Source" }, Box::new(move |_, _, cx| cx.open_url(&url))));
         }
         if let Some(url) = t.issue.clone() {
             let label = url.rsplit('/').next().filter(|n| n.chars().all(|c| c.is_ascii_digit())).map_or_else(|| "Issue".to_owned(), |n| format!("Issue #{n}"));

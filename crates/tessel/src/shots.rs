@@ -123,6 +123,7 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         shots: vec![],
         options: vec![],
         building: None,
+        source: None,
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }

@@ -336,6 +336,7 @@ mod tests {
             shots: vec![],
             options: vec![],
             building: None,
+            source: None,
             created_ms: at,
             updated_ms: at,
         }

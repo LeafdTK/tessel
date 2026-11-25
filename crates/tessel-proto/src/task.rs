@@ -98,6 +98,8 @@ pub struct Task {
     pub options: Vec<TaskOption>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub building: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }
@@ -135,6 +137,14 @@ pub struct IssueInfo {
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlackChannel {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub private: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

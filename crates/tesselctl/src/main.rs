@@ -54,6 +54,12 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl task issues [--repo DIR]         the project's open GitHub issues
   tesselctl task solve ISSUE [--draft] [--repo DIR]   a GitHub issue (42, #42 or its link) becomes a task,
                                             started at once; landing it closes the issue
+  tesselctl task slack CHANNEL [--repo DIR] [--since YYYY-MM-DD|7d|24h] [--note TEXT] [--start]
+                                            read a Slack channel and file its requests and bugs as tasks
+                                            (drafts; --start makes them ready). each read starts where the
+                                            last ended, and a message is never filed twice. the token is
+                                            a key named slack (Settings › Keys)
+  tesselctl slack channels                  the Slack channels the bot is in
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
   tesselctl task choose ID N                answer a task's question with its option N (as task ls numbers them)
   tesselctl task clear                      take finished work off the board (it stays in your history)
@@ -662,6 +668,32 @@ async fn run() -> anyhow::Result<()> {
                     let t = one(client.request(Request::TaskFromIssue { repo, issue, ready }).await?)?;
                     println!("{}", line(&t));
                 }
+                "slack" => {
+                    let repo = match args.opt("--repo")? {
+                        Some(r) => r,
+                        None => std::env::current_dir()?.to_string_lossy().into_owned(),
+                    };
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+                    let since = args.opt("--since")?.map(|s| since_secs(&s, now)).transpose()?;
+                    let note = args.opt("--note")?.unwrap_or_default();
+                    let ready = args.flag("--start");
+                    let channel = args.next("a channel, like #bugs")?;
+                    eprintln!("reading {}…", if channel.starts_with('#') || channel.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) { channel.clone() } else { format!("#{channel}") });
+                    let Response::SlackRead { read, filed, skipped, channel } = client.request(Request::SlackRead { repo, channel, since, note, ready }).await? else { bail!("unexpected reply") };
+                    let Response::Tasks { tasks } = client.request(Request::TaskList).await? else { bail!("unexpected reply") };
+                    if json {
+                        let made: Vec<&Task> = filed.iter().filter_map(|id| tasks.iter().find(|t| &t.id == id)).collect();
+                        println!("{}", serde_json::to_string_pretty(&serde_json::json!({"read": read, "skipped": skipped, "channel": channel, "filed": made}))?);
+                    } else {
+                        println!("{}", slack_summary(read, skipped, filed.len(), &channel));
+                        for id in &filed {
+                            match tasks.iter().find(|t| &t.id == id) {
+                                Some(t) => println!("{}", line(t)),
+                                None => println!("{id}"),
+                            }
+                        }
+                    }
+                }
                 "clear" => {
                     let Response::Tasks { tasks } = client.request(Request::TaskList).await? else { bail!("unexpected reply") };
                     let mut n = 0;
@@ -693,7 +725,23 @@ async fn run() -> anyhow::Result<()> {
                     let t = one(client.request(Request::TaskAct { id, act }).await?)?;
                     println!("{}", line(&t));
                 }
-                other => bail!("task {other}? ls, add, ready, draft, land, change, choose or drop"),
+                other => bail!("task {other}? ls, add, slack, ready, draft, land, change, choose or drop"),
+            }
+        }
+        "slack" => {
+            let sub = if args.rest.is_empty() { "channels".to_owned() } else { args.next("channels")? };
+            if sub != "channels" {
+                bail!("slack {sub}? channels (and `tesselctl task slack CHANNEL` reads one)");
+            }
+            let Response::SlackChannels { channels } = client.request(Request::SlackChannels).await? else { bail!("unexpected reply") };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&channels)?);
+            } else if channels.is_empty() {
+                println!("the bot isn't in any channel yet: invite it with /invite @YourApp");
+            } else {
+                for c in &channels {
+                    println!("#{:<24} {}{}", c.name, c.id, if c.private { "  private" } else { "" });
+                }
             }
         }
         "key" | "keys" => {
@@ -1589,6 +1637,50 @@ fn one_line(s: &str, max: usize) -> String {
     flat.chars().take(max).collect::<String>() + "…"
 }
 
+fn since_secs(s: &str, now: i64) -> anyhow::Result<i64> {
+    let s = s.trim();
+    let bad = || anyhow::anyhow!("--since is a date like 2026-11-20, or a while ago like 7d or 24h");
+    if let Some((n, unit)) = s.char_indices().last().map(|(i, c)| (&s[..i], c))
+        && unit.is_ascii_alphabetic()
+    {
+        let n: i64 = n.parse().map_err(|_| bad())?;
+        let per = match unit {
+            'd' => 86_400,
+            'h' => 3_600,
+            'w' => 7 * 86_400,
+            'm' => 60,
+            _ => return Err(bad()),
+        };
+        return Ok(now - n * per);
+    }
+    let parts: Vec<&str> = s.split('-').collect();
+    let [y, m, d] = parts.as_slice() else { return Err(bad()) };
+    let (y, m, d): (i32, i32, i32) = (y.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?, d.parse().map_err(|_| bad())?);
+    if y < 1970 || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(bad());
+    }
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    tm.tm_year = y - 1900;
+    tm.tm_mon = m - 1;
+    tm.tm_mday = d;
+    tm.tm_isdst = -1;
+    let t = unsafe { libc::mktime(&mut tm) };
+    if t == -1 {
+        return Err(bad());
+    }
+    Ok(t as i64)
+}
+
+fn slack_summary(read: u32, skipped: u32, filed: usize, channel: &str) -> String {
+    let n = |k: u64, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+    format!(
+        "Read {} in {channel}, skipped {skipped} already filed, filed {}{}",
+        n(read.into(), "message", "messages"),
+        n(filed as u64, "task", "tasks"),
+        if filed == 0 { "." } else { ":" }
+    )
+}
+
 fn bother_patch(words: &[String]) -> anyhow::Result<serde_json::Value> {
     let rule = words.join(" ").trim().to_owned();
     Ok(match rule.as_str() {
@@ -1639,6 +1731,25 @@ mod tests {
         assert_eq!(super::option_lines(&t), vec!["    1. Green — a green badge  (2 shots)", "    2. Blue"]);
         t.building = Some(1);
         assert!(super::option_lines(&t)[1].ends_with("trying it now"));
+    }
+
+    #[test]
+    fn since_is_a_date_or_a_while_ago() {
+        let now = 1_000_000_000;
+        assert_eq!(super::since_secs("7d", now).unwrap(), now - 7 * 86_400);
+        assert_eq!(super::since_secs("24h", now).unwrap(), now - 86_400);
+        assert_eq!(super::since_secs("2w", now).unwrap(), now - 14 * 86_400);
+        let day = super::since_secs("2026-11-20", now).unwrap() - super::since_secs("2026-11-19", now).unwrap();
+        assert_eq!(day, 86_400);
+        for bad in ["yesterday", "7x", "d", "2026-13-01", "2026-11", ""] {
+            assert!(super::since_secs(bad, now).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_slack_read_says_what_it_read_and_filed() {
+        assert_eq!(super::slack_summary(12, 3, 2, "#shop-bugs"), "Read 12 messages in #shop-bugs, skipped 3 already filed, filed 2 tasks:");
+        assert_eq!(super::slack_summary(1, 0, 0, "#shop-bugs"), "Read 1 message in #shop-bugs, skipped 0 already filed, filed 0 tasks.");
     }
 
     #[test]

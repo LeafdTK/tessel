@@ -299,6 +299,17 @@ pub enum Request {
     Checkup {
         repo: String,
     },
+    SlackChannels,
+    SlackRead {
+        repo: String,
+        channel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        note: String,
+        #[serde(default)]
+        ready: bool,
+    },
     Shot {
         path: String,
     },
@@ -752,13 +763,14 @@ fn main() -> String {
     "main".into()
 }
 
-pub const ROLES: [(&str, &str, &str); 6] = [
+pub const ROLES: [(&str, &str, &str); 7] = [
     ("build", "Building", "sonnet"),
     ("plan", "Planning and research", "opus"),
     ("check", "Checking changes", "auto"),
     ("look", "Judging screenshots", "sonnet"),
     ("test", "Trying scenarios", "sonnet"),
     ("review", "Final review", "opus"),
+    ("triage", "Reading Slack", "sonnet"),
 ];
 
 impl DaemonSettings {
@@ -959,6 +971,15 @@ pub enum Response {
         proof: crate::proof::Proof,
         #[serde(default)]
         filed: Vec<String>,
+    },
+    SlackChannels {
+        channels: Vec<crate::task::SlackChannel>,
+    },
+    SlackRead {
+        read: u32,
+        filed: Vec<String>,
+        skipped: u32,
+        channel: String,
     },
     Keys {
         keys: Vec<crate::keys::KeyInfo>,

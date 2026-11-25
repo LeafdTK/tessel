@@ -34,6 +34,7 @@ mod proof;
 mod board;
 mod stage;
 mod select;
+mod slack;
 #[cfg(test)]
 pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
@@ -350,6 +351,11 @@ pub struct Shell {
     pub(crate) editing_bother: bool,
     pub(crate) checkup: Option<(String, Option<Result<usize, String>>)>,
     pub(crate) account: Option<tessel_proto::Account>,
+    pub(crate) slack_channels: Option<Result<Vec<tessel_proto::SlackChannel>, String>>,
+    pub(crate) slack_channel: Option<String>,
+    pub(crate) slack_since: &'static str,
+    pub(crate) slack_note: Entity<InputState>,
+    pub(crate) slack_run: Option<Option<Result<slack::SlackRun, String>>>,
     pub(crate) select_w: std::cell::RefCell<std::collections::HashMap<&'static str, std::rc::Rc<std::cell::Cell<f32>>>>,
     pub(crate) tasks: Vec<tessel_proto::task::Task>,
     pub(crate) changing_task: Option<String>,
@@ -531,6 +537,7 @@ impl Shell {
         let key_inputs = keys::KeyForm::new(window, cx);
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
         let bother_input = cx.new(|cx| InputState::new(window, cx).placeholder("Anything that touches payments"));
+        let slack_note = cx.new(|cx| InputState::new(window, cx).placeholder("Anything to focus on, like only checkout bugs since Monday"));
 
         // the `/` and `@` menus get their keys before the message box does:
         // here bindings (return sends, arrows move) run ahead of key listeners.
@@ -888,6 +895,11 @@ impl Shell {
             editing_bother: false,
             checkup: None,
             account: None,
+            slack_channels: None,
+            slack_channel: None,
+            slack_since: "last",
+            slack_note,
+            slack_run: None,
             select_w: Default::default(),
             tasks: Vec::new(),
             changing_task: None,
@@ -1357,6 +1369,8 @@ impl Shell {
             UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
             UiEvent::Answer { tag: "stage.diff", result } => self.stage_diff_answer(result, cx),
             UiEvent::Answer { tag: "checkup", result } => self.checkup_answer(result),
+            UiEvent::Answer { tag: "slack.channels", result } => self.slack_channels_answer(result),
+            UiEvent::Answer { tag: "slack.read", result } => self.slack_read_answer(result),
             UiEvent::Answer { tag: "issues", result } => self.issues_answer(result),
             UiEvent::Answer { tag: "board.rules", result } => self.board_rules_answer(result),
             UiEvent::Answer { tag: "task", result } => self.task_answer(result),

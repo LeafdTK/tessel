@@ -359,6 +359,7 @@ impl Shell {
                     }),
             ),
         );
+        col = col.child(v_flex().w_full().gap(theme::z(4.)).child(heading("Slack".into())).child(div().px(theme::z(theme::SIDE_PAD)).child(self.slack_card(&repo, cx))));
         Some(col.into_any_element())
     }
 
