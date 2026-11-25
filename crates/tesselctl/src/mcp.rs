@@ -116,12 +116,12 @@ ops: open (url?), back, forward, reload, snapshot (root?), read (text, with sele
         },
         {
             "name": "tessel_slack",
-            "description": "Read a Slack channel through tessel's own Slack app (no connector or token needed; use this instead of any Slack tool) and file factory tasks for what people ask for there. Messages already turned into tasks are skipped. Answers with the tasks it filed.",
+            "description": "Read a Slack channel through tessel (use this, not other Slack tools) and file a task for each thing asked there. Skips what's filed already.",
             "inputSchema": {"type": "object", "properties": {
-                "channel": {"type": "string", "description": "#name or channel id"},
-                "since": {"type": "string", "description": "YYYY-MM-DD, or 24h, 7d, 2w. leave out to read what's new since the last read (7 days the first time)"},
-                "note": {"type": "string", "description": "what to focus on, in the person's words"},
-                "start": {"type": "boolean", "description": "start the tasks right away instead of filing drafts"}
+                "channel": {"type": "string"},
+                "since": {"type": "string", "description": "YYYY-MM-DD or 7d"},
+                "note": {"type": "string"},
+                "start": {"type": "boolean"}
             }, "required": ["channel"]}
         },
         {
@@ -453,7 +453,8 @@ pub async fn serve() -> anyhow::Result<()> {
             "tools/list" => {
                 let ruled = std::env::current_dir().is_ok_and(|d| tessel_proto::proof::has_house_rules(&d));
                 let all = tools();
-                let listed: Vec<&Value> = all.as_array().into_iter().flatten().filter(|t| ruled || t["name"] != "tessel_prove").collect();
+                let slack = !cfg!(target_os = "macos") || std::fs::read_to_string(tessel_proto::local::home().join("keys.toml")).is_ok_and(|k| k.lines().any(|l| l.trim().trim_start_matches("name").trim_start_matches([' ', '=']).trim_matches('"') == "slack"));
+                let listed: Vec<&Value> = all.as_array().into_iter().flatten().filter(|t| (ruled || t["name"] != "tessel_prove") && (slack || t["name"] != "tessel_slack")).collect();
                 Ok(json!({"tools": listed}))
             }
             "tools/call" => {
