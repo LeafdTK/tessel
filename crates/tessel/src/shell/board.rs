@@ -50,6 +50,15 @@ impl Shell {
             cx.notify();
             return;
         };
+        if let Some(channel) = self.slack_mention(&text) {
+            self.slack_channel = Some(channel.id.clone());
+            self.slack_run = Some(None);
+            let since = super::slack::since_in(&text, chrono::Local::now());
+            self.cmd(Cmd::Ask { tag: "slack.read", req: Request::SlackRead { repo, channel: channel.id, since, note: text, ready } });
+            self.task_title.update(cx, |s, cx| s.set_value("", window, cx));
+            cx.notify();
+            return;
+        }
         let attachments = std::mem::take(&mut self.board_attachments);
         let files = std::mem::take(&mut self.board_files);
         let with_files = |mut spec: String| {
@@ -189,10 +198,13 @@ impl Shell {
         let p = self.palette.get();
         let glass = crate::glass::liquid();
         let typed = self.task_title.read(cx).value().to_string();
-        let (start_label, draft_label) = match split_tasks(&typed) {
+        let (start_label, draft_label) = match (self.slack_mention(&typed), split_tasks(&typed)) {
+            (Some(c), _) => (format!("Read #{}", c.name), "Read into Drafts".to_owned()),
+            (None, split) => match split {
             Split::List { items, .. } => (format!("Start {} Tasks", items.len()), format!("Save {} as Drafts", items.len())),
             Split::Plan { .. } => ("Plan It".to_owned(), "Save as Draft".to_owned()),
             _ => ("Start".to_owned(), "Save as Draft".to_owned()),
+            },
         };
         let mut chips = h_flex().flex_wrap().gap(theme::z(8.));
         for (i, a) in self.board_attachments.iter().enumerate() {

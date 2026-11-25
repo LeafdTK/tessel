@@ -93,6 +93,13 @@ pub async fn create(cwd: &str, spec: &WorktreeSpec, root: &Path, hint: &str) -> 
 /// the remote's default branch, freshly fetched when there is a remote;
 /// otherwise wherever the repo is now.
 async fn default_base(repo: &Path) -> String {
+    if let Ok(up) = git(repo, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], QUICK).await
+        && let Some((remote, _)) = up.split_once('/')
+        && git(repo, &["remote", "get-url", remote], QUICK).await.is_ok()
+    {
+        let _ = git(repo, &["fetch", "--quiet", remote], Duration::from_secs(20)).await;
+        return up;
+    }
     if git(repo, &["remote", "get-url", "origin"], QUICK).await.is_ok() {
         // best effort: offline or slow must not stop a session from starting.
         let _ = git(repo, &["fetch", "--quiet", "origin"], Duration::from_secs(20)).await;
@@ -251,6 +258,31 @@ mod tests {
         assert!(!Path::new(&made.path).exists());
         // the branch survives removal.
         assert!(git(&src, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{}", made.branch)], QUICK).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_new_worktree_starts_from_what_the_checkout_tracks_freshly_fetched() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old");
+        let new = tmp.path().join("new");
+        for r in [&old, &new] {
+            std::fs::create_dir_all(r).unwrap();
+            repo(r).await;
+        }
+        std::fs::write(new.join("later.txt"), "x").unwrap();
+        git(&new, &["add", "."], QUICK).await.unwrap();
+        git(&new, &["commit", "-qm", "later"], QUICK).await.unwrap();
+        let src = tmp.path().join("src");
+        git(tmp.path(), &["clone", "-q", old.to_str().unwrap(), src.to_str().unwrap()], QUICK).await.unwrap();
+        git(&src, &["remote", "add", "tessel", new.to_str().unwrap()], QUICK).await.unwrap();
+        git(&src, &["fetch", "-q", "tessel"], QUICK).await.unwrap();
+        git(&src, &["checkout", "-q", "-B", "work", "--track", "tessel/main"], QUICK).await.unwrap();
+        std::fs::write(new.join("newest.txt"), "y").unwrap();
+        git(&new, &["add", "."], QUICK).await.unwrap();
+        git(&new, &["commit", "-qm", "newest"], QUICK).await.unwrap();
+
+        let made = create(src.to_str().unwrap(), &WorktreeSpec::default(), &tmp.path().join("ws"), "Next").await.unwrap();
+        assert!(Path::new(&made.path).join("newest.txt").exists(), "it fetched the tracked remote and started from its tip, not origin's");
     }
 
     #[tokio::test]

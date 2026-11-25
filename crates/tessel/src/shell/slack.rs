@@ -20,7 +20,72 @@ pub(crate) fn since_unix(choice: &str, now: chrono::DateTime<chrono::Local>) -> 
     }
 }
 
+pub(crate) fn mentioned<'a>(text: &str, channels: &'a [tessel_proto::SlackChannel]) -> Option<&'a tessel_proto::SlackChannel> {
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_' || c == '#')).filter(|w| !w.is_empty()).collect();
+    let slacky = lower.contains("slack") || lower.contains("channel");
+    channels.iter().find(|c| {
+        let name = c.name.to_lowercase();
+        words.iter().any(|w| *w == format!("#{name}") || (slacky && *w == name))
+    })
+}
+
+pub(crate) fn since_in(text: &str, now: chrono::DateTime<chrono::Local>) -> Option<i64> {
+    let t = text.to_lowercase();
+    let day = 86_400;
+    let midnight = |d: chrono::NaiveDate| d.and_hms_opt(0, 0, 0).and_then(|d| d.and_local_timezone(chrono::Local).single()).map(|d| d.timestamp());
+    if t.contains("today") {
+        return midnight(now.date_naive());
+    }
+    if t.contains("yesterday") {
+        return midnight(now.date_naive() - chrono::Days::new(1));
+    }
+    if t.contains("this week") {
+        use chrono::Datelike as _;
+        return midnight(now.date_naive() - chrono::Days::new(now.weekday().num_days_from_monday() as u64));
+    }
+    if t.contains("last week") || t.contains("past week") {
+        return Some(now.timestamp() - 7 * day);
+    }
+    if t.contains("last month") || t.contains("past month") || t.contains("this month") {
+        return Some(now.timestamp() - 30 * day);
+    }
+    let words: Vec<&str> = t.split_whitespace().collect();
+    for w in words.windows(3) {
+        if (w[0] == "last" || w[0] == "past")
+            && let Ok(n) = w[1].parse::<i64>()
+        {
+            let unit = w[2].trim_end_matches(|c: char| !c.is_alphabetic());
+            let per = match unit {
+                "day" | "days" => day,
+                "week" | "weeks" => 7 * day,
+                "month" | "months" => 30 * day,
+                "hour" | "hours" => 3_600,
+                _ => continue,
+            };
+            return Some(now.timestamp() - n * per);
+        }
+    }
+    use chrono::Datelike as _;
+    let days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+    for w in words.windows(2) {
+        if w[0] == "since"
+            && let Some(i) = days.iter().position(|d| w[1].trim_end_matches(|c: char| !c.is_alphabetic()) == *d)
+        {
+            let back = (now.weekday().num_days_from_monday() as i64 - i as i64).rem_euclid(7);
+            let back = if back == 0 { 7 } else { back };
+            return midnight(now.date_naive() - chrono::Days::new(back as u64));
+        }
+    }
+    None
+}
+
 impl Shell {
+    pub(crate) fn slack_mention(&self, text: &str) -> Option<tessel_proto::SlackChannel> {
+        let Some(Ok(channels)) = &self.slack_channels else { return None };
+        mentioned(text, channels).cloned()
+    }
+
     pub(crate) fn want_slack(&mut self) {
         if self.slack_channels.is_none() {
             self.slack_channels = Some(Ok(Vec::new()));
@@ -137,5 +202,35 @@ impl Shell {
                     }),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mentioned, since_in};
+    use chrono::TimeZone as _;
+
+    fn ch(name: &str) -> tessel_proto::SlackChannel {
+        tessel_proto::SlackChannel { id: format!("C{name}"), name: name.into(), private: false }
+    }
+
+    #[test]
+    fn a_channel_is_noticed_by_its_hash_or_by_name_next_to_slack() {
+        let list = [ch("orchard-support"), ch("general")];
+        assert_eq!(mentioned("go look at #orchard-support and fix what people ask for", &list).map(|c| c.name.as_str()), Some("orchard-support"));
+        assert_eq!(mentioned("read the orchard-support slack channel", &list).map(|c| c.name.as_str()), Some("orchard-support"));
+        assert!(mentioned("support people better in orchard", &list).is_none());
+        assert!(mentioned("fix #42", &list).is_none());
+    }
+
+    #[test]
+    fn when_to_read_from_is_heard_in_the_words() {
+        let now = chrono::Local.with_ymd_and_hms(2026, 11, 26, 15, 0, 0).unwrap();
+        let day = 86_400;
+        assert_eq!(since_in("anything from the last 3 days", now), Some(now.timestamp() - 3 * day));
+        assert_eq!(since_in("what came in last week", now), Some(now.timestamp() - 7 * day));
+        assert_eq!(since_in("only today", now), chrono::Local.with_ymd_and_hms(2026, 11, 26, 0, 0, 0).single().map(|d| d.timestamp()));
+        assert_eq!(since_in("since monday", now), chrono::Local.with_ymd_and_hms(2026, 11, 23, 0, 0, 0).single().map(|d| d.timestamp()));
+        assert_eq!(since_in("just do the tasks", now), None);
     }
 }
