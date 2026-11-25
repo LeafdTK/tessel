@@ -36,13 +36,18 @@ impl Hub {
             .filter(|t| t.repo == key && t.state != TaskState::Dropped && !t.cleared && (t.state != TaskState::Landed || t.updated_ms >= now.saturating_sub(MONTH_MS)))
             .map(|t| t.title.clone())
             .collect();
+        let ledger_path = slack::ledger_path(&self.cfg.paths.home, &key);
+        let mut ledger = slack::load(&ledger_path);
+        if slack::release(&mut ledger, |id| self.tasks.get(id).is_some_and(|t| t.state != TaskState::Dropped)) {
+            let _ = slack::save(&ledger_path, &ledger);
+        }
         let tasks: HashMap<String, Tasked> = self.tasks.values().filter(|t| t.repo == key).map(|t| (t.id.clone(), Tasked { created_secs: (t.created_ms / 1000) as i64, title: t.title.clone() })).collect();
         let ask = slack::Ask {
             repo: key.clone(),
             channel,
             since,
             note,
-            ledger: slack::load(&slack::ledger_path(&self.cfg.paths.home, &key)),
+            ledger,
             tasks,
             existing,
             model: self.settings.role("triage"),
@@ -74,6 +79,9 @@ impl Hub {
         let path = slack::ledger_path(&self.cfg.paths.home, repo);
         let mut ledger = slack::load(&path);
         let entry = ledger.channels.entry(o.channel.id.clone()).or_default();
+        if entry.started.as_deref().is_none_or(|s| slack::newer(s, &o.oldest)) {
+            entry.started = Some(o.oldest.clone());
+        }
         let shown = format!("#{}", o.channel.name);
         let mut filed = Vec::new();
         for t in o.tasks {

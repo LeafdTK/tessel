@@ -261,6 +261,24 @@ pub struct Read {
     pub used: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub roots: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<String>,
+}
+
+pub fn release(ledger: &mut Ledger, alive: impl Fn(&str) -> bool) -> bool {
+    let mut changed = false;
+    for read in ledger.channels.values_mut() {
+        let before = read.used.len();
+        read.used.retain(|_, task| alive(task));
+        if read.used.len() != before {
+            changed = true;
+            if read.used.is_empty() {
+                read.last_read_ts = read.started.clone();
+                read.roots.clear();
+            }
+        }
+    }
+    changed
 }
 
 pub fn ledger_path(home: &Path, repo: &str) -> PathBuf {
@@ -649,6 +667,7 @@ pub struct Outcome {
     pub read: u32,
     pub skipped: u32,
     pub watermark: Option<String>,
+    pub oldest: String,
     pub tasks: Vec<Filed>,
     pub links: HashMap<String, String>,
     pub roots: BTreeSet<String>,
@@ -731,7 +750,7 @@ pub async fn read(api: Arc<dyn Api>, backend: Arc<dyn Backend>, ask: Ask) -> Res
     let roots: BTreeSet<String> = rendered.included.iter().filter(|s| s.msg.thread.is_none()).map(|s| s.msg.ts.clone()).collect();
     let watermark = watermark(&rendered, &every);
     if rendered.included.is_empty() {
-        return Ok(Outcome { channel, read, skipped, watermark, tasks: Vec::new(), links, roots });
+        return Ok(Outcome { channel, read, skipped, watermark, oldest, tasks: Vec::new(), links, roots });
     }
     let repo_name = Path::new(&ask.repo).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ask.repo.clone());
     let mut job = Job::review(prompt(&repo_name, &ask.existing, &ask.note, &rendered.text), PathBuf::from(&ask.repo), &ask.model);
@@ -740,11 +759,24 @@ pub async fn read(api: Arc<dyn Api>, backend: Arc<dyn Backend>, ask: Ask) -> Res
     job.minutes = 5;
     let answer = backend.job(job).await.map_err(|e| format!("The model couldn't read the channel: {e:#}"))?;
     let tasks = traced(parse(&answer.text)?, &links);
-    Ok(Outcome { channel, read, skipped, watermark, tasks, links, roots })
+    Ok(Outcome { channel, read, skipped, watermark, oldest, tasks, links, roots })
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dropping_every_task_from_a_channel_frees_its_messages_and_rewinds_the_reading() {
+        let mut l = Ledger::default();
+        l.channels.insert("C1".into(), Read { last_read_ts: Some("300.0".into()), used: [("100.0".to_owned(), "a".to_owned()), ("200.0".to_owned(), "b".to_owned())].into(), roots: ["100.0".to_owned()].into(), started: Some("50.0".into()) });
+        assert!(release(&mut l, |id| id == "a"), "b was dropped");
+        assert_eq!(l.channels["C1"].used.len(), 1);
+        assert_eq!(l.channels["C1"].last_read_ts.as_deref(), Some("300.0"), "a still stands, so reading carries on from where it stopped");
+        assert!(release(&mut l, |_| false));
+        assert!(l.channels["C1"].used.is_empty());
+        assert_eq!(l.channels["C1"].last_read_ts.as_deref(), Some("50.0"), "nothing filed stands: the next read starts over from where reading began");
+        assert!(!release(&mut l, |_| false));
+    }
+
     use super::*;
 
     fn msg(ts: &str, thread: Option<&str>, text: &str) -> Msg {

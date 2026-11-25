@@ -121,6 +121,8 @@ impl Shell {
         let p = self.palette.get();
         let (text, color, busy) = match self.slack_run.as_ref()? {
             None => ("Reading the channel and picking out tasks. This takes about half a minute.".to_owned(), p.secondary, true),
+            Some(Ok(r)) if r.read == 0 => (format!("Nothing new in {} since the last read. Name a date, like since Nov 20, to read older messages again.", r.channel), p.secondary, false),
+            Some(Ok(r)) if r.filed == 0 => (format!("Read {} message{} in {}: nothing new to do", r.read, if r.read == 1 { "" } else { "s" }, r.channel) + &if r.skipped > 0 { format!(", {} already filed", r.skipped) } else { String::new() }, p.secondary, false),
             Some(Ok(r)) => (
                 format!("Read {} message{} in {}: filed {} task{}", r.read, if r.read == 1 { "" } else { "s" }, r.channel, r.filed, if r.filed == 1 { "" } else { "s" }) + &if r.skipped > 0 { format!(", skipped {} already filed", r.skipped) } else { String::new() },
                 p.finished,
