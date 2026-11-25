@@ -355,6 +355,8 @@ pub struct Shell {
     pub(crate) account: Option<tessel_proto::Account>,
     pub(crate) console_input: Entity<InputState>,
     pub(crate) console_said: Option<(bool, String)>,
+    pub(crate) console_full: bool,
+    pub(crate) task_events: std::collections::VecDeque<tessel_proto::task::TaskEvent>,
     pub(crate) slack_channels: Option<Result<Vec<tessel_proto::SlackChannel>, String>>,
     pub(crate) slack_channel: Option<String>,
     pub(crate) slack_asked_ms: u64,
@@ -908,6 +910,8 @@ impl Shell {
             account: None,
             console_input,
             console_said: None,
+            console_full: false,
+            task_events: Default::default(),
             slack_channels: None,
             slack_channel: None,
             slack_asked_ms: 0,
@@ -1119,6 +1123,9 @@ impl Shell {
                 self.model.connection = Connection::Connected;
                 self.down_since = None;
                 self.cmd(Cmd::Ask { tag: "usage", req: tessel_proto::Request::Usage });
+                if self.factory_on() {
+                    self.cmd(Cmd::Ask { tag: "task.events", req: tessel_proto::Request::TaskEvents { since: None, task: None, limit: 300 } });
+                }
                 self.ask_deleted();
                 self.ask_workflows();
                 self.cmd(Cmd::Ask { tag: "tasks", req: tessel_proto::Request::TaskList });
@@ -1383,6 +1390,20 @@ impl Shell {
             UiEvent::Answer { tag: "shot", result } => self.shot_answer(result),
             UiEvent::Answer { tag: "stage.diff", result } => self.stage_diff_answer(result, cx),
             UiEvent::Answer { tag: "checkup", result } => self.checkup_answer(result),
+            UiEvent::Answer { tag: "task.events", result } => {
+                if let Ok(tessel_proto::Response::TaskEvents { events }) = result {
+                    self.task_events = events.into_iter().collect();
+                    while self.task_events.len() > 600 {
+                        self.task_events.pop_front();
+                    }
+                }
+            }
+            UiEvent::TaskEvent(entry) => {
+                self.task_events.push_back(entry);
+                while self.task_events.len() > 600 {
+                    self.task_events.pop_front();
+                }
+            }
             UiEvent::Answer { tag: "slack.channels", result } => self.slack_channels_answer(result),
             UiEvent::Answer { tag: "slack.read", result } => self.slack_read_answer(result),
             UiEvent::Answer { tag: "issues", result } => self.issues_answer(result),

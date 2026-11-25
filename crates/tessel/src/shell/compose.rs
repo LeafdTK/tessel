@@ -418,6 +418,7 @@ impl Shell {
             Kind::ModelPicker => self.styled(div().child(self.model_chip(cx)), s).into_any_element(),
             Kind::ModePicker => self.styled(div().child(self.mode_menu(cx)), s).into_any_element(),
             Kind::Context => self.styled(div().child(self.context_meter_el(cx)?), s).into_any_element(),
+            Kind::Panes if self.console_fills() => div().size_full().min_w_0().child(self.console(cx)).into_any_element(),
             Kind::Panes if self.factory_view && self.factory_on() => self
                 .styled(
                     div().min_w_0().child(
@@ -526,6 +527,9 @@ impl Shell {
 
     fn drawer_el(&self, n: &Node, now: Millis, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = n.id.clone()?;
+        if id == "sidebar" && self.console_fills() {
+            return None;
+        }
         let d = self.drawer(&id)?;
         let w = d.w.value().max(0.0);
         if w <= 0.5 {

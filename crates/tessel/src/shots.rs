@@ -125,6 +125,7 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         building: None,
         source: None,
         link: None,
+        failure: None,
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }
@@ -222,8 +223,6 @@ const SCREENS: &[Screen] = &[
     Screen { name: "factory", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "views"}"#)] },
     Screen { name: "home", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("pane.show", r#"{"module": "home", "pane": "@focused"}"#)] },
     Screen { name: "board-swatches", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
-    Screen { name: "menu-land", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
-    Screen { name: "menu-bother", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-all", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-new", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },

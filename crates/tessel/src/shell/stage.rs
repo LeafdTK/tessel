@@ -95,7 +95,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn stage_diff_el(&self, p: &Palette) -> Option<AnyElement> {
+    pub(crate) fn stage_diff_el(&self, p: &Palette) -> Option<AnyElement> {
         let state = self.stage_diff.as_ref()?;
         let lines: usize = self.stage_diff_parts.iter().map(|d| d.unified.lines().count()).sum();
         let h = (lines as f32 * 20. + self.stage_diff_parts.len() as f32 * 44. + 16.).clamp(180., 720.);
@@ -468,7 +468,7 @@ impl Shell {
         self.doing(t)
     }
 
-    fn shot_src(&self, path: &str) -> Option<ImageSource> {
+    pub(crate) fn shot_src(&self, path: &str) -> Option<ImageSource> {
         if std::path::Path::new(path).is_file() {
             Some(std::path::PathBuf::from(path).into())
         } else {

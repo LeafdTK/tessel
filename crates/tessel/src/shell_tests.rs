@@ -1239,7 +1239,7 @@ fn the_model_and_mode_pickers_open_above_the_message_box_and_pick(cx: &mut TestA
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "claude-opus-5-5", "Opus 5.5", true), model("sonnet", "claude-sonnet-5-5", "Sonnet 5.5", false), model("claude-opus-4-7", "claude-opus-4-7", "Opus 4.7", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false,
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), watchdog: Default::default(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false,
                 agent_tools: true,
                 models: vec![FavoriteModel { model: "opus".into(), effort: Some("max".into()), fast: true }, FavoriteModel { model: "sonnet".into(), effort: Some("low".into()), fast: false }],
             }),
@@ -1304,7 +1304,7 @@ fn the_models_page_keeps_the_loadout(cx: &mut TestAppContext) {
         cx,
         vec![
             UiEvent::Models(vec![model("opus", "Opus 5.5", true), model("haiku", "Haiku 5.5", false)], vec![]),
-            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
+            UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), watchdog: Default::default(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, models: vec![FavoriteModel { model: "opus".into(), effort: Some("high".into()), fast: false }] }),
         ],
     );
     rig.shell.update(cx, |s, cx| {
@@ -1946,7 +1946,7 @@ fn agents_can_be_kept_from_tessels_tools_from_settings(cx: &mut TestAppContext) 
     rig.click(cx, "agent-tools");
     assert!(!rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(_))));
 
-    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, ..Default::default() })]);
+    rig.feed(cx, vec![UiEvent::DaemonSettings(tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), watchdog: Default::default(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused: false, agent_tools: true, ..Default::default() })]);
     rig.click(cx, "agent-tools");
     assert!(rig.asked().iter().any(|c| matches!(c, Cmd::SetSettings(p) if *p == serde_json::json!({"agent_tools": false}))));
 }
@@ -3292,7 +3292,7 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     rig.settle(cx);
     let t = |id: &str, state: TaskState, deps: &[&str], session: Option<SessionId>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: deps.iter().map(|d| (*d).to_owned()).collect(),
-        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, created_ms: 1, updated_ms: 1,
+        parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, failure: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         Task { changes: vec![tessel_proto::task::FileStat { path: "src/login.rs".into(), added: 3, removed: 1 }], ..t("t1", TaskState::Review, &[], Some(a.id)) },
@@ -3348,9 +3348,9 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
     assert!(rig.exists(cx, "view-factory"), "with the factory on, the sidebar offers its view");
     rig.click(cx, "view-factory");
     assert!(rig.shell.read_with(cx, |s, _| s.factory_view), "the switch turns the factory view on");
-    assert!(rig.exists(cx, "stage-rail"), "the factory is a view of the whole window, its queue where the chats were");
-    rig.click(cx, "view-chats");
-    assert!(!rig.exists(cx, "stage-rail"), "and the chats come back");
+    assert!(rig.exists(cx, "console"), "the factory is a terminal that fills the window");
+    rig.click(cx, "console-chats");
+    assert!(!rig.exists(cx, "console"), "and the chats come back");
 }
 
 #[gpui_kit::test]
@@ -3409,7 +3409,7 @@ fn views_fill_themselves_from_live_work_and_new_ones_are_asked_for_in_words(cx: 
     assert!(tessel_proto::surface::validate(&built_in).is_empty(), "the built-in view is a valid surface");
     assert!(built_in.to_string().matches("\"bind\"").count() >= 8);
 
-    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, created_ms: 1, updated_ms: 1 };
+    let t = |id: &str, state: TaskState| Task { id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, failure: None, created_ms: 1, updated_ms: 1 };
     rig.feed(cx, vec![
         UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![t("t1", TaskState::Review), t("t2", TaskState::Landed), t("t3", TaskState::Running)] }) },
         UiEvent::Answer { tag: "metrics", result: Ok(Response::Metrics { metrics: tessel_proto::views::Metrics { landed: 4, review: 1, escaped: 1, cost_per_landed: 0.42, spend: vec![(crate::shell::now_ms() - 60_000, 1.5), (crate::shell::now_ms() - 40 * 86_400_000, 900.0)], ..Default::default() } }) },
@@ -3461,7 +3461,7 @@ fn big_tasks_are_planned_from_the_board_and_a_review_can_become_a_rule(cx: &mut 
     rig.settle(cx);
     let t = |id: &str, state: TaskState, parent: Option<&str>| Task {
         id: id.into(), title: format!("Task {id}"), spec: String::new(), repo: "/work/api".into(), state, deps: vec![], parent: parent.map(str::to_owned), session: Some(a.id),
-        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, created_ms: 1, updated_ms: 1,
+        notes: vec![], plan: parent.is_none() && state == TaskState::Planned, attempts: 0, proof_cost_usd: 0.0, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, failure: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
         t("big", TaskState::Planned, None), t("k1", TaskState::Landed, Some("big")), t("k2", TaskState::Running, Some("big")),
@@ -3506,7 +3506,7 @@ fn the_factory_pauses_and_resumes_from_the_board(cx: &mut TestAppContext) {
     let dir = std::env::temp_dir().join(format!("tessel-pause-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut rig = Rig::with_sessions_launched(cx, a, vec![], Launch { ui: Some(dir.join("ui.json")), ..Launch::default() });
-    let settings = |paused: bool| tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused, agent_tools: true, models: vec![] };
+    let settings = |paused: bool| tessel_proto::DaemonSettings { roles: Default::default(), autonomy: "agent".into(), bother: String::new(), watchdog: Default::default(), land: "main".into(), projects: None, parallel: None, no_comments: false, paused, agent_tools: true, models: vec![] };
     rig.feed(cx, vec![UiEvent::DaemonSettings(settings(false)), UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![] }) }]);
     let exec = |rig: &mut Rig, cx: &mut TestAppContext, cmd: &str, args: serde_json::Value| cx.update_window(rig.window, |_, window, cx| rig.shell.update(cx, |s, cx| s.exec(cmd, &args, window, cx))).unwrap();
     exec(&mut rig, cx, "app.factory", serde_json::json!({"on": true})).unwrap();
