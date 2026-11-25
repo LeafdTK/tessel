@@ -3295,7 +3295,7 @@ fn the_board_shows_tasks_by_what_they_need_and_its_buttons_drive_them(cx: &mut T
         parent: None, session, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.25, budget_usd: None, risk: None, landed: None, pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, created_ms: 1, updated_ms: 1,
     };
     rig.feed(cx, vec![UiEvent::Answer { tag: "tasks", result: Ok(Response::Tasks { tasks: vec![
-        t("t1", TaskState::Review, &[], Some(a.id)),
+        Task { changes: vec![tessel_proto::task::FileStat { path: "src/login.rs".into(), added: 3, removed: 1 }], ..t("t1", TaskState::Review, &[], Some(a.id)) },
         t("t2", TaskState::Draft, &[], None),
         t("t3", TaskState::Ready, &["t1"], None),
         t("t4", TaskState::Dropped, &[], None),

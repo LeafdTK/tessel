@@ -67,6 +67,32 @@ pub(crate) fn since_in(text: &str, now: chrono::DateTime<chrono::Local>) -> Opti
         }
     }
     use chrono::Datelike as _;
+    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let on = |m: u32, d: u32, y: Option<i32>| {
+        let y = y.unwrap_or(now.year());
+        let date = chrono::NaiveDate::from_ymd_opt(y, m, d)?;
+        let date = if date > now.date_naive() && y == now.year() { chrono::NaiveDate::from_ymd_opt(y - 1, m, d)? } else { date };
+        midnight(date)
+    };
+    let clean = |w: &str| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '-').to_owned();
+    for (i, w) in words.iter().enumerate() {
+        let w = clean(w);
+        if let Some(m) = months.iter().position(|m| w.len() >= 3 && w.starts_with(m))
+            && let Some(d) = words.get(i + 1).map(|n| clean(n).trim_end_matches(|c: char| c.is_alphabetic()).to_owned()).and_then(|n| n.parse::<u32>().ok())
+        {
+            return on(m as u32 + 1, d, None);
+        }
+        let parts: Vec<&str> = w.split(['/', '-']).collect();
+        let nums: Vec<u32> = parts.iter().filter_map(|x| x.parse().ok()).collect();
+        if nums.len() == parts.len() && parts.len() >= 2 {
+            match (parts.len(), parts[0].len()) {
+                (3, 4) => return on(nums[1], nums[2], Some(nums[0] as i32)),
+                (2, _) if w.contains('/') => return on(nums[0], nums[1], None),
+                (3, _) if w.contains('/') => return on(nums[0], nums[1], Some(if nums[2] < 100 { 2000 + nums[2] as i32 } else { nums[2] as i32 })),
+                _ => {}
+            }
+        }
+    }
     let days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
     for w in words.windows(2) {
         if w[0] == "since"
@@ -82,12 +108,20 @@ pub(crate) fn since_in(text: &str, now: chrono::DateTime<chrono::Local>) -> Opti
 
 impl Shell {
     pub(crate) fn slack_mention(&self, text: &str) -> Option<tessel_proto::SlackChannel> {
-        let Some(Ok(channels)) = &self.slack_channels else { return None };
-        mentioned(text, channels).cloned()
+        if let Some(Ok(channels)) = &self.slack_channels
+            && !channels.is_empty()
+        {
+            return mentioned(text, channels).cloned();
+        }
+        let name = text.split(|c: char| c.is_whitespace() || c == ',' || c == '.').find_map(|w| w.strip_prefix('#')).filter(|n| n.len() > 1 && !n.chars().all(|c| c.is_ascii_digit()) && n.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'))?;
+        Some(tessel_proto::SlackChannel { id: name.to_owned(), name: name.to_owned(), private: false })
     }
 
     pub(crate) fn want_slack(&mut self) {
-        if self.slack_channels.is_none() {
+        let now = super::now_ms();
+        let stale = matches!(self.slack_channels, Some(Err(_))) && now.saturating_sub(self.slack_asked_ms) > 30_000;
+        if self.slack_channels.is_none() || stale {
+            self.slack_asked_ms = now;
             self.slack_channels = Some(Ok(Vec::new()));
             self.cmd(Cmd::Ask { tag: "slack.channels", req: Request::SlackChannels });
         }
@@ -232,5 +266,11 @@ mod tests {
         assert_eq!(since_in("only today", now), chrono::Local.with_ymd_and_hms(2026, 11, 26, 0, 0, 0).single().map(|d| d.timestamp()));
         assert_eq!(since_in("since monday", now), chrono::Local.with_ymd_and_hms(2026, 11, 23, 0, 0, 0).single().map(|d| d.timestamp()));
         assert_eq!(since_in("just do the tasks", now), None);
+        let nov20 = chrono::Local.with_ymd_and_hms(2026, 11, 20, 0, 0, 0).single().map(|d| d.timestamp());
+        assert_eq!(since_in("fix what people asked for since fri nov 20", now), nov20);
+        assert_eq!(since_in("since November 20th", now), nov20);
+        assert_eq!(since_in("from 11/20", now), nov20);
+        assert_eq!(since_in("from 2026-11-20 on", now), nov20);
+        assert_eq!(since_in("since dec 3", now), chrono::Local.with_ymd_and_hms(2025, 12, 3, 0, 0, 0).single().map(|d| d.timestamp()), "a date that hasn't come yet this year is last year's");
     }
 }

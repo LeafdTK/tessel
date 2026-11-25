@@ -66,7 +66,7 @@ impl Shell {
         let mut extra: Vec<SessionId> = Vec::new();
         // what other panes show, what other desktops do, and the chats you were in
         // lately: switching back is instant.
-        for s in self.views.values().map(|v| v.session).chain(self.stashed_sessions()).chain(self.warm.iter().copied()) {
+        for s in self.views.values().map(|v| v.session).chain(self.stashed_sessions()).chain(self.warm.iter().copied()).chain(self.factory_follows()) {
             if Some(s) != open && !extra.contains(&s) {
                 extra.push(s);
             }

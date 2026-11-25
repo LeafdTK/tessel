@@ -13,6 +13,7 @@ const BOTHER: [(&str, &str); 5] = [("me", "Bother me for anything"), ("agent", "
 
 pub(crate) enum Focus<'a> {
     Task(&'a Task),
+    All,
     New,
     Issues,
     Rules,
@@ -32,6 +33,7 @@ impl Shell {
     pub(crate) fn stage_focus(&self) -> Focus<'_> {
         match self.stage_pick.as_deref() {
             Some("new") => return Focus::New,
+            Some("all") => return Focus::All,
             Some("issues") => return Focus::Issues,
             Some("rules") => return Focus::Rules,
             Some(id) => {
@@ -42,9 +44,13 @@ impl Shell {
             None => {}
         }
         let first = |states: &[TaskState]| self.stage_list(states).into_iter().next();
-        first(&[TaskState::Review])
-            .or_else(|| first(&[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Checking, TaskState::Planned]))
-            .map_or(Focus::New, Focus::Task)
+        if let Some(t) = first(&[TaskState::Review]) {
+            return Focus::Task(t);
+        }
+        if first(&[TaskState::Running, TaskState::Proving, TaskState::Landing, TaskState::Checking, TaskState::Planned]).is_some() {
+            return Focus::All;
+        }
+        Focus::New
     }
 
     fn stage_pick_now(&mut self, pick: Option<String>) {
@@ -111,7 +117,7 @@ impl Shell {
 
     pub(crate) fn stage_main(&self, cx: &mut Context<Self>) -> AnyElement {
         let p = self.palette.get();
-        if matches!(self.stage_focus(), Focus::New) && self.slack_channels.is_none() {
+        if matches!(self.stage_focus(), Focus::New) && (self.slack_channels.is_none() || matches!(self.slack_channels, Some(Err(_))) && super::now_ms().saturating_sub(self.slack_asked_ms) > 30_000) {
             let me = cx.entity().downgrade();
             cx.defer(move |cx| {
                 let _ = me.update(cx, |this, cx| {
@@ -145,6 +151,7 @@ impl Shell {
         }
         let main = match self.stage_focus() {
             Focus::Task(t) => self.stage_task(t, cx),
+            Focus::All => self.all_work(cx),
             Focus::New => v_flex().w_full().max_w(theme::z(820.)).mx_auto().px(theme::z(48.)).pt(theme::z(56.)).pb(theme::z(48.)).gap(theme::z(36.)).child(self.task_composer(cx)).children(self.task_starts(cx)).into_any_element(),
             Focus::Issues => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.issues_tab(cx)).into_any_element(),
             Focus::Rules => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.rules_tab(cx)).into_any_element(),
@@ -193,6 +200,7 @@ impl Shell {
         let paused = self.factory_paused();
         let focus_id = match self.stage_focus() {
             Focus::Task(t) => t.id.clone(),
+            Focus::All => "all".into(),
             Focus::New => "new".into(),
             Focus::Issues => "issues".into(),
             Focus::Rules => "rules".into(),
@@ -224,6 +232,7 @@ impl Shell {
             .flex_shrink_0()
             .gap(theme::z(1.))
             .child(div().mx(theme::z(theme::SIDE_INSET)).mb(theme::z(6.)).child(self.host_picker(cx)))
+            .child(nav_row("stage-all", "layout-grid", "All work".into(), focus_id == "all").on_click(pick("all", cx)).test_support())
             .child(nav_row("stage-new", "square-pen", "New task".into(), focus_id == "new").on_click(pick("new", cx)).test_support())
             .child(nav_row("board-tab-issues", "circle-dot", "Issues".into(), focus_id == "issues").when(issues > 0, |d| d.child(theme::count_pill(&p, issues.to_string(), false))).on_click(pick("issues", cx)).test_support())
             .child(nav_row("board-tab-rules", "book-open", "Rules".into(), focus_id == "rules").on_click(pick("rules", cx)).test_support())
@@ -453,7 +462,7 @@ impl Shell {
         cx.notify();
     }
 
-    fn stage_doing(&self, t: &Task) -> String {
+    pub(crate) fn stage_doing(&self, t: &Task) -> String {
         if let Some(i) = t.building {
             return format!("Trying option {} of {}", i + 1, t.options.len().max(i + 1));
         }
@@ -489,7 +498,22 @@ impl Shell {
             TaskState::Draft => if t.spec.trim().is_empty() { t.title.clone() } else { t.spec.lines().next().unwrap_or_default().to_owned() },
             _ => self.stage_doing(t),
         };
-        col = col.child(div().max_w(theme::z(900.)).font_family(theme::DEFAULT_FONT).font_weight(FontWeight::BOLD).text_size(theme::z(32.)).line_height(theme::z(38.)).text_color(if t.state == TaskState::Landed { p.finished } else { p.label }).child(headline));
+        let long = headline.chars().count() > 70;
+        col = col.child(
+            div()
+                .max_w(theme::z(if long { 760. } else { 900. }))
+                .font_family(theme::DEFAULT_FONT)
+                .font_weight(if long { FontWeight::SEMIBOLD } else { FontWeight::BOLD })
+                .text_size(theme::z(if long { 21. } else { 32. }))
+                .line_height(theme::z(if long { 29. } else { 38. }))
+                .text_color(if t.state == TaskState::Landed { p.finished } else { p.label })
+                .child(headline),
+        );
+        if matches!(t.state, TaskState::Running | TaskState::Proving | TaskState::Landing | TaskState::Checking)
+            && let Some(feed) = t.session.and_then(|s| self.feed_el(s, 14))
+        {
+            col = col.child(div().w_full().p(theme::z(18.)).rounded(theme::z(theme::outer(theme::by_height(26.), 18.))).bg(p.raised).border_1().border_color(p.separator).child(feed));
+        }
         if let Some(r) = t.review.clone().filter(|_| t.state == TaskState::Landed) {
             col = col.child(div().max_w(theme::z(720.)).text_size(theme::z(15.)).line_height(theme::z(22.)).text_color(p.secondary).child(r));
         }
@@ -509,11 +533,13 @@ impl Shell {
             );
         }
         let diff = self.stage_diff_el(&p);
+        let empty = t.changes.is_empty() && pictures.is_empty();
         if pictures.is_empty() {
-            if let Some(row) = self.stage_checks_row(t, &p) {
+            if !empty && let Some(row) = self.stage_checks_row(t, &p) {
                 col = col.child(row);
             }
             if diff.is_none()
+                && !empty
                 && let Some(e) = self.stage_evidence(t, &p)
             {
                 col = col.child(div().w_full().rounded(theme::z(24.)).bg(p.raised).border_1().border_color(p.separator).p(theme::z(20.)).child(e));
@@ -704,6 +730,9 @@ impl Shell {
                     row = row.child(stage_button(&p, SharedString::from(format!("task-choose-{id}-{i}")), &o.label, if i == 0 { theme::ButtonKind::Primary } else { theme::ButtonKind::Secondary }, false, cx.listener(move |this, _, _, cx| this.act_task(&j, TaskAct::Choose { index: i }, cx))));
                 }
                 row = row.child(ask(id.clone(), "Something Else", theme::ButtonKind::Ghost, cx));
+            }
+            TaskState::Review if t.changes.is_empty() && t.shots.is_empty() => {
+                row = row.child(ask(id.clone(), "Tell It What to Do", theme::ButtonKind::Primary, cx));
             }
             TaskState::Review => {
                 let i = id.clone();

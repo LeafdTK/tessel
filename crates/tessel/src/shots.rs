@@ -174,6 +174,23 @@ fn sessions(shot: Option<&Path>) -> Vec<SessionSummary> {
     ]
 }
 
+fn work_snapshot(n: u128, steps: &[(&str, &str)]) -> UiEvent {
+    let item = |k: u64, body: ItemBody| Item { id: ItemId::from(format!("w{n}-{k}").as_str()), parent: None, seq: k, order: k, created_ms: now() - 100_000 + k * 1000, body };
+    let mut items = vec![item(0, ItemBody::User { text: "Do the task".into(), attachments: vec![] }), item(1, ItemBody::Text { text: "I'll find where stock is computed, then show what's left on the product page.".into(), streaming: false })];
+    for (k, (tool, arg)) in steps.iter().enumerate() {
+        let input = match *tool {
+            "Bash" => serde_json::json!({"command": arg}),
+            "Grep" => serde_json::json!({"pattern": arg}),
+            _ => serde_json::json!({"file_path": arg}),
+        };
+        let last = k + 1 == steps.len();
+        items.push(item(k as u64 + 2, ItemBody::Tool { tool: (*tool).into(), input, status: if last { tessel_proto::item::ToolStatus::Running } else { tessel_proto::item::ToolStatus::Ok }, output: None, started_ms: None, finished_ms: None }));
+    }
+    let mut summary = sessions(None).into_iter().find(|s| s.id == sid(n)).expect("a demo session");
+    summary.run_state = RunState::Working;
+    UiEvent::Snapshot(Box::new(SessionSnapshot { summary, items, has_more: false, pending: vec![] }))
+}
+
 fn snapshot(shot: Option<&Path>) -> UiEvent {
     let item = |n: u64, body: ItemBody| Item { id: ItemId::from(format!("i{n}").as_str()), parent: None, seq: n, order: n, created_ms: now() - 200_000 + n * 1000, body };
     UiEvent::Snapshot(Box::new(SessionSnapshot {
@@ -206,6 +223,7 @@ const SCREENS: &[Screen] = &[
     Screen { name: "board-swatches", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "menu-land", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "menu-bother", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
+    Screen { name: "board-all", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-new", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-open", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
     Screen { name: "board-paused", launch: Launch::default, calls: &[("app.factory", r#"{"on": true}"#), ("app.view", r#"{"view": "factory"}"#)] },
@@ -274,6 +292,13 @@ pub fn run(dir: &Path, dark: bool) -> Result<Vec<PathBuf>, String> {
             settle(&mut cx, &window);
             let id: &'static str = if id == "bother" { "bother" } else { "board-land" };
             let _ = cx.update_window(window.into(), |_, window, cx| window.click(id, cx));
+        }
+        if screen.name == "board-all" {
+            let _ = window.update(&mut cx, |s, _, _| s.stage_pick = Some("all".into()));
+            settle(&mut cx, &window);
+            for (n, steps) in [(2u128, vec![("Read", "src/product/stock.rs"), ("Edit", "src/product/stock.rs"), ("Grep", "low_stock"), ("Edit", "src/product/view.rs"), ("Bash", "cargo test -q stock")]), (3u128, vec![("Read", "src/hooks/retry.rs"), ("Edit", "src/hooks/retry.rs"), ("Write", "tests/retry_test.rs"), ("Bash", "cargo test -q -p hooks")])] {
+                let _ = events.send(work_snapshot(n, &steps));
+            }
         }
         if screen.name == "board-new" {
             let _ = window.update(&mut cx, |s, _, _| {

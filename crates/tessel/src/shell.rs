@@ -35,6 +35,7 @@ mod board;
 mod stage;
 mod select;
 mod slack;
+mod live;
 #[cfg(test)]
 pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
@@ -353,6 +354,7 @@ pub struct Shell {
     pub(crate) account: Option<tessel_proto::Account>,
     pub(crate) slack_channels: Option<Result<Vec<tessel_proto::SlackChannel>, String>>,
     pub(crate) slack_channel: Option<String>,
+    pub(crate) slack_asked_ms: u64,
     pub(crate) slack_since: &'static str,
     pub(crate) slack_note: Entity<InputState>,
     pub(crate) slack_run: Option<Option<Result<slack::SlackRun, String>>>,
@@ -897,6 +899,7 @@ impl Shell {
             account: None,
             slack_channels: None,
             slack_channel: None,
+            slack_asked_ms: 0,
             slack_since: "last",
             slack_note,
             slack_run: None,
@@ -1210,7 +1213,7 @@ impl Shell {
                 let (id, n) = (open.id, open.len());
                 // a chat another pane is waiting for, not the one you're typing into.
                 let focused = self.awaiting == Some(id) || self.model.open.as_ref().is_some_and(|o| o.id == id);
-                if !focused && (self.in_a_view(id) || self.warm.contains(&id)) {
+                if !focused && (self.in_a_view(id) || self.warm.contains(&id) || self.factory_follows().contains(&id)) {
                     self.model.others.insert(id, open);
                     self.reset_views_of(id, n, cx);
                     return;
@@ -3589,7 +3592,7 @@ fn tool_row(tool: &str, input: &serde_json::Value, status: ToolStatus, output: O
 
 /// a tool call as an icon, a word for what kind of thing it did, and what it
 /// did it to; and whether that last part is code (a command, a pattern).
-fn tool_parts(tool: &str, input: &serde_json::Value) -> (&'static str, String, String, bool) {
+pub(crate) fn tool_parts(tool: &str, input: &serde_json::Value) -> (&'static str, String, String, bool) {
     let s = |k: &str| input.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty());
     let base = |p: &str| p.rsplit('/').find(|x| !x.is_empty()).unwrap_or(p).to_owned();
     let line = |t: &str| t.lines().next().unwrap_or("").trim().to_owned();

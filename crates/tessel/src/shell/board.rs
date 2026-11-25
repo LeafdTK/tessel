@@ -14,11 +14,13 @@ impl Shell {
             Some(t) => *t = task,
             None => self.tasks.push(task),
         }
+        self.sync_follow();
     }
 
     pub(crate) fn tasks_answer(&mut self, result: Result<Response, String>) {
         if let Ok(Response::Tasks { tasks }) = result {
             self.tasks = tasks;
+            self.sync_follow();
         }
     }
 
