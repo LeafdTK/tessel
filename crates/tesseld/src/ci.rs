@@ -55,6 +55,13 @@ pub async fn poll(repo: &Path, url: &str) -> Result<Ci, String> {
     Ok(read(&v))
 }
 
+pub async fn open_pr(ws: &Path) -> Option<String> {
+    crate::ship::web_url(&ws.to_string_lossy())?;
+    let out = gh(ws, &["pr", "view", "--json", "url,state"], 60).await.ok()?;
+    let v: serde_json::Value = serde_json::from_str(&out).ok()?;
+    (v["state"].as_str() == Some("OPEN")).then(|| v["url"].as_str().map(str::to_owned)).flatten()
+}
+
 pub fn run_id(link: &str) -> Option<&str> {
     let rest = link.split("/actions/runs/").nth(1)?;
     let id = rest.split(['/', '?', '#']).next()?;

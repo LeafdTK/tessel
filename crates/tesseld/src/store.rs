@@ -10,13 +10,14 @@
 
 use crate::reducer::{Meta, Persisted};
 use anyhow::Context;
+use tessel_proto::task::{TaskEvent, TaskEventKind, TaskState};
 use tessel_proto::{Attention, AttentionReason, Item, SessionId, WorktreeInfo};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::mpsc;
 use tokio::sync::oneshot;
 
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 enum Job {
     Save { session: Box<Persisted>, items: Vec<Item> },
@@ -27,13 +28,29 @@ enum Job {
     LoadSession { id: SessionId, reply: oneshot::Sender<anyhow::Result<Option<Persisted>>> },
     SaveRun { table: &'static str, id: SessionId, body: String },
     LoadRuns { table: &'static str, reply: oneshot::Sender<anyhow::Result<Vec<(SessionId, String)>>> },
-    SaveTask { id: String, body: String },
+    SaveTask { id: String, body: String, events: Vec<EventRow> },
+    LoadEvents { since: Option<i64>, task: Option<String>, limit: u32, reply: oneshot::Sender<anyhow::Result<Vec<TaskEvent>>> },
+    EventMarks { reply: oneshot::Sender<anyhow::Result<EventMarks>> },
     LoadTasks { reply: oneshot::Sender<anyhow::Result<Vec<String>>> },
     LoadSessions { reply: oneshot::Sender<anyhow::Result<Vec<Persisted>>> },
     LoadItems { id: SessionId, reply: oneshot::Sender<anyhow::Result<Vec<Item>>> },
     Spend { since: u64, reply: oneshot::Sender<anyhow::Result<Vec<(u64, f64)>>> },
     /// resolves once everything queued before it is on disk.
     Flush { reply: oneshot::Sender<()> },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventRow {
+    pub event: TaskEvent,
+    pub build: String,
+    pub extra: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EventMarks {
+    pub last_id: i64,
+    pub seqs: std::collections::HashMap<String, i64>,
+    pub moved: std::collections::HashMap<String, u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,8 +116,20 @@ impl Store {
         rx.await.context("store thread is gone")?
     }
 
-    pub fn save_task(&self, id: &str, body: String) {
-        let _ = self.tx.send(Job::SaveTask { id: id.to_owned(), body });
+    pub fn save_task(&self, id: &str, body: String, events: Vec<EventRow>) {
+        let _ = self.tx.send(Job::SaveTask { id: id.to_owned(), body, events });
+    }
+
+    pub async fn task_events(&self, since: Option<i64>, task: Option<String>, limit: u32) -> anyhow::Result<Vec<TaskEvent>> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::LoadEvents { since, task, limit, reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
+    }
+
+    pub async fn event_marks(&self) -> anyhow::Result<EventMarks> {
+        let (reply, rx) = oneshot::channel();
+        self.tx.send(Job::EventMarks { reply }).ok().context("store thread is gone")?;
+        rx.await.context("store thread is gone")?
     }
 
     pub async fn load_tasks(&self) -> anyhow::Result<Vec<String>> {
@@ -269,6 +298,26 @@ fn migrate(conn: &Connection) -> anyhow::Result<()> {
              COMMIT;",
         )?;
     }
+    if version < 10 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE task_events (
+                 id         INTEGER PRIMARY KEY,
+                 task_id    TEXT NOT NULL,
+                 seq        INTEGER NOT NULL,
+                 at_ms      INTEGER NOT NULL,
+                 kind       TEXT NOT NULL,
+                 from_state TEXT,
+                 to_state   TEXT NOT NULL,
+                 detail     TEXT NOT NULL,
+                 cost_usd   REAL,
+                 build      TEXT NOT NULL,
+                 UNIQUE (task_id, seq)
+             );
+             PRAGMA user_version = 10;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -319,10 +368,16 @@ fn run(mut conn: Connection, rx: mpsc::Receiver<Job>) {
                     eprintln!("tesseld: store: saving run {id}: {e:#}");
                 }
             }
-            Job::SaveTask { id, body } => {
-                if let Err(e) = conn.execute("INSERT INTO tasks (id, body) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET body = excluded.body", params![id, body]) {
+            Job::SaveTask { id, body, events } => {
+                if let Err(e) = save_task(&mut conn, &id, &body, &events) {
                     eprintln!("tesseld: store: saving task {id}: {e:#}");
                 }
+            }
+            Job::LoadEvents { since, task, limit, reply } => {
+                let _ = reply.send(load_events(&conn, since, task.as_deref(), limit));
+            }
+            Job::EventMarks { reply } => {
+                let _ = reply.send(event_marks(&conn));
             }
             Job::LoadTasks { reply } => {
                 let load = || -> anyhow::Result<Vec<String>> {
@@ -421,6 +476,98 @@ fn save(conn: &mut Connection, p: &Persisted, items: &[Item]) -> anyhow::Result<
     }
     tx.commit()?;
     Ok(())
+}
+
+fn save_task(conn: &mut Connection, id: &str, body: &str, events: &[EventRow]) -> anyhow::Result<()> {
+    let tx = conn.transaction()?;
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO task_events (id, task_id, seq, at_ms, kind, from_state, to_state, detail, cost_usd, build) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )?;
+        for r in events {
+            let e = &r.event;
+            let mut detail = match &r.extra {
+                serde_json::Value::Object(o) => o.clone(),
+                _ => serde_json::Map::new(),
+            };
+            detail.insert("say".into(), serde_json::Value::String(e.detail.clone()));
+            if let Some(f) = e.failure {
+                detail.insert("failure".into(), serde_json::to_value(f)?);
+            }
+            stmt.execute(params![
+                e.id,
+                e.task_id,
+                e.seq,
+                e.at_ms as i64,
+                e.kind.word(),
+                e.from.map(TaskState::word),
+                e.to.word(),
+                serde_json::Value::Object(detail).to_string(),
+                e.cost_usd,
+                r.build,
+            ])?;
+        }
+    }
+    tx.execute("INSERT INTO tasks (id, body) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET body = excluded.body", params![id, body])?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn word<T: serde::de::DeserializeOwned>(w: &str) -> Option<T> {
+    serde_json::from_value(serde_json::Value::String(w.to_owned())).ok()
+}
+
+fn load_events(conn: &Connection, since: Option<i64>, task: Option<&str>, limit: u32) -> anyhow::Result<Vec<TaskEvent>> {
+    let limit = limit.clamp(1, 10_000) as i64;
+    let newest = since.is_none();
+    let sql = format!(
+        "SELECT id, task_id, seq, at_ms, kind, from_state, to_state, detail, cost_usd FROM task_events WHERE id > ?1 AND (?2 IS NULL OR task_id = ?2) ORDER BY id {} LIMIT ?3",
+        if newest { "DESC" } else { "ASC" }
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![since.unwrap_or(0), task, limit], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, Option<String>>(5)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, String>(7)?,
+            r.get::<_, Option<f64>>(8)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, task_id, seq, at_ms, kind, from, to, detail, cost_usd) = row?;
+        let detail: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+        out.push(TaskEvent {
+            id,
+            task_id,
+            seq,
+            at_ms: at_ms as u64,
+            kind: word(&kind).unwrap_or(TaskEventKind::Unknown),
+            from: from.and_then(|f| word(&f)),
+            to: word(&to).unwrap_or(TaskState::Unknown),
+            detail: detail.get("say").and_then(|s| s.as_str()).unwrap_or_default().to_owned(),
+            cost_usd,
+            failure: detail.get("failure").and_then(|f| serde_json::from_value(f.clone()).ok()),
+        });
+    }
+    if newest {
+        out.reverse();
+    }
+    Ok(out)
+}
+
+fn event_marks(conn: &Connection) -> anyhow::Result<EventMarks> {
+    let last_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM task_events", [], |r| r.get(0))?;
+    let mut stmt = conn.prepare("SELECT task_id, MAX(seq) FROM task_events GROUP BY task_id")?;
+    let seqs = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<_, _>>()?;
+    let mut stmt = conn.prepare("SELECT task_id, MAX(at_ms) FROM task_events WHERE from_state IS NOT to_state GROUP BY task_id")?;
+    let moved = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?.collect::<Result<_, _>>()?;
+    Ok(EventMarks { last_id, seqs, moved })
 }
 
 fn load_sessions(conn: &Connection) -> anyhow::Result<Vec<Persisted>> {
@@ -695,6 +842,72 @@ mod tests {
         let p = &sessions[0];
         assert_eq!((p.meta.goal.as_str(), p.seq, p.model.as_deref(), p.cost_usd), ("old one", 3, Some("m"), 0.5));
         assert_eq!((p.permission_mode.clone(), p.context_used, p.context_window), (None, None, None));
+    }
+
+    fn logged(id: i64, task: &str, seq: i64, kind: TaskEventKind, from: Option<TaskState>, to: TaskState) -> EventRow {
+        let event = TaskEvent { id, task_id: task.into(), seq, at_ms: 1000 * id as u64, kind, from, to, detail: format!("{} {seq}", kind.word()), cost_usd: (id == 2).then_some(0.25), failure: (id == 3).then_some(tessel_proto::task::FailureClass::VerifyFailed) };
+        EventRow { event, build: "0.1.0".into(), extra: serde_json::json!({"sha": "abc"}) }
+    }
+
+    #[tokio::test]
+    async fn a_task_and_what_happened_to_it_are_written_together_and_read_back_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.db");
+        let rows = [
+            logged(1, "a", 1, TaskEventKind::Created, None, TaskState::Ready),
+            logged(2, "a", 2, TaskEventKind::Dispatched, Some(TaskState::Ready), TaskState::Running),
+            logged(3, "b", 1, TaskEventKind::Created, None, TaskState::Draft),
+            logged(4, "a", 3, TaskEventKind::Watchdog, Some(TaskState::Running), TaskState::Running),
+        ];
+        {
+            let store = Store::open(&path).unwrap();
+            store.save_task("a", "{\"id\":\"a\"}".into(), rows[..2].to_vec());
+            store.save_task("b", "{\"id\":\"b\"}".into(), vec![rows[2].clone()]);
+            store.save_task("a", "{\"id\":\"a\",\"v\":2}".into(), vec![rows[3].clone()]);
+            store.flush().await;
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.load_tasks().await.unwrap().len(), 2);
+        let all = store.task_events(None, None, 100).await.unwrap();
+        assert_eq!(all, rows.iter().map(|r| r.event.clone()).collect::<Vec<_>>(), "everything about each event survives, failure and cost too");
+        assert_eq!(store.task_events(None, Some("a".into()), 100).await.unwrap().iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(store.task_events(Some(2), None, 100).await.unwrap().iter().map(|e| e.id).collect::<Vec<_>>(), [3, 4], "on from an event");
+        assert_eq!(store.task_events(None, None, 2).await.unwrap().iter().map(|e| e.id).collect::<Vec<_>>(), [3, 4], "without a start, the newest, oldest first");
+        assert_eq!(store.task_events(Some(0), None, 2).await.unwrap().iter().map(|e| e.id).collect::<Vec<_>>(), [1, 2], "from the start, the oldest");
+        let marks = store.event_marks().await.unwrap();
+        assert_eq!(marks.last_id, 4);
+        assert_eq!((marks.seqs["a"], marks.seqs["b"]), (3, 1));
+        assert_eq!((marks.moved["a"], marks.moved["b"]), (2000, 3000), "when each last changed state, not when it was last touched");
+        let detail: String = Connection::open(&path).unwrap().query_row("SELECT detail FROM task_events WHERE id = 3", [], |r| r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&detail).unwrap(), serde_json::json!({"say": "created 1", "failure": "verify_failed", "sha": "abc"}));
+    }
+
+    #[tokio::test]
+    async fn a_second_event_with_the_same_place_in_a_task_s_log_is_refused_and_takes_the_task_row_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.db");
+        let store = Store::open(&path).unwrap();
+        store.save_task("a", "{\"v\":1}".into(), vec![logged(1, "a", 1, TaskEventKind::Created, None, TaskState::Ready)]);
+        store.save_task("a", "{\"v\":2}".into(), vec![logged(2, "a", 1, TaskEventKind::Ready, Some(TaskState::Ready), TaskState::Ready)]);
+        store.flush().await;
+        assert_eq!(store.load_tasks().await.unwrap(), vec!["{\"v\":1}".to_owned()], "the row and its events are one write");
+        assert_eq!(store.task_events(None, None, 10).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_database_from_before_the_task_log_gets_one_and_keeps_its_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.db");
+        drop(Store::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("DROP TABLE task_events; PRAGMA user_version = 9; INSERT INTO tasks (id, body) VALUES ('old', '{}');").unwrap();
+        drop(conn);
+        drop(Store::open(&path).unwrap());
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        let tasks: i64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0)).unwrap();
+        let events: i64 = conn.query_row("SELECT COUNT(*) FROM task_events", [], |r| r.get(0)).unwrap();
+        assert_eq!((version, tasks, events), (SCHEMA_VERSION, 1, 0));
     }
 
     #[test]

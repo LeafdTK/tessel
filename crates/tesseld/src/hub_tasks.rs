@@ -1,12 +1,13 @@
 use super::*;
+use super::flow::{Fact, Retry};
 use crate::board::{self, Next};
-use tessel_proto::task::{Task, TaskAct, TaskNote, TaskOption, TaskState};
+use tessel_proto::task::{FailureClass, Task, TaskAct, TaskEventKind as Kind, TaskNote, TaskOption, TaskState};
 
 const NOBODY: ClientId = ClientId::MAX;
 
 pub const DEFAULT_PARALLEL: u32 = 3;
 
-const PAUSED: &str = "paused";
+pub(super) const PAUSED: &str = "paused";
 
 fn first_problem(p: &tessel_proto::proof::Proof) -> Option<String> {
     if let Some(v) = p.verify.iter().find(|v| !v.ok) {
@@ -23,7 +24,7 @@ fn first_problem(p: &tessel_proto::proof::Proof) -> Option<String> {
         n => format!("{}{at}, and {} more", first.title, n - 1),
     })
 }
-const WAITING: &str = "finished while paused: it's checked when the factory resumes";
+pub(super) const WAITING: &str = "finished while paused: it's checked when the factory resumes";
 const HELD: &str = "paused before its next option";
 
 fn lower_first(s: &str) -> String {
@@ -40,10 +41,14 @@ impl Hub {
         let Some(t) = self.tasks.get_mut(id) else { return };
         t.updated_ms = now_ms();
         let t = t.clone();
+        let events = self.unsaved_events.remove(id).unwrap_or_default();
         if let Ok(body) = serde_json::to_string(&t) {
-            self.store.save_task(&t.id, body);
+            self.store.save_task(&t.id, body, events.clone());
         }
         self.tell_everyone(Event::TaskUpdated { task: t });
+        for row in events {
+            self.tell_everyone(Event::TaskEvent { entry: row.event });
+        }
     }
 
     pub(super) fn note(&mut self, id: &str, by: &str, text: impl Into<String>) {
@@ -56,7 +61,7 @@ impl Hub {
         self.tasks.values().find(|t| t.session == Some(session) && !t.state.finished()).map(|t| t.id.clone())
     }
 
-    fn tell_agent(&mut self, session: SessionId, text: String) -> bool {
+    pub(super) fn tell_agent(&mut self, session: SessionId, text: String) -> bool {
         self.send_user(session, Uuid::new_v4(), text, Vec::new()).is_ok()
     }
 
@@ -67,9 +72,14 @@ impl Hub {
             return self.task_create(repo, title, spec, deps, parent, ready, budget_usd, plan);
         };
         let r = self.task_create(p.repo.clone(), title, spec, deps, Some(p.id.clone()), true, budget_usd, false)?;
-        if p.state == TaskState::Review {
-            self.tasks.get_mut(&p.id).unwrap().state = TaskState::Planned;
-            self.task_saved(&p.id);
+        if let Response::Task { task } = &r {
+            let filed = format!("its planner filed “{}” ({})", task.title, task.id);
+            match p.state {
+                TaskState::Review => {
+                    let _ = self.advance(&p.id, TaskState::Planned, Kind::Split, filed);
+                }
+                _ => self.record(&p.id, Kind::Split, filed),
+            }
         }
         Ok(r)
     }
@@ -120,11 +130,14 @@ impl Hub {
             building: None,
             source: None,
             link: None,
+            failure: None,
             created_ms: now,
             updated_ms: now,
         };
+        let said = if ready { "filed, ready to start" } else { "filed as a draft" };
         self.tasks.insert(id.clone(), task);
-        self.task_saved(&id);
+        self.state_since.insert(id.clone(), now);
+        self.created(&id, said);
         self.dispatch();
         Ok(Response::Task { task: self.tasks[&id].clone() })
     }
@@ -136,19 +149,27 @@ impl Hub {
             return Err(RpcError::new(ErrorCode::Invalid, format!("{bad} can't be one it waits on")));
         }
         let Some(t) = self.tasks.get_mut(id) else { return Err(RpcError::new(ErrorCode::NotFound, format!("there's no task {id}"))) };
-        if let Some(title) = title.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()) {
+        let mut changed = Vec::new();
+        if let Some(title) = title.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty() && *n != t.title) {
             t.title = title;
+            changed.push("its title");
         }
-        if let Some(spec) = spec {
+        if let Some(spec) = spec.filter(|s| *s != t.spec) {
             t.spec = spec;
+            changed.push("what it asks");
         }
-        if let Some(deps) = deps {
+        if let Some(deps) = deps.filter(|d| *d != t.deps) {
             t.deps = deps;
+            changed.push("what it waits for");
         }
         if let Some(n) = note.filter(|n| !n.trim().is_empty()) {
             self.note(id, "agent", n);
+            changed.push("a note");
         }
-        self.task_saved(id);
+        match changed.as_slice() {
+            [] => self.task_saved(id),
+            all => self.record(id, Kind::Edited, format!("changed {}", all.join(", "))),
+        }
         self.dispatch();
         Ok(Response::Task { task: self.tasks[id].clone() })
     }
@@ -156,26 +177,27 @@ impl Hub {
     pub(super) fn task_act(&mut self, id: &str, act: TaskAct) -> Result<Response, RpcError> {
         let Some(t) = self.tasks.get(id).cloned() else { return Err(RpcError::new(ErrorCode::NotFound, format!("there's no task {id}"))) };
         let refuse = |why: &str| Err(RpcError::new(ErrorCode::Conflict, format!("{id} is {:?}: {why}", t.state).to_lowercase()));
+        let moved = |r: Result<(), super::flow::Illegal>| r.map_err(|e| RpcError::new(ErrorCode::Conflict, format!("{id} can't go from {} to {}", e.from.word(), e.to.word())));
         match act {
             TaskAct::Ready => {
                 if !matches!(t.state, TaskState::Draft | TaskState::Dropped) {
                     return refuse("only a draft can be made ready");
                 }
-                self.tasks.get_mut(id).unwrap().state = TaskState::Ready;
+                let said = if t.state == TaskState::Dropped { "started again by you" } else { "started by you" };
+                moved(self.advance(id, TaskState::Ready, Kind::Ready, said))?;
             }
             TaskAct::Plan => {
                 if !matches!(t.state, TaskState::Draft | TaskState::Ready) {
                     return refuse("only a task that hasn't started can be planned");
                 }
-                let task = self.tasks.get_mut(id).unwrap();
-                task.plan = true;
-                task.state = TaskState::Ready;
+                self.tasks.get_mut(id).unwrap().plan = true;
+                moved(self.advance(id, TaskState::Ready, Kind::Plan, "to be planned into smaller tasks first"))?;
             }
             TaskAct::Draft => {
                 if t.state != TaskState::Ready {
                     return refuse("only a ready task goes back to draft");
                 }
-                self.tasks.get_mut(id).unwrap().state = TaskState::Draft;
+                moved(self.advance(id, TaskState::Draft, Kind::Draft, "put back as a draft"))?;
             }
             TaskAct::Land => {
                 if t.state != TaskState::Review {
@@ -184,12 +206,12 @@ impl Hub {
                 self.stop_swatches(id);
                 match t.pr.clone() {
                     Some(url) if t.notes.iter().rev().find(|n| n.by == "tessel").is_some_and(|n| n.text.starts_with("its checks passed")) => {
-                        self.tasks.get_mut(id).unwrap().state = TaskState::Checking;
+                        moved(self.advance(id, TaskState::Checking, Kind::Merging, "you said land: merging its pull request"))?;
                         self.note(id, "tessel", "merging its pull request");
                         self.merge_pr(id, url);
                     }
                     _ => {
-                        self.tasks.get_mut(id).unwrap().state = TaskState::Landing;
+                        moved(self.advance(id, TaskState::Landing, Kind::Landing, "you said land"))?;
                         self.land_queue.push_back(id.to_owned());
                     }
                 }
@@ -198,17 +220,24 @@ impl Hub {
                 if text.trim().is_empty() {
                     return Err(RpcError::new(ErrorCode::Invalid, "say what to change"));
                 }
+                let live = t.session.filter(|s| self.sessions.contains_key(s) && matches!(t.state, TaskState::Review | TaskState::Running));
+                let to = if live.is_some() { TaskState::Running } else { TaskState::Ready };
+                if !crate::machine::legal(t.state, to) {
+                    return refuse("it can't be changed now");
+                }
                 self.stop_swatches(id);
                 self.note(id, "you", text.clone());
-                match t.session.filter(|s| self.sessions.contains_key(s) && matches!(t.state, TaskState::Review | TaskState::Running)) {
-                    Some(s) => {
-                        self.tasks.get_mut(id).unwrap().state = TaskState::Running;
-                        self.tell_agent(s, text);
-                    }
-                    None => self.tasks.get_mut(id).unwrap().state = TaskState::Ready,
+                moved(self.advance(id, to, Kind::Changed, format!("you asked for a change: {}", text.trim())))?;
+                if let Some(s) = live {
+                    self.tell_agent(s, text);
                 }
             }
-            TaskAct::Drop => self.drop_task(id),
+            TaskAct::Drop => {
+                if t.state.finished() {
+                    return refuse("it's finished already");
+                }
+                self.drop_task(id, Fact::new(Kind::Dropped, "dropped by you").failed(FailureClass::Cancelled));
+            }
             TaskAct::Choose { index } => {
                 if t.state != TaskState::Review || t.options.is_empty() {
                     return refuse("only a question with options is answered by choosing");
@@ -221,9 +250,8 @@ impl Hub {
                         return Err(RpcError::new(ErrorCode::Conflict, format!("couldn't put {id} back to that option")));
                     }
                     self.choose_note(id, &o);
-                    let task = self.tasks.get_mut(id).unwrap();
-                    task.options.clear();
-                    task.state = TaskState::Proving;
+                    self.tasks.get_mut(id).unwrap().options.clear();
+                    moved(self.advance(id, TaskState::Proving, Kind::Chose, format!("you chose {}: proving it", o.label)))?;
                     let s = *s;
                     if !self.proving.contains(&s) {
                         self.start_proof(s, false, false);
@@ -232,9 +260,9 @@ impl Hub {
                     self.choose_note(id, &o);
                     let what = if o.what.trim().is_empty() { String::new() } else { format!(" {}", o.what.trim()) };
                     let told = live.is_some_and(|(s, _)| self.tell_agent(s, format!("The person chose: {}.{what} Make it so, commit, then stop.", o.label)));
-                    let task = self.tasks.get_mut(id).unwrap();
-                    task.options.clear();
-                    task.state = if told { TaskState::Running } else { TaskState::Ready };
+                    self.tasks.get_mut(id).unwrap().options.clear();
+                    let (to, said) = if told { (TaskState::Running, format!("you chose {}: its agent makes it so", o.label)) } else { (TaskState::Ready, format!("you chose {}: it starts again", o.label)) };
+                    moved(self.advance(id, to, Kind::Chose, said))?;
                 }
             }
             TaskAct::Clear => {
@@ -242,6 +270,7 @@ impl Hub {
                     return refuse("only finished work is cleared");
                 }
                 self.tasks.get_mut(id).unwrap().cleared = true;
+                self.record(id, Kind::Cleared, "cleared off the board");
             }
             TaskAct::Unknown => return Err(RpcError::new(ErrorCode::Invalid, "tessel doesn't know that")),
         }
@@ -261,7 +290,7 @@ impl Hub {
         self.note(id, "you", text);
     }
 
-    fn drop_task(&mut self, id: &str) {
+    fn drop_task(&mut self, id: &str, fact: Fact) {
         let Some(t) = self.tasks.get(id).cloned() else { return };
         self.stop_swatches(id);
         if let Some(s) = t.session
@@ -272,17 +301,19 @@ impl Hub {
             agent.interrupt();
         }
         self.land_queue.retain(|x| x != id);
-        self.tasks.get_mut(id).unwrap().state = TaskState::Dropped;
+        if self.landing.as_deref() == Some(id) {
+            self.landing = None;
+        }
+        let _ = self.advance_fact(id, TaskState::Dropped, fact);
         let waiting: Vec<String> = self.tasks.values().filter(|x| x.deps.iter().any(|d| d == id) && matches!(x.state, TaskState::Ready | TaskState::Draft)).map(|x| x.id.clone()).collect();
         for w in waiting {
             let x = self.tasks.get_mut(&w).unwrap();
             x.deps.retain(|d| d != id);
-            x.state = TaskState::Draft;
-            self.note(&w, "tessel", format!("“{}”, which it waited for, was dropped", t.title));
-            self.task_saved(&w);
+            let said = format!("“{}”, which it waited for, was dropped", t.title);
+            self.note(&w, "tessel", said.clone());
+            let _ = self.advance(&w, TaskState::Draft, Kind::Unblocked, said);
         }
         if let Some(p) = t.parent.clone() {
-            self.task_saved(id);
             self.parent_progress(&p);
         }
     }
@@ -295,25 +326,23 @@ impl Hub {
         matches!(self.mode(), "full" | "ui")
     }
 
-    fn set_aside(&mut self, id: &str, why: String) {
+    fn set_aside(&mut self, id: &str, failure: Option<FailureClass>, why: String) {
         self.note(id, "tessel", format!("set aside: {}", lower_first(&why)));
         if let Some(t) = self.tasks.get_mut(id) {
-            t.ask = Some(why);
+            t.ask = Some(why.clone());
         }
-        self.drop_task(id);
+        self.drop_task(id, Fact::new(Kind::SetAside, format!("set aside: {}", lower_first(&why))).failed(failure));
     }
 
-    fn hold(&mut self, id: &str, why: impl Into<String>) {
+    pub(super) fn hold(&mut self, id: &str, failure: FailureClass, why: impl Into<String>) {
         let why = why.into();
         if self.hands_off() {
-            self.set_aside(id, why);
+            self.set_aside(id, Some(failure), why);
             return;
         }
         self.stop_swatches(id);
-        if let Some(t) = self.tasks.get_mut(id) {
-            t.state = TaskState::Review;
-        }
-        self.note(id, "tessel", why);
+        self.note(id, "tessel", why.clone());
+        let _ = self.advance_fact(id, TaskState::Review, Fact::new(Kind::Held, why).failed(failure));
     }
 
     pub(super) fn dispatch(&mut self) {
@@ -331,17 +360,20 @@ impl Hub {
         }
     }
 
-    fn start_task(&mut self, id: &str) {
+    pub(super) fn start_task(&mut self, id: &str) {
         if self.tasks.get(id).is_some_and(|t| t.plan) {
             self.start_planner(id);
             return;
         }
-        let Some(t) = self.tasks.get_mut(id) else { return };
-        t.state = TaskState::Running;
+        let again = self.tasks.get(id).is_some_and(|t| t.state == TaskState::Running);
+        let said = if again { "making its workspace again" } else { "dispatched: making its workspace" };
+        if self.advance(id, TaskState::Running, Kind::Dispatched, said).is_err() {
+            return;
+        }
+        let Some(t) = self.tasks.get(id) else { return };
         let (repo, title, prompt) = (t.repo.clone(), t.title.clone(), board::task_prompt(t));
         let attachments = crate::board::load_attachments(&self.cfg.paths.home, t);
         let f = board::factory(std::path::Path::new(&repo), std::path::Path::new(&repo));
-        self.task_saved(id);
         let create = Create {
             cmd_id: Uuid::new_v4(),
             cwd: repo,
@@ -353,13 +385,23 @@ impl Hub {
             fork: None,
             task: Some(id.to_owned()),
         };
-        let name = format!("{id}-{}", crate::workflow::slug(&title).chars().take(30).collect::<String>());
+        let name = self.free_name(id, &title, &create.cwd);
         self.make_worktree(NOBODY, 0, create, WorktreeSpec { base: None, name: Some(name) });
     }
 
+    fn free_name(&self, id: &str, title: &str, repo: &str) -> String {
+        let base = format!("{id}-{}", crate::workflow::slug(title).chars().take(30).collect::<String>());
+        let repo = std::path::Path::new(repo);
+        let dir = self.cfg.paths.workspaces.join(repo.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "repo".into()));
+        let taken = |n: &str| dir.join(n).exists() || board::git(repo, &["show-ref", "--verify", "--quiet", &format!("refs/heads/tessel/{n}")]).is_some();
+        (1..20).map(|n| if n == 1 { base.clone() } else { format!("{base}-{n}") }).find(|n| !taken(n)).unwrap_or_else(|| format!("{base}-{}", now_ms()))
+    }
+
     fn start_planner(&mut self, id: &str) {
-        let Some(t) = self.tasks.get_mut(id) else { return };
-        t.state = TaskState::Running;
+        if self.advance(id, TaskState::Running, Kind::Dispatched, "dispatched to its planner").is_err() {
+            return;
+        }
+        let Some(t) = self.tasks.get(id) else { return };
         let (repo, title, prompt) = (t.repo.clone(), t.title.clone(), board::plan_prompt(t));
         let f = board::factory(std::path::Path::new(&repo), std::path::Path::new(&repo));
         let create = Create {
@@ -377,7 +419,7 @@ impl Hub {
         self.task_started(id, &result);
     }
 
-    fn parent_progress(&mut self, parent: &str) {
+    pub(super) fn parent_progress(&mut self, parent: &str) {
         if self.tasks.get(parent).is_none_or(|p| p.state != TaskState::Planned) {
             return;
         }
@@ -387,30 +429,39 @@ impl Hub {
         }
         let landed = kids.iter().filter(|s| **s == TaskState::Landed).count();
         if landed == kids.len() {
-            let p = self.tasks.get_mut(parent).unwrap();
-            p.state = TaskState::Landed;
-            p.landed = Some(format!("{landed} tasks"));
+            self.tasks.get_mut(parent).unwrap().landed = Some(format!("{landed} tasks"));
             self.note(parent, "tessel", format!("all {landed} of its tasks landed"));
+            let _ = self.advance(parent, TaskState::Landed, Kind::Landed, format!("all {landed} of its tasks landed"));
         } else {
-            self.hold(parent, format!("{landed} of its {} tasks landed; the rest were dropped", kids.len()));
+            self.hold(parent, FailureClass::Cancelled, format!("{landed} of its {} tasks landed; the rest were dropped", kids.len()));
         }
-        self.task_saved(parent);
     }
 
     pub(super) fn task_started(&mut self, id: &str, result: &Result<Response, RpcError>) {
         match result {
             Ok(Response::Session { summary }) => {
-                if let Some(t) = self.tasks.get_mut(id) {
-                    t.session = Some(summary.id);
+                let Some(t) = self.tasks.get_mut(id) else { return };
+                t.session = Some(summary.id);
+                let state = t.state;
+                if state.finished() {
+                    self.interrupt_session(summary.id);
+                    self.record(id, Kind::Started, format!("its workspace came after it was {}: its agent was stopped", state.word()));
+                } else {
+                    self.record(id, Kind::Started, format!("its agent started in {}", summary.cwd));
                 }
             }
             Ok(_) => {}
-            Err(e) if self.hands_off() => self.set_aside(id, format!("couldn't make its workspace: {}", e.message)),
             Err(e) => {
-                if let Some(t) = self.tasks.get_mut(id) {
-                    t.state = TaskState::Draft;
+                let why = format!("couldn't make its workspace: {}", e.message);
+                if self.retry_or(id, FailureClass::Infra, &why, Retry::Start) {
+                    return;
                 }
-                self.note(id, "tessel", format!("couldn't make its workspace: {}", e.message));
+                if self.hands_off() {
+                    self.set_aside(id, Some(FailureClass::Infra), why);
+                } else {
+                    self.note(id, "tessel", why.clone());
+                    let _ = self.advance_fact(id, TaskState::Draft, Fact::new(Kind::Held, why).failed(FailureClass::Infra));
+                }
             }
         }
         self.task_saved(id);
@@ -421,13 +472,16 @@ impl Hub {
         if self.tasks[&id].state != TaskState::Running {
             return true;
         }
+        if self.redo_turn(&id, session) {
+            return true;
+        }
         if self.tasks[&id].plan {
             let filed = self.tasks.values().filter(|t| t.parent.as_deref() == Some(id.as_str())).count();
             if filed == 0 {
-                self.hold(&id, "the planner filed no tasks");
+                self.hold(&id, FailureClass::NoDiff, "the planner filed no tasks");
             } else {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Planned;
                 self.note(&id, "tessel", format!("split into {filed} tasks"));
+                let _ = self.advance(&id, TaskState::Planned, Kind::Split, format!("split into {filed} tasks"));
             }
             self.task_saved(&id);
             self.dispatch();
@@ -437,7 +491,7 @@ impl Hub {
             let interrupted = self.tasks[&id].notes.last().is_some_and(|n| n.by == "tessel" && n.text == PAUSED);
             if !interrupted {
                 self.note(&id, "tessel", WAITING);
-                self.task_saved(&id);
+                self.record(&id, Kind::Paused, "its agent finished while the factory was paused: it's proved when it resumes");
             }
             return true;
         }
@@ -449,7 +503,7 @@ impl Hub {
             return true;
         }
         if errored {
-            self.hold(&id, "the agent stopped with an error");
+            self.errored_turn(&id, session);
             self.task_saved(&id);
             self.dispatch();
             return true;
@@ -461,12 +515,11 @@ impl Hub {
             })
         });
         let t = self.tasks.get_mut(&id).unwrap();
-        t.state = TaskState::Proving;
         if said.is_some() {
             t.summary = said;
         }
-        self.task_saved(&id);
-        if !self.proving.contains(&session) {
+        let cost = self.sessions.get(&session).map_or(0.0, |l| l.state.cost_usd());
+        if self.advance_fact(&id, TaskState::Proving, Fact::new(Kind::TurnEnded, "its agent finished a turn: proving it").cost(cost)).is_ok() && !self.proving.contains(&session) {
             self.start_proof(session, false, false);
         }
         true
@@ -486,7 +539,7 @@ impl Hub {
                         agent.interrupt();
                     }
                     self.note(&id, "tessel", PAUSED);
-                    self.task_saved(&id);
+                    self.record(&id, Kind::Paused, "the factory paused: its agent was interrupted");
                 }
             }
             return;
@@ -511,17 +564,16 @@ impl Hub {
                 Some(WAITING) => {}
                 _ if self.sessions.get(&s).is_some_and(|l| l.agent.is_none()) || last.as_deref() == Some(PAUSED) => {
                     self.note(&id, "tessel", "resumed");
-                    if !self.tell_agent(s, "The factory was paused while you worked. Carry on with the task where you left off.".into()) {
-                        self.hold(&id, "its agent couldn't carry on after the pause");
+                    if self.tell_agent(s, "The factory was paused while you worked. Carry on with the task where you left off.".into()) {
+                        self.record(&id, Kind::Resumed, "the factory resumed: its agent carries on");
+                    } else {
+                        self.hold(&id, FailureClass::Infra, "its agent couldn't carry on after the pause");
                     }
                 }
                 _ => {}
             }
-            if last.as_deref() == Some(WAITING) {
-                self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
-                if !self.proving.contains(&s) {
-                    self.start_proof(s, false, false);
-                }
+            if last.as_deref() == Some(WAITING) && self.advance(&id, TaskState::Proving, Kind::Resumed, "the factory resumed: proving what its agent finished").is_ok() && !self.proving.contains(&s) {
+                self.start_proof(s, false, false);
             }
             self.task_saved(&id);
         }
@@ -546,23 +598,26 @@ impl Hub {
             t.shots = proof.shots.clone();
         }
         let word = crate::proof::verdict_word(proof);
+        let problem = first_problem(proof).map(|p| format!(": {p}")).unwrap_or_default();
+        self.record_fact(&id, Fact::new(Kind::Proof, format!("proved: {word}{problem}")).cost(proof.cost_usd).extra(serde_json::json!({"verdict": proof.verdict})));
         match next {
             Next::Fix(text) => {
                 self.tasks.get_mut(&id).unwrap().attempts += 1;
-                self.note(&id, "tessel", format!("{word}: sent back to fix ({} of {})", t.attempts + 1, f.fix_rounds));
-                if self.tell_agent(session, text) {
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
-                } else {
-                    self.hold(&id, "couldn't send it back to its agent");
+                let said = format!("{word}: sent back to fix ({} of {})", t.attempts + 1, f.fix_rounds);
+                self.note(&id, "tessel", said.clone());
+                if self.tell_agent(session, text.clone()) {
+                    let _ = self.advance(&id, TaskState::Running, Kind::SentBack, said);
+                } else if !self.retry_or(&id, FailureClass::Infra, "couldn't send it back to its agent", Retry::Tell { session, text, at: TaskState::Proving, to: TaskState::Running }) {
+                    self.hold(&id, FailureClass::Infra, "couldn't send it back to its agent");
                 }
             }
             Next::Review(why) => {
-                let why = match why {
-                    Some(w) if proof.verdict == tessel_proto::proof::Verdict::Failed => format!("It still fails its checks after {} tries: {}", t.attempts, first_problem(proof).unwrap_or(w)),
-                    Some(w) => format!("It couldn't be checked: {w}"),
-                    None => word,
+                let (failure, why) = match why {
+                    Some(w) if proof.verdict == tessel_proto::proof::Verdict::Failed => (Some(FailureClass::VerifyFailed), format!("It still fails its checks after {} tries: {}", t.attempts, first_problem(proof).unwrap_or(w))),
+                    Some(w) => (Some(FailureClass::EnvBlocked), format!("It couldn't be checked: {w}")),
+                    None => (None, word),
                 };
-                self.escalate(&id, why);
+                self.escalate(&id, failure, why);
             }
             Next::Land => self.final_review(&id, session, proof),
         }
@@ -571,34 +626,36 @@ impl Hub {
         self.pump_land();
     }
 
-    fn escalate(&mut self, id: &str, why: String) {
+    pub(super) fn escalate(&mut self, id: &str, failure: Option<FailureClass>, why: String) {
         if self.hands_off() {
-            self.set_aside(id, why);
+            self.set_aside(id, failure, why);
             return;
         }
-        self.bring(id, why);
+        self.bring(id, Fact::new(Kind::Escalated, why).failed(failure));
     }
 
-    fn bring(&mut self, id: &str, why: String) {
+    fn bring(&mut self, id: &str, fact: Fact) {
         self.stop_swatches(id);
+        let why = fact.text().to_owned();
         if let Some(t) = self.tasks.get_mut(id) {
-            t.state = TaskState::Review;
             t.ask = Some(why.clone());
         }
         self.note(id, "tessel", why);
+        let _ = self.advance_fact(id, TaskState::Review, fact);
     }
 
-    fn final_review(&mut self, id: &str, session: SessionId, proof: &tessel_proto::proof::Proof) {
+    pub(super) fn final_review(&mut self, id: &str, session: SessionId, proof: &tessel_proto::proof::Proof) {
         if self.mode() == "me" {
-            self.escalate(id, "Done and checked. You review finished work yourself (Factory settings).".into());
+            self.escalate(id, None, "Done and checked. You review finished work yourself (Factory settings).".into());
             return;
         }
         let Some(t) = self.tasks.get(id).cloned() else { return };
         let Some(ws) = self.sessions.get(&session).map(|l| std::path::PathBuf::from(&l.state.meta.cwd)) else {
-            self.escalate(id, "Its workspace is gone.".into());
+            self.escalate(id, Some(FailureClass::EnvBlocked), "Its workspace is gone.".into());
             return;
         };
         self.note(id, "tessel", "in final review");
+        self.record(id, Kind::Reviewing, "in final review");
         let (tx, backend, model, report, task, autonomy, bother) = (self.tx.clone(), self.backend.clone(), self.settings.role("review"), proof.report(), id.to_owned(), self.settings.autonomy.clone(), self.settings.bother.clone());
         tokio::spawn(async move {
             let diff = crate::proof::change(&ws).await.map(|c| c.diff).unwrap_or_default();
@@ -617,13 +674,25 @@ impl Hub {
         let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
         let risky = t.risk == Some(tessel_proto::task::Risk::High);
         match result {
-            Err(e) => self.escalate(&id, format!("The final review couldn't finish: {e}")),
+            Err(e) => {
+                let why = format!("The final review couldn't finish: {e}");
+                let retried = t.session.is_some_and(|s| self.retry_or(&id, FailureClass::ProviderTransient, &why, Retry::Review(s)));
+                if !retried {
+                    self.escalate(&id, Some(FailureClass::ProviderTransient), why);
+                }
+            }
             Ok((decision, cost)) => {
                 self.tasks.get_mut(&id).unwrap().proof_cost_usd += cost;
+                let said = match &decision {
+                    board::Decision::Land(why) => format!("the reviewer would land it: {why}"),
+                    board::Decision::Change(why, _) => format!("the reviewer wants a change: {why}"),
+                    board::Decision::Ask { why, .. } => format!("the reviewer has a question: {why}"),
+                };
+                self.record_fact(&id, Fact::new(Kind::Review, said).cost(cost));
                 match decision {
                     board::Decision::Land(why) if risky && matches!(self.mode(), "me" | "agent") => {
                         self.tasks.get_mut(&id).unwrap().review = Some(why.clone());
-                        self.escalate(&id, format!("It touches risky code (auth, secrets, migrations or infra), so it's yours to land. The reviewer says: {why}"));
+                        self.escalate(&id, None, format!("It touches risky code (auth, secrets, migrations or infra), so it's yours to land. The reviewer says: {why}"));
                     }
                     board::Decision::Land(why) => self.approve(&id, why),
                     board::Decision::Ask { why, visual, .. } if self.mode() == "full" || (self.mode() == "ui" && !visual) => self.approve(&id, why),
@@ -634,12 +703,12 @@ impl Hub {
                         task.review = Some(why.clone());
                         self.note(&id, "tessel", format!("sent back by the reviewer: {why}"));
                         if self.tell_agent(session, format!("The final review sent this back: {why}\n\nChange: {change}\n\nMake the change, commit, then stop: it's checked again.")) {
-                            self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
+                            let _ = self.advance(&id, TaskState::Running, Kind::SentBack, format!("sent back by the reviewer: {why}"));
                         } else {
-                            self.escalate(&id, why);
+                            self.escalate(&id, Some(FailureClass::Infra), why);
                         }
                     }
-                    board::Decision::Change(why, _) => self.escalate(&id, format!("The reviewer still wants changes after {} tries: {why}", t.attempts)),
+                    board::Decision::Change(why, _) => self.escalate(&id, Some(FailureClass::JudgeVeto), format!("The reviewer still wants changes after {} tries: {why}", t.attempts)),
                     board::Decision::Ask { why, options, visual } => self.ask_with(&id, why, options, visual),
                 }
             }
@@ -650,11 +719,11 @@ impl Hub {
     }
 
     fn approve(&mut self, id: &str, why: String) {
-        let task = self.tasks.get_mut(id).unwrap();
-        task.review = Some(why.clone());
-        task.state = TaskState::Landing;
+        self.tasks.get_mut(id).unwrap().review = Some(why.clone());
         self.note(id, "tessel", format!("approved: {why}"));
-        self.land_queue.push_back(id.to_owned());
+        if self.advance(id, TaskState::Landing, Kind::Approved, format!("approved: {why}")).is_ok() {
+            self.land_queue.push_back(id.to_owned());
+        }
     }
 
     fn task_place(&self, id: &str) -> Option<(SessionId, std::path::PathBuf, std::path::PathBuf)> {
@@ -674,7 +743,7 @@ impl Hub {
             .filter(|(_, ws, root)| visual && offers && !options.is_empty() && !crate::rules::config(ws, root).look.is_empty())
             .and_then(|(_, ws, _)| board::git(ws, &["rev-parse", "HEAD"]));
         let Some(base) = base else {
-            self.bring(id, why);
+            self.bring(id, Fact::new(Kind::Asked, why));
             if offers && let Some(t) = self.tasks.get_mut(id) {
                 t.options = options;
             }
@@ -685,9 +754,11 @@ impl Hub {
         let t = self.tasks.get_mut(id).unwrap();
         t.options = options;
         t.building = Some(0);
-        t.state = TaskState::Running;
-        self.note(id, "tessel", format!("the reviewer has a question: trying its {n} options so you can see them"));
-        self.swatch_go(id);
+        let said = format!("the reviewer has a question: trying its {n} options so you can see them");
+        self.note(id, "tessel", said.clone());
+        if self.advance(id, TaskState::Running, Kind::Options, said).is_ok() {
+            self.swatch_go(id);
+        }
     }
 
     fn swatch_go(&mut self, id: &str) {
@@ -770,7 +841,7 @@ impl Hub {
         self.swatch_go(id);
     }
 
-    fn swatch_done(&mut self, id: &str) {
+    pub(super) fn swatch_done(&mut self, id: &str) {
         let home = self.cfg.paths.home.clone();
         let sw = board::load_swatch(&home, id);
         if let (Some(sw), Some((_, ws, _))) = (&sw, self.task_place(id)) {
@@ -783,7 +854,7 @@ impl Hub {
         }
         let why = sw.map(|s| s.why).unwrap_or_else(|| "The reviewer has a question.".into());
         let options = self.tasks.get(id).map(|t| t.options.clone()).unwrap_or_default();
-        self.bring(id, why);
+        self.bring(id, Fact::new(Kind::Asked, why));
         if let Some(t) = self.tasks.get_mut(id).filter(|t| t.state == TaskState::Review) {
             t.options = options;
         }
@@ -812,8 +883,7 @@ impl Hub {
         while let Some(id) = self.land_queue.pop_front() {
             let Some(t) = self.tasks.get(&id).filter(|t| t.state == TaskState::Landing).cloned() else { continue };
             let Some(ws) = t.session.and_then(|s| self.sessions.get(&s)).map(|l| l.state.meta.cwd.clone()) else {
-                self.hold(&id, "its workspace is gone, so there's nothing to land");
-                self.task_saved(&id);
+                self.hold(&id, FailureClass::EnvBlocked, "its workspace is gone, so there's nothing to land");
                 continue;
             };
             let root = std::path::PathBuf::from(&t.repo);
@@ -821,9 +891,18 @@ impl Hub {
             let verify = crate::rules::config(std::path::Path::new(&ws), &root).verify;
             let mode = t.land.as_deref().map(board::parse_land).or(board::factory(std::path::Path::new(&ws), &root).land).unwrap_or_else(|| board::parse_land(&self.settings.land));
             self.landing = Some(id.clone());
+            let since = self.relanding.remove(&id).then(|| self.state_since.get(&id).copied().unwrap_or(t.updated_ms));
             let (tx, backend) = (self.tx.clone(), self.backend.clone());
             tokio::spawn(async move {
-                let result = crate::land::land(backend, std::path::Path::new(&ws), &root, &t.title, &verify, mode, pr.as_deref(), issue.as_deref()).await;
+                let ws = std::path::Path::new(&ws);
+                let already = match since {
+                    Some(since) => crate::land::already(ws, &root, &mode, since).await,
+                    None => None,
+                };
+                let result = match already {
+                    Some(done) => Ok(done),
+                    None => crate::land::land(backend, ws, &root, &t.title, &verify, mode, pr.as_deref(), issue.as_deref()).await,
+                };
                 let _ = tx.send(HubMsg::Landed { task: id, result });
             });
             return;
@@ -832,43 +911,68 @@ impl Hub {
 
     pub(super) fn task_landed(&mut self, id: String, result: Result<crate::land::Landed, crate::land::Stuck>) {
         use crate::land::{Landed, Stuck};
-        self.landing = None;
+        if self.landing.as_deref() == Some(id.as_str()) {
+            self.landing = None;
+        }
+        let Some(state) = self.tasks.get(&id).map(|t| t.state) else { return };
+        match (&result, state) {
+            (_, TaskState::Landing) => {}
+            (Ok(_), TaskState::Review) => {
+                let _ = self.advance(&id, TaskState::Landing, Kind::Recovered, "its landing finished after all");
+            }
+            (late, state) => {
+                let what = match late {
+                    Ok(Landed::Merged { sha, .. }) => Some(format!("landed {sha} after it was {}", state.word())),
+                    Ok(Landed::Kept { branch, .. }) => Some(format!("kept on {branch} after it was {}", state.word())),
+                    Ok(Landed::Opened { url, .. }) => Some(format!("opened {url} after it was {}", state.word())),
+                    Err(_) => None,
+                };
+                if let Some(what) = what {
+                    self.record(&id, Kind::Landed, what);
+                }
+                self.dispatch();
+                self.pump_land();
+                return;
+            }
+        }
         let parent = self.tasks.get(&id).and_then(|t| t.parent.clone());
         let session = self.tasks.get(&id).and_then(|t| t.session);
         match result {
             Ok(Landed::Merged { sha, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
-                t.state = TaskState::Landed;
                 t.link = crate::ship::web_url(&t.repo).map(|u| format!("{u}/commit/{sha}"));
-                t.landed = Some(sha);
-                self.note(&id, "tessel", said);
+                t.landed = Some(sha.clone());
+                self.note(&id, "tessel", said.clone());
+                let _ = self.advance_fact(&id, TaskState::Landed, Fact::new(Kind::Landed, format!("{said} ({sha})")).extra(serde_json::json!({"sha": sha})));
                 self.grade_landed(&id);
             }
             Ok(Landed::Kept { branch, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
-                t.state = TaskState::Landed;
                 t.link = crate::ship::web_url(&t.repo).map(|u| format!("{u}/tree/{branch}"));
-                t.landed = Some(branch);
-                self.note(&id, "tessel", said);
+                t.landed = Some(branch.clone());
+                self.note(&id, "tessel", said.clone());
+                let _ = self.advance_fact(&id, TaskState::Landed, Fact::new(Kind::Landed, said).extra(serde_json::json!({"branch": branch})));
             }
             Ok(Landed::Opened { url, said }) => {
-                let t = self.tasks.get_mut(&id).unwrap();
-                t.state = TaskState::Checking;
-                t.pr = Some(url);
+                self.tasks.get_mut(&id).unwrap().pr = Some(url.clone());
                 self.ci_polled.remove(&id);
                 self.note(&id, "tessel", format!("{said} Waiting for its checks."));
+                let _ = self.advance_fact(&id, TaskState::Checking, Fact::new(Kind::OpenedPr, format!("{said} {url}")).extra(serde_json::json!({"pr": url})));
             }
             Err(stuck) => {
-                let (said, ask) = match stuck {
+                let (class, said, ask) = match stuck {
                     Stuck::Conflict(files) => (
+                        FailureClass::LandConflict,
                         format!("conflicts with main in {}", files.join(", ")),
                         Some(format!(
                             "Landing this hit conflicts with the main branch in: {}. Rebase onto main, resolve them keeping what both sides meant, run the checks, commit, then stop.",
                             files.join(", ")
                         )),
                     ),
-                    Stuck::Checks(out) => ("checks failed on top of main".to_owned(), Some(format!("On top of the main branch the checks fail:\n\n{out}\n\nRebase onto main, fix it, commit, then stop."))),
-                    Stuck::Other(e) => (e, None),
+                    Stuck::Checks(out) => (FailureClass::VerifyFailed, "checks failed on top of main".to_owned(), Some(format!("On top of the main branch the checks fail:\n\n{out}\n\nRebase onto main, fix it, commit, then stop."))),
+                    Stuck::Nothing => (FailureClass::NoDiff, "there's nothing to land".to_owned(), None),
+                    Stuck::Blocked(e) => (FailureClass::EnvBlocked, e, None),
+                    Stuck::Other(e) => (FailureClass::Infra, e, None),
                 };
                 let sent = match (ask, session) {
                     (Some(text), Some(s)) => self.tell_agent(s, text),
@@ -876,9 +980,9 @@ impl Hub {
                 };
                 if sent {
                     self.note(&id, "tessel", format!("couldn't land: {said}"));
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Running;
-                } else {
-                    self.hold(&id, format!("couldn't land: {said}"));
+                    let _ = self.advance_fact(&id, TaskState::Running, Fact::new(Kind::SentBack, format!("couldn't land: {said}: sent back to fix")).failed(class));
+                } else if !self.retry_or(&id, class, &format!("couldn't land: {said}"), Retry::Land) {
+                    self.hold(&id, class, format!("couldn't land: {said}"));
                 }
             }
         }
@@ -950,29 +1054,31 @@ impl Hub {
             Err(e) => {
                 if t.notes.last().is_none_or(|n| !n.text.starts_with("couldn't ask GitHub")) {
                     self.note(&id, "tessel", format!("couldn't ask GitHub about its pull request: {e}"));
+                    self.record_fact(&id, Fact::new(Kind::Ci, format!("couldn't ask GitHub about its pull request: {e}")).failed(FailureClass::Infra));
                 }
             }
             Ok(Ci::Pending) => return,
             Ok(Ci::Merged(sha)) => {
                 let task = self.tasks.get_mut(&id).unwrap();
-                task.state = TaskState::Landed;
-                task.landed = Some(if sha.is_empty() { task.pr.clone().unwrap_or_default() } else { sha });
+                let landed = if sha.is_empty() { task.pr.clone().unwrap_or_default() } else { sha };
+                task.landed = Some(landed.clone());
                 self.note(&id, "tessel", "Merged its pull request.");
+                let _ = self.advance_fact(&id, TaskState::Landed, Fact::new(Kind::Merged, format!("merged its pull request ({landed})")).extra(serde_json::json!({"sha": landed})));
                 self.grade_landed(&id);
                 if let Some(p) = t.parent.clone() {
-                    self.task_saved(&id);
                     self.parent_progress(&p);
                 }
             }
-            Ok(Ci::Closed) => self.hold(&id, "its pull request was closed"),
+            Ok(Ci::Closed) => self.hold(&id, FailureClass::Cancelled, "its pull request was closed"),
             Ok(Ci::Passed) => {
                 let f = board::factory(std::path::Path::new(&t.repo), std::path::Path::new(&t.repo));
                 if (f.auto_land && t.risk == Some(tessel_proto::task::Risk::Low)) || self.hands_off() {
                     self.note(&id, "tessel", "its checks passed: merging");
+                    self.record(&id, Kind::Merging, "its checks passed: merging");
                     self.merge_pr(&id, t.pr.clone().unwrap_or_default());
                 } else {
-                    self.tasks.get_mut(&id).unwrap().state = TaskState::Review;
                     self.note(&id, "tessel", "its checks passed: Land merges it");
+                    let _ = self.advance(&id, TaskState::Review, Kind::Ci, "its checks passed: Land merges it");
                 }
             }
             Ok(Ci::Failed(failed)) => {
@@ -986,12 +1092,12 @@ impl Hub {
                         )
                     });
                 if sent {
-                    let t = self.tasks.get_mut(&id).unwrap();
-                    t.attempts += 1;
-                    t.state = TaskState::Running;
-                    self.note(&id, "tessel", format!("its checks failed ({}): sent back to fix", names.join(", ")));
+                    self.tasks.get_mut(&id).unwrap().attempts += 1;
+                    let said = format!("its checks failed ({}): sent back to fix", names.join(", "));
+                    self.note(&id, "tessel", said.clone());
+                    let _ = self.advance_fact(&id, TaskState::Running, Fact::new(Kind::Ci, said).failed(FailureClass::VerifyFailed));
                 } else {
-                    self.hold(&id, format!("its checks failed on GitHub: {}", names.join(", ")));
+                    self.hold(&id, FailureClass::VerifyFailed, format!("its checks failed on GitHub: {}", names.join(", ")));
                 }
             }
         }
@@ -1055,9 +1161,9 @@ impl Hub {
         let names = crate::board::save_attachments(&self.cfg.paths.home, id, &attachments).map_err(|e| RpcError::new(ErrorCode::Internal, format!("couldn't keep the attachments: {e}")))?;
         if let Some(t) = self.tasks.get_mut(id) {
             t.attachments = names;
-            if ready {
-                t.state = TaskState::Ready;
-            }
+        }
+        if ready && self.tasks.get(id).is_some_and(|t| t.state != TaskState::Ready) {
+            let _ = self.advance(id, TaskState::Ready, Kind::Ready, "ready to start");
         }
         self.task_saved(id);
         self.dispatch();
@@ -1085,12 +1191,12 @@ impl Hub {
         let id = task.id;
         if let Some(t) = self.tasks.get_mut(&id) {
             t.issue = Some(issue.url.clone());
-            if ready {
-                t.state = TaskState::Ready;
-            }
         }
         self.note(&id, "tessel", format!("from #{}", issue.number));
-        self.task_saved(&id);
+        self.record_fact(&id, Fact::new(Kind::Filed, format!("filed from issue #{}", issue.number)).extra(serde_json::json!({"issue": issue.url})));
+        if ready {
+            let _ = self.advance(&id, TaskState::Ready, Kind::Ready, "ready to start");
+        }
         self.dispatch();
         Ok(Response::Task { task: self.tasks[&id].clone() })
     }
@@ -1126,6 +1232,7 @@ impl Hub {
     pub(super) fn tasks_tick(&mut self) {
         self.poll_ci();
         self.poll_issues();
+        self.factory_tick();
         let over: Vec<(String, SessionId)> = self
             .tasks
             .values()
@@ -1143,39 +1250,11 @@ impl Hub {
             {
                 agent.interrupt();
             }
-            self.hold(&id, "stopped: it reached its budget");
-            self.task_saved(&id);
+            self.hold(&id, FailureClass::Timeout, "stopped: it reached its budget");
         }
         if self.tasks.values().any(|t| t.state == TaskState::Ready) {
             self.dispatch();
         }
-    }
-
-    pub(super) fn tasks_after_restart(&mut self) {
-        let building: Vec<String> = self.tasks.values().filter(|t| t.building.is_some()).map(|t| t.id.clone()).collect();
-        for id in building {
-            self.note(&id, "tessel", "tessel restarted while it tried the options");
-            self.swatch_done(&id);
-            self.task_saved(&id);
-        }
-        let stale: Vec<String> = self.tasks.values().filter(|t| matches!(t.state, TaskState::Proving | TaskState::Landing)).map(|t| t.id.clone()).collect();
-        for id in stale {
-            let session = self.tasks[&id].session;
-            if self.tasks[&id].state == TaskState::Proving
-                && let Some(s) = session.filter(|s| self.sessions.contains_key(s))
-            {
-                self.start_proof(s, false, false);
-                continue;
-            }
-            if self.tasks[&id].state == TaskState::Landing && session.is_some_and(|s| self.sessions.contains_key(&s)) {
-                self.land_queue.push_back(id.clone());
-                continue;
-            }
-            self.escalate(&id, "tessel restarted while it was being checked, and its workspace is gone".into());
-            self.task_saved(&id);
-        }
-        self.recheck_waiting();
-        self.pump_land();
     }
 
     pub(super) fn recheck_waiting(&mut self) {
@@ -1190,10 +1269,8 @@ impl Hub {
             .filter(|(_, s)| self.sessions.get(s).is_some_and(|l| std::path::Path::new(&l.state.meta.cwd).is_dir()))
             .collect();
         for (id, s) in old {
-            self.tasks.get_mut(&id).unwrap().state = TaskState::Proving;
             self.note(&id, "tessel", "checking it again for the final review");
-            self.task_saved(&id);
-            if !self.proving.contains(&s) {
+            if self.advance(&id, TaskState::Proving, Kind::Resumed, "checking it again for the final review").is_ok() && !self.proving.contains(&s) {
                 self.start_proof(s, false, false);
             }
         }

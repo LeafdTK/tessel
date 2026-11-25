@@ -40,7 +40,8 @@ pub use workflow::{Choice, Input, InputKind, Options, Pick, Run, RunStep, Step, 
 
 /// bump major on a breaking wire change, minor on an additive one.
 pub const PROTO_MAJOR: u16 = 0;
-pub const PROTO_MINOR: u16 = 39;
+pub const PROTO_MINOR: u16 = 40;
+pub const MIN_CLIENT_MINOR: u16 = 0;
 
 /// milliseconds since the unix epoch.
 pub type Millis = u64;

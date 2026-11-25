@@ -63,6 +63,9 @@ const HELP: &str = "tesselctl: drive the tessel daemon
   tesselctl task ls|ready|draft|land|drop ID | change ID TEXT…
   tesselctl task choose ID N                answer a task's question with its option N (as task ls numbers them)
   tesselctl task clear                      take finished work off the board (it stays in your history)
+  tesselctl task events [ID] [--since N] [--limit N] [--follow] [--json]
+                                            what happened to the tasks (or one), as tessel logged it: every
+                                            move, proof, review, landing, retry and watchdog action
   tesselctl key add NAME [--preset github|github-git] [--for HOST]… [--env VAR] [--method M]… [--path P]…
              [--from 'gh auth token']       a key agents use without ever seeing it: kept in the keychain, added
                                             by tessel on the way out, only for those hosts, methods and paths
@@ -416,6 +419,12 @@ async fn run() -> anyhow::Result<()> {
         "version" => {
             println!("tesselctl {} (protocol {PROTO_MAJOR}.{PROTO_MINOR})", env!("CARGO_PKG_VERSION"));
             println!("tesseld   {} (protocol {}.{}) pid {}", welcome.build, welcome.proto_major, welcome.proto_minor, welcome.daemon_pid);
+            if daemon_behind(welcome.proto_major, welcome.proto_minor) {
+                println!("the daemon is older than tesselctl: `tesselctl daemon restart` runs the new one");
+            }
+            if client_too_old(welcome.min_client_minor) {
+                println!("tesselctl is older than the daemon needs (protocol {}.{} at least)", welcome.proto_major, welcome.min_client_minor);
+            }
         }
         "ls" => {
             let Response::Sessions { sessions } = client.request(Request::SessionList).await? else { bail!("unexpected reply") };
@@ -610,7 +619,7 @@ async fn run() -> anyhow::Result<()> {
                 let after = if t.deps.is_empty() { String::new() } else { format!("  after {}", t.deps.join(", ")) };
                 format!("{}  {:<8} {}{after}{cost}", t.id, format!("{:?}", t.state).to_lowercase(), t.title)
             };
-            let sub = if cmd == "tasks" { "ls".to_owned() } else { args.next("ls, add, ready, draft, land, change, choose or drop")? };
+            let sub = if cmd == "tasks" { "ls".to_owned() } else { args.next("ls, add, events, ready, draft, land, change, choose or drop")? };
             let one = |r: Response| match r {
                 Response::Task { task } => Ok(task),
                 other => Err(anyhow::anyhow!("unexpected reply: {other:?}")),
@@ -694,6 +703,39 @@ async fn run() -> anyhow::Result<()> {
                         }
                     }
                 }
+                "events" | "log" => {
+                    let since = args.opt("--since")?.map(|s| s.parse::<i64>()).transpose().map_err(|_| anyhow::anyhow!("--since is an event's number, as task events prints it"))?;
+                    let limit = args.opt("--limit")?.map(|s| s.parse::<u32>()).transpose()?.unwrap_or(500);
+                    let follow = args.flag("--follow") || args.flag("-f");
+                    let task = args.rest.first().cloned();
+                    let Response::TaskEvents { events: logged } = client.request(Request::TaskEvents { since, task: task.clone(), limit }).await? else { bail!("unexpected reply") };
+                    let show = |e: &tessel_proto::task::TaskEvent| {
+                        if json {
+                            println!("{}", serde_json::to_string(e).unwrap_or_default());
+                        } else {
+                            println!("{}", event_line(e));
+                        }
+                    };
+                    if logged.is_empty() && !follow && !json {
+                        println!("nothing logged{}", task.as_ref().map(|t| format!(" for {t}")).unwrap_or_default());
+                    }
+                    let mut last = since.unwrap_or(0);
+                    for e in &logged {
+                        show(e);
+                        last = last.max(e.id);
+                    }
+                    if follow {
+                        while let Some(ev) = events.recv().await {
+                            if let Event::TaskEvent { entry } = ev
+                                && entry.id > last
+                                && task.as_ref().is_none_or(|t| *t == entry.task_id)
+                            {
+                                last = entry.id;
+                                show(&entry);
+                            }
+                        }
+                    }
+                }
                 "clear" => {
                     let Response::Tasks { tasks } = client.request(Request::TaskList).await? else { bail!("unexpected reply") };
                     let mut n = 0;
@@ -725,7 +767,7 @@ async fn run() -> anyhow::Result<()> {
                     let t = one(client.request(Request::TaskAct { id, act }).await?)?;
                     println!("{}", line(&t));
                 }
-                other => bail!("task {other}? ls, add, slack, ready, draft, land, change, choose or drop"),
+                other => bail!("task {other}? ls, add, events, slack, ready, draft, land, change, choose or drop"),
             }
         }
         "slack" => {
@@ -1342,6 +1384,7 @@ async fn follow_events(events: &mut Events, json: bool) {
             Event::SessionUpdated { summary } => println!("{}", summary_line(&summary)),
             Event::SessionRemoved { session } => println!("removed {session}"),
             Event::TaskUpdated { task } => println!("task {} {:?} {}", task.id, task.state, task.title),
+            Event::TaskEvent { entry } => println!("{}", event_line(&entry)),
             Event::ItemUpserted { item, .. } => println!("{}", item_line(&item)),
             Event::ItemDelta { text, .. } => println!("  + {}", one_line(&text, 100)),
             Event::PendingChanged { pending, .. } => {
@@ -1671,6 +1714,26 @@ pub(crate) fn since_secs(s: &str, now: i64) -> anyhow::Result<i64> {
     Ok(t as i64)
 }
 
+fn clock(ms: u64) -> String {
+    let t = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return ms.to_string();
+    }
+    format!("{:02}-{:02} {:02}:{:02}:{:02}", tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
+fn event_line(e: &tessel_proto::task::TaskEvent) -> String {
+    let moved = match e.from {
+        Some(from) if from != e.to => format!("{} → {}", from.word(), e.to.word()),
+        Some(_) => e.to.word().to_owned(),
+        None => format!("→ {}", e.to.word()),
+    };
+    let cost = e.cost_usd.map(|c| format!("  ${c:.2}")).unwrap_or_default();
+    let failure = e.failure.map(|f| format!("  [{}]", f.word())).unwrap_or_default();
+    format!("{:>6}  {} {}#{:<3} {:<10} {:<20} {}{cost}{failure}", e.id, clock(e.at_ms), e.task_id, e.seq, e.kind.word(), moved, e.detail)
+}
+
 fn slack_summary(read: u32, skipped: u32, filed: usize, channel: &str) -> String {
     let n = |k: u64, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
     format!(
@@ -1731,6 +1794,17 @@ mod tests {
         assert_eq!(super::option_lines(&t), vec!["    1. Green — a green badge  (2 shots)", "    2. Blue"]);
         t.building = Some(1);
         assert!(super::option_lines(&t)[1].ends_with("trying it now"));
+    }
+
+    #[test]
+    fn a_logged_event_reads_as_one_line_with_its_move_cost_and_failure() {
+        use tessel_proto::task::{FailureClass, TaskEvent, TaskEventKind, TaskState};
+        let e = TaskEvent { id: 42, task_id: "t7".into(), seq: 3, at_ms: 0, kind: TaskEventKind::Held, from: Some(TaskState::Proving), to: TaskState::Review, detail: "its checks failed".into(), cost_usd: Some(0.5), failure: Some(FailureClass::VerifyFailed) };
+        let line = super::event_line(&e);
+        assert!(line.trim_start().starts_with("42 "), "{line}");
+        assert!(line.contains("t7#3") && line.contains("held") && line.contains("proving → review") && line.contains("its checks failed  $0.50  [verify_failed]"), "{line}");
+        let made = TaskEvent { from: None, kind: TaskEventKind::Created, to: TaskState::Draft, cost_usd: None, failure: None, ..e };
+        assert!(super::event_line(&made).contains("→ draft"));
     }
 
     #[test]

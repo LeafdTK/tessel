@@ -282,6 +282,14 @@ pub enum Request {
         act: crate::task::TaskAct,
     },
     TaskList,
+    TaskEvents {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task: Option<String>,
+        #[serde(default = "default_event_page")]
+        limit: u32,
+    },
     IssueList {
         repo: String,
     },
@@ -753,6 +761,24 @@ pub struct DaemonSettings {
     pub bother: String,
     #[serde(default = "main")]
     pub land: String,
+    #[serde(default)]
+    pub watchdog: Watchdog,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Watchdog {
+    pub quiet_secs: u64,
+    pub nudge_secs: u64,
+    pub proving_secs: u64,
+    pub landing_secs: u64,
+    pub checking_secs: u64,
+}
+
+impl Default for Watchdog {
+    fn default() -> Self {
+        Self { quiet_secs: 20 * 60, nudge_secs: 10 * 60, proving_secs: 30 * 60, landing_secs: 10 * 60, checking_secs: 90 * 60 }
+    }
 }
 
 fn agent() -> String {
@@ -796,12 +822,16 @@ pub const MAX_FAVORITES: usize = 5;
 impl Default for DaemonSettings {
     fn default() -> Self {
         let fav = |m: &str, effort: &str| FavoriteModel { model: m.into(), effort: Some(effort.into()), fast: false };
-        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false, roles: Default::default(), autonomy: agent(), bother: String::new(), land: main() }
+        Self { agent_tools: true, models: vec![fav("opus", "high"), fav("claude-fable-5-2", "high"), fav("sonnet", "high"), fav("haiku", "medium")], projects: Some(Vec::new()), parallel: None, no_comments: false, paused: false, roles: Default::default(), autonomy: agent(), bother: String::new(), land: main(), watchdog: Watchdog::default() }
     }
 }
 
 fn default_log_page() -> u32 {
     200
+}
+
+fn default_event_page() -> u32 {
+    500
 }
 
 fn default_wait_ms() -> u64 {
@@ -880,6 +910,8 @@ pub enum Response {
         daemon_pid: u32,
         #[serde(default)]
         capabilities: Vec<String>,
+        #[serde(default)]
+        min_client_minor: u16,
     },
     Sessions {
         sessions: Vec<SessionSummary>,
@@ -950,6 +982,9 @@ pub enum Response {
     },
     Tasks {
         tasks: Vec<crate::task::Task>,
+    },
+    TaskEvents {
+        events: Vec<crate::task::TaskEvent>,
     },
     Triggers {
         triggers: Vec<crate::workflow::TriggerInfo>,
@@ -1272,6 +1307,9 @@ pub enum Event {
     TaskUpdated {
         task: crate::task::Task,
     },
+    TaskEvent {
+        entry: crate::task::TaskEvent,
+    },
     /// the engine changed: found, installing, installed (to everyone).
     BrowserEngine {
         engine: crate::BrowserEngine,
@@ -1298,6 +1336,14 @@ pub enum Event {
 /// can a client built for `client_major` talk to this daemon?
 pub fn compatible(client_major: u16) -> bool {
     client_major == crate::PROTO_MAJOR
+}
+
+pub fn daemon_behind(daemon_major: u16, daemon_minor: u16) -> bool {
+    daemon_major == crate::PROTO_MAJOR && daemon_minor < crate::PROTO_MINOR
+}
+
+pub fn client_too_old(min_client_minor: u16) -> bool {
+    crate::PROTO_MINOR < min_client_minor
 }
 
 /// how a project is made (see `Request::ProjectMake`).

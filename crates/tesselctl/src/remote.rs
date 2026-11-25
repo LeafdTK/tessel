@@ -75,6 +75,18 @@ pub async fn remote(home: &Path, args: &mut Args) -> anyhow::Result<()> {
     }
 }
 
+pub fn protocol_word(major: u16, minor: u16, min_client_minor: u16) -> String {
+    let mut word = format!("protocol {major}.{minor}");
+    if !tessel_proto::compatible(major) {
+        word.push_str(", won't talk to this mac: update needed");
+    } else if tessel_proto::daemon_behind(major, minor) {
+        word.push_str(", update needed (tesselctl host update)");
+    } else if tessel_proto::client_too_old(min_client_minor) {
+        word.push_str(", newer than this mac: update tessel here");
+    }
+    word
+}
+
 /// on the mac.
 pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()> {
     let mut hosts = Hosts::load(home);
@@ -85,7 +97,16 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
                 return Ok(());
             }
             let current = hosts.current.clone();
-            println!("{} this mac", if current.is_none() { "*" } else { " " });
+            println!("{} this mac  (protocol {}.{})", if current.is_none() { "*" } else { " " }, tessel_proto::PROTO_MAJOR, tessel_proto::PROTO_MINOR);
+            let mut probes = Vec::new();
+            for h in hosts.hosts.iter().filter(|h| h.ready() && h.vercel.is_none()) {
+                let (home, host) = (home.to_owned(), h.clone());
+                probes.push((h.id.clone(), tokio::spawn(async move { tokio::time::timeout(std::time::Duration::from_secs(5), tessel_remote::connect(&home, &host, "tesselctl")).await.ok()?.ok().map(|c| c.welcome) })));
+            }
+            let mut daemons = std::collections::HashMap::new();
+            for (id, probe) in probes {
+                daemons.insert(id, probe.await.ok().flatten());
+            }
             for h in &hosts.hosts {
                 let how = match (h.ready(), h.transport) {
                     (false, _) => "not set up".to_owned(),
@@ -94,7 +115,12 @@ pub async fn host(home: &Path, args: &mut Args, json: bool) -> anyhow::Result<()
                     (true, Transport::Vercel) => format!("vercel sandbox, {}", h.address.as_deref().unwrap_or("")),
                 };
                 let reach = if h.vercel.is_some() { String::new() } else { format!("ssh {}; ", h.ssh) };
-                println!("{} {}  ({}, {reach}{how})", if current.as_deref() == Some(&h.id) { "*" } else { " " }, h.id, h.name);
+                let daemon = match daemons.get(&h.id) {
+                    Some(Some(w)) => format!("  {}", protocol_word(w.proto_major, w.proto_minor, w.min_client_minor)),
+                    Some(None) => "  daemon not reached".to_owned(),
+                    None => String::new(),
+                };
+                println!("{} {}  ({}, {reach}{how}){daemon}", if current.as_deref() == Some(&h.id) { "*" } else { " " }, h.id, h.name);
             }
             Ok(())
         }
@@ -357,4 +383,18 @@ fn print_progress(done: u64, of: u64) {
         println!();
     }
     let _ = std::io::stdout().flush();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tessel_proto::{PROTO_MAJOR, PROTO_MINOR};
+
+    #[test]
+    fn a_host_behind_this_mac_says_it_needs_an_update() {
+        assert_eq!(protocol_word(PROTO_MAJOR, PROTO_MINOR, 0), format!("protocol {PROTO_MAJOR}.{PROTO_MINOR}"));
+        assert!(protocol_word(PROTO_MAJOR, PROTO_MINOR - 1, 0).ends_with("update needed (tesselctl host update)"));
+        assert!(protocol_word(PROTO_MAJOR + 1, 0, 0).contains("won't talk to this mac"));
+        assert!(protocol_word(PROTO_MAJOR, PROTO_MINOR + 1, PROTO_MINOR + 1).contains("newer than this mac"));
+    }
 }

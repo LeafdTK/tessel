@@ -54,6 +54,7 @@ pub struct Welcome {
     pub build: String,
     pub daemon_pid: u32,
     pub capabilities: Vec<String>,
+    pub min_client_minor: u16,
 }
 
 impl Client {
@@ -167,8 +168,8 @@ impl Client {
             auth: None,
         };
         match client.request(hello).await? {
-            Response::Welcome { proto_major, proto_minor, build, daemon_pid, capabilities } => {
-                Ok((client, ev_rx, Welcome { proto_major, proto_minor, build, daemon_pid, capabilities }))
+            Response::Welcome { proto_major, proto_minor, build, daemon_pid, capabilities, min_client_minor } => {
+                Ok((client, ev_rx, Welcome { proto_major, proto_minor, build, daemon_pid, capabilities, min_client_minor }))
             }
             other => Err(RpcError::new(ErrorCode::Internal, format!("unexpected reply to hello: {other:?}")).into()),
         }

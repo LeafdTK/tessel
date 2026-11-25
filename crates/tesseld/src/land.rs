@@ -17,6 +17,8 @@ pub enum Landed {
 pub enum Stuck {
     Conflict(Vec<String>),
     Checks(String),
+    Nothing,
+    Blocked(String),
     Other(String),
 }
 
@@ -99,13 +101,13 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
     match mode {
         Land::Main | Land::Branch(_) => {
             if git(ws, &["rev-list", "--count", &format!("{target}..HEAD")]).await.map_err(other)?.trim() == "0" {
-                return Err(Stuck::Other("there's nothing to land".into()));
+                return Err(Stuck::Nothing);
             }
             let there = checked_out_in(root, &target).await;
             if let Some(dir) = &there
                 && !git(dir, &["status", "--porcelain", "--untracked-files=no"]).await.map_err(other)?.is_empty()
             {
-                return Err(Stuck::Other(format!("{target} is checked out with changes of its own")));
+                return Err(Stuck::Blocked(format!("{target} is checked out with changes of its own")));
             }
             git(ws, &["reset", "--soft", &target]).await.map_err(other)?;
             let whole = match &closes {
@@ -136,6 +138,30 @@ pub async fn land(backend: Arc<dyn Backend>, ws: &Path, root: &Path, title: &str
             Ok(Landed::Opened { url: url.unwrap_or_default(), said })
         }
         Land::Keep => unreachable!(),
+    }
+}
+
+pub async fn already(ws: &Path, root: &Path, mode: &Land, since_ms: u64) -> Option<Landed> {
+    match mode {
+        Land::Keep => None,
+        Land::PullRequest => crate::ci::open_pr(ws).await.map(|url| Landed::Opened { url, said: "Its pull request was open already.".into() }),
+        Land::Main | Land::Branch(_) => {
+            let target = match mode {
+                Land::Branch(b) => b.clone(),
+                _ => crate::ship::main_branch(ws).await,
+            };
+            if !git(ws, &["status", "--porcelain", "--untracked-files=no"]).await.ok()?.is_empty() {
+                return None;
+            }
+            let head = git(ws, &["rev-parse", "HEAD"]).await.ok()?;
+            git(root, &["merge-base", "--is-ancestor", &head, &format!("refs/heads/{target}")]).await.ok()?;
+            let when: u64 = git(ws, &["log", "-1", "--format=%ct", &head]).await.ok()?.trim().parse().ok()?;
+            if when * 1000 + 1000 <= since_ms {
+                return None;
+            }
+            let sha = git(ws, &["rev-parse", "--short", &head]).await.ok()?;
+            Some(Landed::Merged { sha, said: format!("It had landed on {target} already, before tessel restarted.") })
+        }
     }
 }
 

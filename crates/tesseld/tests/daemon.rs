@@ -1938,6 +1938,9 @@ async fn task_until(c: &Client, id: &str, what: &str, pred: impl Fn(&tessel_prot
         if let Some(t) = &t
             && pred(t)
         {
+            let Response::TaskEvents { events } = c.request(Request::TaskEvents { since: None, task: Some(id.to_owned()), limit: 10_000 }).await.unwrap() else { panic!() };
+            let illegal: Vec<_> = events.iter().filter(|e| e.kind == tessel_proto::task::TaskEventKind::Illegal).collect();
+            assert!(illegal.is_empty(), "{id} tried a move the factory doesn't allow: {illegal:#?}");
             return t.clone();
         }
         assert!(tokio::time::Instant::now() < deadline, "timed out waiting for: {what}. last: {t:?}");
@@ -2582,4 +2585,194 @@ async fn reading_slack_without_its_key_says_how_to_connect_it() {
     assert!(err.to_string().contains("Slack isn't connected: add a key named slack in Settings › Keys"), "{err}");
     let err = c.request(Request::SlackChannels).await.unwrap_err();
     assert!(err.to_string().contains("Slack isn't connected"), "{err}");
+}
+
+async fn all_tasks(c: &Client) -> Vec<tessel_proto::task::Task> {
+    let Response::Tasks { tasks } = c.request(Request::TaskList).await.unwrap() else { panic!() };
+    tasks
+}
+
+async fn task_log(c: &Client, task: Option<&str>, since: Option<i64>) -> Vec<tessel_proto::task::TaskEvent> {
+    let Response::TaskEvents { events } = c.request(Request::TaskEvents { since, task: task.map(str::to_owned), limit: 10_000 }).await.unwrap() else { panic!() };
+    events
+}
+
+#[tokio::test]
+async fn every_move_a_task_makes_is_logged_in_order_and_heard_as_it_happens() {
+    use tessel_proto::task::{TaskAct, TaskEventKind, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "");
+    let (c, mut ev) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"paused": true}) }).await.unwrap();
+    let Response::Task { task } = c.request(new_task(&repo, "Count higher", vec![], None)).await.unwrap() else { panic!() };
+    for act in [TaskAct::Draft, TaskAct::Ready, TaskAct::Drop, TaskAct::Clear] {
+        c.request(Request::TaskAct { id: task.id.clone(), act }).await.unwrap();
+    }
+    let log = task_log(&c, Some(&task.id), None).await;
+    let kinds: Vec<TaskEventKind> = log.iter().map(|e| e.kind).collect();
+    assert_eq!(kinds, [TaskEventKind::Created, TaskEventKind::Draft, TaskEventKind::Ready, TaskEventKind::Dropped, TaskEventKind::Cleared]);
+    assert_eq!(log.iter().map(|e| e.seq).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
+    assert!(log.windows(2).all(|w| w[0].id < w[1].id));
+    assert_eq!((log[0].from, log[0].to), (None, TaskState::Ready));
+    assert_eq!((log[3].from, log[3].to, log[3].failure), (Some(TaskState::Ready), TaskState::Dropped, Some(tessel_proto::task::FailureClass::Cancelled)));
+    assert_eq!((log[4].from, log[4].to), (Some(TaskState::Dropped), TaskState::Dropped), "clearing is bookkeeping, not a move");
+    assert_eq!(all_tasks(&c).await[0].failure, Some(tessel_proto::task::FailureClass::Cancelled));
+    let after = task_log(&c, None, Some(log[2].id)).await;
+    assert_eq!(after.iter().map(|e| e.kind).collect::<Vec<_>>(), [TaskEventKind::Dropped, TaskEventKind::Cleared], "read on from where you were");
+    let heard = events_until(&mut ev, "the clear, live", |e| matches!(e, Event::TaskEvent { entry } if entry.kind == TaskEventKind::Cleared)).await;
+    let live: Vec<i64> = heard.iter().filter_map(|e| match e { Event::TaskEvent { entry } => Some(entry.id), _ => None }).collect();
+    assert_eq!(live, log.iter().map(|e| e.id).collect::<Vec<_>>(), "everyone hears each one as it's logged");
+    match c.request(Request::TaskAct { id: task.id.clone(), act: TaskAct::Drop }).await {
+        Err(tessel_client::ClientError::Rpc(e)) => assert_eq!(e.code, ErrorCode::Conflict),
+        other => panic!("a dropped task was dropped again: {other:?}"),
+    }
+}
+
+async fn restart_factory(d: &mut Daemon, down: Duration) -> (Client, Events) {
+    d.stop().await;
+    tokio::time::sleep(down).await;
+    d.boot(&["plain+"]).await;
+    d.backend.reviews.lock().unwrap().push(("final reviewer".to_owned(), "```json\n{\"decision\": \"land\", \"why\": \"Does what was asked.\"}\n```".to_owned()));
+    d.client().await
+}
+
+async fn tasks_until(c: &Client, what: &str, pred: impl Fn(&[tessel_proto::task::Task]) -> bool) -> Vec<tessel_proto::task::Task> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let tasks = all_tasks(c).await;
+        if pred(&tasks) {
+            return tasks;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for: {what}. last: {:#?}", tasks.iter().map(|t| (&t.id, t.state, &t.notes)).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_factory_survives_restarts_after_dispatch_mid_proof_and_mid_land_without_losing_or_doubling_work() {
+    use tessel_proto::task::{TaskAct, TaskEventKind, TaskState};
+    let mut d = Daemon::start(&["plain+"]).await;
+    d.backend.reviews.lock().unwrap().push(("final reviewer".to_owned(), "```json\n{\"decision\": \"land\", \"why\": \"Does what was asked.\"}\n```".to_owned()));
+    let repo = task_repo(&d, "repo", "[proof]\nverify = \"sleep 0.4\"\nlenses = [\"correctness\"]\n");
+    let (c, _) = d.client().await;
+    let mut ids = Vec::new();
+    for title in ["Add one", "Add two", "Add three"] {
+        let Response::Task { task } = c.request(new_task(&repo, title, vec![], None)).await.unwrap() else { panic!() };
+        ids.push(task.id);
+    }
+    task_until(&c, &ids[0], "dispatched", |t| t.state == TaskState::Running).await;
+    let (c, _) = restart_factory(&mut d, Duration::ZERO).await;
+
+    for (n, id) in ids.iter().enumerate() {
+        let t = task_until(&c, id, "back with nothing to land yet", |t| t.state == TaskState::Review && t.session.is_some()).await;
+        assert_eq!(t.failure, Some(tessel_proto::task::FailureClass::NoDiff), "{:?}", t.notes);
+        let ws = PathBuf::from(list(&c).await.into_iter().find(|s| Some(s.id) == t.session).unwrap().cwd);
+        std::fs::write(ws.join(format!("n{n}.txt")), "x\n").unwrap();
+        git(&ws, &["add", "-A"]);
+        git(&ws, &["commit", "-q", "-m", &format!("feat: add n{n}")]);
+        c.request(Request::TaskAct { id: id.clone(), act: TaskAct::Change { text: "the change is there now".into() } }).await.unwrap();
+    }
+    tasks_until(&c, "one being proved", |ts| ts.iter().any(|t| t.state == TaskState::Proving)).await;
+    let (c, _) = restart_factory(&mut d, Duration::ZERO).await;
+    tasks_until(&c, "one landing", |ts| ts.iter().any(|t| t.state == TaskState::Landing)).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let (c, _) = restart_factory(&mut d, Duration::from_millis(1500)).await;
+
+    let done = tasks_until(&c, "everything settled", |ts| ts.iter().all(|t| matches!(t.state, TaskState::Landed | TaskState::Review | TaskState::Dropped))).await;
+    for t in &done {
+        assert!(t.state == TaskState::Landed || t.failure.is_some() || t.ask.is_some(), "{} stopped without a reason: {:?}", t.id, t.notes);
+        assert_eq!(t.state, TaskState::Landed, "{}: {:?}", t.id, t.notes);
+    }
+    for n in 0..ids.len() {
+        let commits = git(&repo, &["log", "--format=%s", "main", "--", &format!("n{n}.txt")]);
+        assert_eq!(commits.lines().count(), 1, "n{n}.txt landed once: {commits}");
+    }
+    let everything = task_log(&c, None, None).await;
+    assert!(everything.windows(2).all(|w| w[0].id < w[1].id), "one order for everything");
+    assert!(!everything.iter().any(|e| e.kind == TaskEventKind::Illegal), "{:#?}", everything.iter().filter(|e| e.kind == TaskEventKind::Illegal).collect::<Vec<_>>());
+    for id in &ids {
+        let log: Vec<_> = everything.iter().filter(|e| &e.task_id == id).collect();
+        assert_eq!(log.iter().map(|e| e.seq).collect::<Vec<_>>(), (1..=log.len() as i64).collect::<Vec<_>>(), "{id}'s log has no gaps");
+        assert_eq!(log[0].kind, TaskEventKind::Created);
+        assert_eq!(log.iter().filter(|e| e.to == TaskState::Landed && e.from != Some(TaskState::Landed)).count(), 1, "{id} landed once");
+        assert!(log.windows(2).all(|w| w[0].to == w[1].from.unwrap_or(w[0].to)), "{id}'s moves chain: {:#?}", log);
+    }
+    assert!(everything.iter().filter(|e| e.kind == TaskEventKind::Recovered).count() >= 3, "each restart says what it found");
+}
+
+#[tokio::test]
+async fn a_task_whose_agent_was_cut_short_by_a_restart_is_told_to_carry_on() {
+    use tessel_proto::task::{TaskEventKind, TaskState};
+    let mut d = Daemon::start(&["interrupt"]).await;
+    let repo = task_repo(&d, "repo", "");
+    let (c, _) = d.client().await;
+    let Response::Task { task } = c.request(new_task(&repo, "Write an essay", vec![], None)).await.unwrap() else { panic!() };
+    let running = task_until(&c, &task.id, "at work", |t| t.session.is_some()).await;
+    until(&c, running.session.unwrap(), "mid-turn", |s| matches!(s.run_state, RunState::Working | RunState::NeedsPermission | RunState::Stalled)).await;
+    let (c, _) = restart_factory(&mut d, Duration::ZERO).await;
+    let after = task_until(&c, &task.id, "picked up again", |t| t.state != TaskState::Running).await;
+    assert_eq!(after.session, running.session, "in the same workspace, the same conversation");
+    let log = task_log(&c, Some(&task.id), None).await;
+    assert!(log.iter().any(|e| e.kind == TaskEventKind::Recovered && e.detail.contains("told it to carry on")), "{log:#?}");
+    assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("tessel restarted while you worked")), "the agent heard why");
+}
+
+async fn watchdog_events(c: &Client, id: &str) -> Vec<tessel_proto::task::TaskEvent> {
+    task_log(c, Some(id), None).await.into_iter().filter(|e| e.kind == tessel_proto::task::TaskEventKind::Watchdog).collect()
+}
+
+#[tokio::test]
+async fn the_watchdog_nudges_an_agent_that_went_quiet_and_says_so() {
+    let d = Daemon::start(&["interrupt_text"]).await;
+    let repo = task_repo(&d, "repo", "");
+    let (c, _) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"watchdog": {"quiet_secs": 1, "nudge_secs": 600}}) }).await.unwrap();
+    let Response::Task { task } = c.request(new_task(&repo, "Write an essay", vec![], None)).await.unwrap() else { panic!() };
+    task_until(&c, &task.id, "at work", |t| t.session.is_some()).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let barked = loop {
+        if let Some(e) = watchdog_events(&c, &task.id).await.into_iter().next() {
+            break e;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "the watchdog never noticed");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(barked.detail, "nothing happened for a second: nudged its agent");
+    assert!(d.backend.written.lock().unwrap().iter().any(|l| l.contains("Nothing has happened for a while")), "the agent heard the nudge");
+}
+
+#[tokio::test]
+async fn the_watchdog_leaves_an_agent_alone_while_it_waits_on_a_person() {
+    let d = Daemon::start(&["interrupt"]).await;
+    let repo = task_repo(&d, "repo", "");
+    let (c, _) = d.client().await;
+    c.request(Request::SetSettings { patch: serde_json::json!({"watchdog": {"quiet_secs": 1, "nudge_secs": 1}}) }).await.unwrap();
+    let Response::Task { task } = c.request(new_task(&repo, "Write an essay", vec![], None)).await.unwrap() else { panic!() };
+    let t = task_until(&c, &task.id, "at work", |t| t.session.is_some()).await;
+    until(&c, t.session.unwrap(), "asking", |s| s.run_state == RunState::NeedsPermission).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert!(watchdog_events(&c, &task.id).await.is_empty(), "a question for you isn't the agent being stuck");
+}
+
+#[tokio::test]
+async fn a_workspace_that_cant_be_made_is_tried_three_times_with_backoff_then_comes_back_as_a_draft() {
+    use tessel_proto::task::{FailureClass, TaskEventKind, TaskState};
+    let d = Daemon::start(&["plain+"]).await;
+    let repo = task_repo(&d, "repo", "");
+    std::fs::create_dir_all(&d.cfg.paths.workspaces).unwrap();
+    std::fs::write(d.cfg.paths.workspaces.join("repo"), "not a folder").unwrap();
+    let (c, _) = d.client().await;
+    let Response::Task { task } = c.request(new_task(&repo, "Count higher", vec![], None)).await.unwrap() else { panic!() };
+    let back = task_until(&c, &task.id, "given back", |t| t.state == TaskState::Draft).await;
+    assert_eq!(back.failure, Some(FailureClass::Infra));
+    let log = task_log(&c, Some(&task.id), None).await;
+    let retried: Vec<_> = log.iter().filter(|e| e.kind == TaskEventKind::Retried).collect();
+    assert_eq!(retried.len(), 3, "{log:#?}");
+    for (n, r) in retried.iter().enumerate() {
+        assert!(r.detail.ends_with(&format!("({} of 3)", n + 1)) && r.failure == Some(FailureClass::Infra), "{r:?}");
+    }
+    let gaps: Vec<u64> = retried.windows(2).map(|w| w[1].at_ms - w[0].at_ms).collect();
+    assert!(gaps[1] > gaps[0] / 2 && gaps.iter().all(|g| *g >= 100), "backing off: {gaps:?}");
+    let last = log.last().unwrap();
+    assert_eq!((last.kind, last.from, last.to), (TaskEventKind::Held, Some(TaskState::Running), TaskState::Draft));
 }

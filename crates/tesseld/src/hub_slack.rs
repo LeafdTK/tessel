@@ -91,12 +91,12 @@ impl Hub {
             let Ok(Response::Task { task }) = self.task_create(repo.to_owned(), t.title, spec, Vec::new(), None, false, None, false) else { continue };
             if let Some(made) = self.tasks.get_mut(&task.id) {
                 made.source = links.first().cloned();
-                if ready {
-                    made.state = TaskState::Ready;
-                }
             }
             self.note(&task.id, "tessel", format!("filed from Slack {shown}"));
-            self.task_saved(&task.id);
+            self.record(&task.id, tessel_proto::task::TaskEventKind::Filed, format!("filed from Slack {shown}"));
+            if ready {
+                let _ = self.advance(&task.id, TaskState::Ready, tessel_proto::task::TaskEventKind::Ready, "ready to start");
+            }
             for ts in from {
                 if o.roots.contains(&ts) {
                     entry.roots.insert(ts.clone());

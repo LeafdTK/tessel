@@ -13,6 +13,7 @@ pub mod egress;
 pub mod grades;
 pub mod keys;
 pub mod lab;
+pub mod machine;
 pub mod handoff;
 pub mod hub;
 pub mod issues;

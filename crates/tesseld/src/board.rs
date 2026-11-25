@@ -338,6 +338,7 @@ mod tests {
             building: None,
             source: None,
             link: None,
+            failure: None,
             created_ms: at,
             updated_ms: at,
         }

@@ -316,6 +316,10 @@ impl SessionState {
         self.turn_open
     }
 
+    pub fn last_output_ms(&self) -> Millis {
+        self.last_output_ms
+    }
+
     /// in the middle of something only this daemon's memory knows: a turn, a
     /// message being written, a question waiting on an answer.
     pub fn mid_turn(&self) -> bool {

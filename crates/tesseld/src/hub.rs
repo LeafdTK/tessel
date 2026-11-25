@@ -117,6 +117,7 @@ pub enum HubMsg {
     Browser(Event),
     /// ask an agent again how its tool servers are: they report "pending" as it starts.
     RecheckMcp { session: SessionId, generation: u64 },
+    Recover,
     Stop,
 }
 
@@ -259,6 +260,15 @@ pub struct Hub {
     landing: Option<String>,
     ci_polled: HashMap<String, std::time::Instant>,
     ci_busy: HashSet<String>,
+    next_event: i64,
+    event_seqs: HashMap<String, i64>,
+    unsaved_events: HashMap<String, Vec<crate::store::EventRow>>,
+    state_since: HashMap<String, Millis>,
+    watch: HashMap<String, crate::machine::Watch>,
+    retries: HashMap<String, flow::Retrying>,
+    redo: HashSet<String>,
+    relanding: HashSet<String>,
+    proof_floor: HashMap<SessionId, Millis>,
     shooting: HashSet<String>,
     checkups: HashSet<String>,
     slack_reads: HashSet<String>,
@@ -364,6 +374,15 @@ impl Hub {
             landing: None,
             ci_polled: Default::default(),
             ci_busy: Default::default(),
+            next_event: 0,
+            event_seqs: HashMap::new(),
+            unsaved_events: HashMap::new(),
+            state_since: HashMap::new(),
+            watch: HashMap::new(),
+            retries: HashMap::new(),
+            redo: HashSet::new(),
+            relanding: HashSet::new(),
+            proof_floor: HashMap::new(),
             shooting: Default::default(),
             checkups: Default::default(),
             slack_reads: Default::default(),
@@ -439,6 +458,10 @@ impl Hub {
                 hub.tasks.insert(t.id.clone(), t);
             }
         }
+        let marks = hub.store.event_marks().await?;
+        hub.next_event = marks.last_id;
+        hub.event_seqs = marks.seqs;
+        hub.state_since = marks.moved;
         for (id, body) in hub.store.load_proofs().await? {
             let Ok(mut proof) = serde_json::from_str::<tessel_proto::proof::Proof>(&body) else { continue };
             if !proof.verdict.done() {
@@ -450,7 +473,7 @@ impl Hub {
                 live.state.proof = Some(proof);
             }
         }
-        hub.tasks_after_restart();
+        let _ = hub.tx.send(HubMsg::Recover);
         for (id, body) in hub.store.load_runs().await? {
             let Ok(mut rl) = serde_json::from_str::<RunLive>(&body) else { continue };
             if let Some(live) = hub.sessions.get_mut(&id) {
@@ -742,6 +765,7 @@ impl Hub {
                 }
             }
             HubMsg::Reply { client, id, result } => self.respond(client, id, result),
+            HubMsg::Recover => self.recover_tasks(),
             HubMsg::RunAdvance { run } => self.advance_run(run),
             HubMsg::Landed { task, result } => self.task_landed(task, result),
             HubMsg::Ci { task, result, why } => self.task_ci(task, result, why),
@@ -766,6 +790,7 @@ impl Hub {
             HubMsg::ProofIdle { session } => {
                 self.proving.remove(&session);
             }
+            HubMsg::Proof { session, proof } if self.proof_floor.get(&session).is_some_and(|floor| proof.started_ms < *floor) => {}
             HubMsg::Proof { session, proof } => {
                 if proof.verdict.done() {
                     self.proving.remove(&session);
@@ -946,7 +971,8 @@ impl Hub {
                         proto_minor: PROTO_MINOR,
                         build: self.cfg.build.clone(),
                         daemon_pid: std::process::id(),
-                        capabilities: vec!["worktrees".into(), "replay-user".into(), "handoff".into(), "carry-turns".into()],
+                        capabilities: ["worktrees", "replay-user", "handoff", "carry-turns", "task-events", "task-machine", "task-recovery", "watchdog", "failure-classes"].map(String::from).to_vec(),
+                        min_client_minor: tessel_proto::MIN_CLIENT_MINOR,
                     })
                 }
             }
@@ -1583,6 +1609,10 @@ lowercase after a conventional prefix (feat:, fix: or chore:), under 60 characte
             Request::TaskEdit { id, title, spec, deps, note } => self.task_edit(&id, title, spec, deps, note),
             Request::TaskAct { id, act } => self.task_act(&id, act),
             Request::TaskList => Ok(Response::Tasks { tasks: self.tasks.values().cloned().collect() }),
+            Request::TaskEvents { since, task, limit } => {
+                self.task_events(client, id, since, task, limit);
+                return None;
+            }
             Request::RulesFor { repo } => {
                 let root = crate::board::repo_root(Path::new(&repo));
                 Ok(Response::Rules { rulebook: crate::rules::load_with(&root, &root, Some(&crate::rules::holdouts(&self.cfg.paths.home, &root))) })
@@ -3357,6 +3387,9 @@ const SIGN_INS: [(&str, &str); 2] = [("CLAUDE_CODE_OAUTH_TOKEN", "claude-token")
 
 #[path = "hub_tasks.rs"]
 mod tasks;
+
+#[path = "hub_flow.rs"]
+mod flow;
 
 #[path = "hub_triggers.rs"]
 mod triggers_state;
