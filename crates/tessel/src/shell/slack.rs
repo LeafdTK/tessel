@@ -117,6 +117,30 @@ impl Shell {
         Some(tessel_proto::SlackChannel { id: name.to_owned(), name: name.to_owned(), private: false })
     }
 
+    pub(crate) fn slack_status(&self) -> Option<AnyElement> {
+        let p = self.palette.get();
+        let (text, color, busy) = match self.slack_run.as_ref()? {
+            None => ("Reading the channel and picking out tasks. This takes about half a minute.".to_owned(), p.secondary, true),
+            Some(Ok(r)) => (
+                format!("Read {} message{} in {}: filed {} task{}", r.read, if r.read == 1 { "" } else { "s" }, r.channel, r.filed, if r.filed == 1 { "" } else { "s" }) + &if r.skipped > 0 { format!(", skipped {} already filed", r.skipped) } else { String::new() },
+                p.finished,
+                false,
+            ),
+            Some(Err(e)) => (e.clone(), p.failed, false),
+        };
+        Some(
+            h_flex()
+                .id("slack-status")
+                .test_support()
+                .w_full()
+                .gap(theme::z(8.))
+                .items_center()
+                .when(busy, |d| d.child(super::live_dot(p.info, &p)))
+                .child(div().flex_1().min_w_0().set(Type::Subheadline).text_color(color).child(text))
+                .into_any_element(),
+        )
+    }
+
     pub(crate) fn want_slack(&mut self) {
         let now = super::now_ms();
         let stale = matches!(self.slack_channels, Some(Err(_))) && now.saturating_sub(self.slack_asked_ms) > 30_000;

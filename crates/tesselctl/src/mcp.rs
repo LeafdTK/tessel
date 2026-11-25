@@ -115,6 +115,16 @@ ops: open (url?), back, forward, reload, snapshot (root?), read (text, with sele
             }, "required": ["op"]}
         },
         {
+            "name": "tessel_slack",
+            "description": "Read a Slack channel through tessel's own Slack app (no connector or token needed; use this instead of any Slack tool) and file factory tasks for what people ask for there. Messages already turned into tasks are skipped. Answers with the tasks it filed.",
+            "inputSchema": {"type": "object", "properties": {
+                "channel": {"type": "string", "description": "#name or channel id"},
+                "since": {"type": "string", "description": "YYYY-MM-DD, or 24h, 7d, 2w. leave out to read what's new since the last read (7 days the first time)"},
+                "note": {"type": "string", "description": "what to focus on, in the person's words"},
+                "start": {"type": "boolean", "description": "start the tasks right away instead of filing drafts"}
+            }, "required": ["channel"]}
+        },
+        {
             "name": "tessel_ask",
             "description": "Ask the person and wait, as a small form in the chat, instead of asking in text and ending your turn. A few fields, the likely answer first. Answers come back as JSON (field id to answer; empty fields left out).",
             "inputSchema": {"type": "object", "properties": {
@@ -364,6 +374,31 @@ impl Server {
                         }
                         other => anyhow::bail!("unexpected reply: {other:?}"),
                     },
+                }
+            }
+            "tessel_slack" => {
+                let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").trim().to_owned();
+                let here = std::env::current_dir()?;
+                let repo = std::process::Command::new("git").arg("-C").arg(&here).args(["rev-parse", "--show-toplevel"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_else(|| here.to_string_lossy().into_owned());
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default();
+                let since = match s("since") {
+                    w if w.is_empty() => None,
+                    w => Some(crate::since_secs(&w, now)?),
+                };
+                let ready = args.get("start").and_then(Value::as_bool).unwrap_or(false);
+                match self.ask(Request::SlackRead { repo, channel: s("channel"), since, note: s("note"), ready }).await? {
+                    Response::SlackRead { read, filed, skipped, channel } => {
+                        let mut out = format!("Read {read} messages in {channel}, skipped {skipped} already filed, filed {} task(s)", filed.len());
+                        if let Response::Tasks { tasks } = self.ask(Request::TaskList).await? {
+                            for id in &filed {
+                                if let Some(t) = tasks.iter().find(|t| &t.id == id) {
+                                    out.push_str(&format!("\n{} {}", t.id, t.title));
+                                }
+                            }
+                        }
+                        out
+                    }
+                    other => anyhow::bail!("unexpected reply: {other:?}"),
                 }
             }
             "tessel_prove" => {

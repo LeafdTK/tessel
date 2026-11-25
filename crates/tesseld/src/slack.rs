@@ -214,9 +214,32 @@ pub async fn connect(home: PathBuf, stub: Option<Arc<dyn Api>>) -> Result<Arc<dy
     .ok()
     .flatten()
     .map(|t| t.trim().to_owned())
-    .filter(|t| !t.is_empty())
-    .ok_or_else(|| NOT_CONNECTED.to_owned())?;
-    Ok(Arc::new(Web::new(token)?))
+    .filter(|t| !t.is_empty());
+    match token {
+        Some(token) => Ok(Arc::new(Web::new(token)?)),
+        None if on_a_box() => Ok(Arc::new(Boxed(Web::new(INJECTED.to_owned())?))),
+        None => Err(NOT_CONNECTED.to_owned()),
+    }
+}
+
+const INJECTED: &str = "added-by-the-sandbox-firewall";
+pub const NOT_SHARED: &str = "Slack isn't shared with this sandbox: on your Mac, run tesselctl host keys NAME (its name in Settings › Hosts)";
+
+fn on_a_box() -> bool {
+    !cfg!(target_os = "macos")
+}
+
+struct Boxed(Web);
+
+impl Api for Boxed {
+    fn call<'a>(&'a self, method: &'a str, params: Params<'a>) -> Answer<'a> {
+        Box::pin(async move {
+            match self.0.call(method, params).await {
+                Err(Fail::Said(code)) if code.starts_with("not_authed") || code.starts_with("invalid_auth") => Err(Fail::Other(NOT_SHARED.to_owned())),
+                other => other,
+            }
+        })
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

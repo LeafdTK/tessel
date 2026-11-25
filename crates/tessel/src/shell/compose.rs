@@ -420,9 +420,10 @@ impl Shell {
             Kind::Context => self.styled(div().child(self.context_meter_el(cx)?), s).into_any_element(),
             Kind::Panes if self.factory_view && self.factory_on() => self
                 .styled(
-                    div().child(
+                    div().min_w_0().child(
                         div()
                             .size_full()
+                            .min_w_0()
                             .rounded(px(theme::R_PANEL))
                             .border_1()
                             .border_color(p.separator)

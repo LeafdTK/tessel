@@ -1637,7 +1637,7 @@ fn one_line(s: &str, max: usize) -> String {
     flat.chars().take(max).collect::<String>() + "…"
 }
 
-fn since_secs(s: &str, now: i64) -> anyhow::Result<i64> {
+pub(crate) fn since_secs(s: &str, now: i64) -> anyhow::Result<i64> {
     let s = s.trim();
     let bad = || anyhow::anyhow!("--since is a date like 2026-11-20, or a while ago like 7d or 24h");
     if let Some((n, unit)) = s.char_indices().last().map(|(i, c)| (&s[..i], c))

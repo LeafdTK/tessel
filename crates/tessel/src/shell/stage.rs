@@ -156,7 +156,7 @@ impl Shell {
             Focus::Issues => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.issues_tab(cx)).into_any_element(),
             Focus::Rules => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.rules_tab(cx)).into_any_element(),
         };
-        div().id("stage").size_full().overflow_y_scroll().bg(p.window).child(main).into_any_element()
+        div().id("stage").size_full().min_w_0().overflow_x_hidden().overflow_y_scroll().bg(p.window).child(main).into_any_element()
     }
 
     pub(crate) fn stage_el(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -483,7 +483,7 @@ impl Shell {
         let shown = if swatched { self.stage_swatch.unwrap_or(0).min(t.options.len().saturating_sub(1)) } else { 0 };
         let pictures: Vec<String> = if swatched { t.options[shown].shots.clone() } else { t.shots.clone() };
         let at = self.stage_shot.min(pictures.len().saturating_sub(1));
-        let mut col = v_flex().w_full().max_w(theme::z(1180.)).mx_auto().px(theme::z(48.)).pt(theme::z(28.)).pb(theme::z(48.)).gap(theme::z(20.));
+        let mut col = v_flex().w_full().min_w_0().max_w(theme::z(1180.)).mx_auto().px(theme::z(48.)).pt(theme::z(28.)).pb(theme::z(48.)).gap(theme::z(20.));
         col = col.child(
             h_flex()
                 .items_center()
@@ -522,14 +522,18 @@ impl Shell {
         }
         if self.changing_task.as_deref() == Some(t.id.as_str()) {
             col = col.child(
-                h_flex()
+                v_flex()
                     .w_full()
-                    .flex_wrap()
                     .gap(theme::z(10.))
-                    .items_center()
-                    .child(div().flex_1().min_w(theme::z(240.)).h(theme::z(44.)).px(theme::z(16.)).flex().items_center().rounded(theme::z(22.)).border_1().border_color(p.separator).bg(p.raised).text_size(theme::z(15.)).child(div().w_full().child(Input::new(&self.task_change).id("task-change").appearance(false))))
-                    .child(stage_button(&p, "task-change-rule", "Send and Remember", theme::ButtonKind::Secondary, false, cx.listener(|this, _, window, cx| this.change_task_and_teach(window, cx))))
-                    .child(stage_button(&p, "task-change-send", "Send", theme::ButtonKind::Primary, false, cx.listener(|this, _, window, cx| this.change_task(window, cx)))),
+                    .child(div().w_full().h(theme::z(44.)).px(theme::z(16.)).flex().items_center().rounded(theme::z(theme::by_height(44.))).border_1().border_color(p.separator).bg(p.raised).text_size(theme::z(15.)).child(div().w_full().child(Input::new(&self.task_change).id("task-change").appearance(false))))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap(theme::z(10.))
+                            .justify_end()
+                            .child(stage_button(&p, "task-change-rule", "Send and Remember", theme::ButtonKind::Secondary, false, cx.listener(|this, _, window, cx| this.change_task_and_teach(window, cx))))
+                            .child(stage_button(&p, "task-change-send", "Send", theme::ButtonKind::Primary, false, cx.listener(|this, _, window, cx| this.change_task(window, cx)))),
+                    ),
             );
         }
         let diff = self.stage_diff_el(&p);

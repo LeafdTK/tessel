@@ -101,7 +101,7 @@ impl Shell {
         let mut live: Vec<&Task> = self.tasks.iter().filter(|t| busy(t.state) || t.state == TaskState::Planned).filter(mine).collect();
         live.sort_by_key(|t| std::cmp::Reverse(t.updated_ms));
         let needs: Vec<&Task> = self.tasks.iter().filter(|t| t.state == TaskState::Review && !t.cleared).filter(mine).collect();
-        let mut col = v_flex().w_full().max_w(theme::z(1180.)).mx_auto().px(theme::z(40.)).pt(theme::z(28.)).pb(theme::z(48.)).gap(theme::z(20.));
+        let mut col = v_flex().w_full().min_w_0().max_w(theme::z(1180.)).mx_auto().px(theme::z(40.)).pt(theme::z(28.)).pb(theme::z(48.)).gap(theme::z(20.));
         let head = format!("{} working", live.len()) + &if needs.is_empty() { String::new() } else { format!(", {} need{} you", needs.len(), if needs.len() == 1 { "s" } else { "" }) };
         col = col.child(div().font_family(theme::DEFAULT_FONT).font_weight(FontWeight::BOLD).text_size(theme::z(28.)).text_color(p.label).child(head));
         if !needs.is_empty() {

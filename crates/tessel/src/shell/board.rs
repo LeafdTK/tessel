@@ -293,7 +293,8 @@ impl Shell {
                     .child(div().flex_1())
                     .child(big_button(&p, "task-draft", &draft_label, theme::ButtonKind::Ghost, cx.listener(|this, _, window, cx| this.add_task(false, window, cx))))
                     .child(big_button(&p, "task-start", &start_label, theme::ButtonKind::Primary, cx.listener(|this, _, window, cx| this.add_task(true, window, cx)))),
-            );
+            )
+            .children(self.slack_status());
         composer.into_any_element()
     }
 
