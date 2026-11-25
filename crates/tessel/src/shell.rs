@@ -2909,6 +2909,15 @@ impl Shell {
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "hot")]
+        return subsecond::call(|| self.render_shell(window, cx).into_any_element());
+        #[cfg(not(feature = "hot"))]
+        self.render_shell(window, cx).into_any_element()
+    }
+}
+
+impl Shell {
+    fn render_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // once the window has its view: drops of pictures and promised files.
         if let Some(tx) = self.drops.take() {
             match view_of(window) {

@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 tessel-proto = { path = "crates/tessel-proto" }
+tessel-paint = { path = "crates/tessel-paint" }
 tessel-agent = { path = "crates/tessel-agent" }
 tessel-term = { path = "crates/tessel-term" }
 
@@ -33,13 +34,15 @@ gpui-kit = { version = "=0.9.1", features = ["test-support"] }
 
 [profile.dev]
 debug = "line-tables-only"
-# the incremental cache costs over a gigabyte here; see the note on disk above.
-incremental = false
+incremental = true
 
 # the app is built optimized even in dev, so frame-time measurements mean
 # something without needing a second (release) build of everything.
+[profile.dev.package.tessel-paint]
+opt-level = 3
+
 [profile.dev.package.tessel]
-opt-level = 2
+opt-level = 0
 
 [profile.dev.package."*"]
 opt-level = 2

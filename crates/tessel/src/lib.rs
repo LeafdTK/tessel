@@ -261,8 +261,25 @@ pub fn run(mut launch: Launch) {
     launch.ui.get_or_insert_with(|| home.join("ui.json"));
     launch.tour_seen.get_or_insert_with(|| home.join("tour-seen"));
     // the whole lucide catalog, not the kit's default handful: a layout may name any icon.
+    #[cfg(feature = "hot")]
+    dioxus_devtools::connect_subsecond();
     gpui_kit::application().with_assets(gpui_kit::assets::AllAssets).run(move |cx| {
         gpui_kit::init(cx);
+        #[cfg(feature = "hot")]
+        {
+            let patched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let seen = patched.clone();
+            subsecond::register_handler(std::sync::Arc::new(move || seen.store(true, std::sync::atomic::Ordering::SeqCst)));
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor().timer(std::time::Duration::from_millis(120)).await;
+                    if patched.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                        let _ = cx.update(|cx| cx.refresh_windows());
+                    }
+                }
+            })
+            .detach();
+        }
         theme::add_fonts(cx);
         bind_keys(cx);
         cx.on_action(|_: &Quit, cx| cx.quit());

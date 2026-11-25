@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 gpui-kit.workspace = true
 tessel-proto.workspace = true
+tessel-paint.workspace = true
+subsecond = { version = "0.7.10", optional = true }
+dioxus-devtools = { version = "0.7.10", optional = true }
 tessel-term.workspace = true
 tessel-client = { path = "../tessel-client" }
 tessel-remote = { path = "../tessel-remote" }
@@ -36,6 +39,7 @@ tessel-rich = { path = "../tessel-rich", optional = true }
 [features]
 default = ["rich"]
 rich = ["dep:tessel-rich"]
+hot = ["dep:subsecond", "dep:dioxus-devtools"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # the notch: how big it is, and a window over the menu bar around it. both are
