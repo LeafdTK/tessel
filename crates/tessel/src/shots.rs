@@ -124,6 +124,7 @@ fn task(id: &str, title: &str, state: TaskState, session: Option<u128>, note: Op
         options: vec![],
         building: None,
         source: None,
+        link: None,
         created_ms: now() - 3_600_000,
         updated_ms: now() - 60_000,
     }

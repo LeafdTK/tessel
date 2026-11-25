@@ -73,6 +73,13 @@ pub async fn main_branch(dir: &Path) -> String {
     "main".to_owned()
 }
 
+pub fn web_url(repo: &str) -> Option<String> {
+    let git = |args: &[&str]| std::process::Command::new("git").arg("-C").arg(repo).args(args).stdin(std::process::Stdio::null()).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    let remote = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).and_then(|u| u.split_once('/').map(|(r, _)| r.to_owned())).unwrap_or_else(|| "origin".to_owned());
+    let url = git(&["remote", "get-url", &remote])?;
+    github_repo(&url).map(|r| format!("https://github.com/{r}"))
+}
+
 pub fn github_repo(url: &str) -> Option<String> {
     let rest = url.trim().split_once("github.com").map(|(_, r)| r)?;
     let path = rest.trim_start_matches([':', '/']).trim_end_matches('/').trim_end_matches(".git");

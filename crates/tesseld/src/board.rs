@@ -337,6 +337,7 @@ mod tests {
             options: vec![],
             building: None,
             source: None,
+            link: None,
             created_ms: at,
             updated_ms: at,
         }

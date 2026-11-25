@@ -119,6 +119,7 @@ impl Hub {
             options: Vec::new(),
             building: None,
             source: None,
+            link: None,
             created_ms: now,
             updated_ms: now,
         };
@@ -838,6 +839,7 @@ impl Hub {
             Ok(Landed::Merged { sha, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
                 t.state = TaskState::Landed;
+                t.link = crate::ship::web_url(&t.repo).map(|u| format!("{u}/commit/{sha}"));
                 t.landed = Some(sha);
                 self.note(&id, "tessel", said);
                 self.grade_landed(&id);
@@ -845,6 +847,7 @@ impl Hub {
             Ok(Landed::Kept { branch, said }) => {
                 let t = self.tasks.get_mut(&id).unwrap();
                 t.state = TaskState::Landed;
+                t.link = crate::ship::web_url(&t.repo).map(|u| format!("{u}/tree/{branch}"));
                 t.landed = Some(branch);
                 self.note(&id, "tessel", said);
             }

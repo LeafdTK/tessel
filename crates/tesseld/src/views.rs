@@ -94,7 +94,7 @@ mod tests {
     }
 
     fn task(id: &str, state: TaskState, landed: Option<&str>) -> Task {
-        Task { id: id.into(), title: id.into(), spec: String::new(), repo: "/r".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.1, budget_usd: None, risk: None, landed: landed.map(str::to_owned), pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, created_ms: 0, updated_ms: 0 }
+        Task { id: id.into(), title: id.into(), spec: String::new(), repo: "/r".into(), state, deps: vec![], parent: None, session: None, notes: vec![], plan: false, attempts: 0, proof_cost_usd: 0.1, budget_usd: None, risk: None, landed: landed.map(str::to_owned), pr: None, issue: None, attachments: vec![], land: None, ask: None, summary: None, changes: vec![], review: None, cleared: false, shots: vec![], options: vec![], building: None, source: None, link: None, created_ms: 0, updated_ms: 0 }
     }
 
     #[tokio::test]

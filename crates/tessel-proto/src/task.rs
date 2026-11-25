@@ -100,6 +100,8 @@ pub struct Task {
     pub building: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
     pub created_ms: Millis,
     pub updated_ms: Millis,
 }
