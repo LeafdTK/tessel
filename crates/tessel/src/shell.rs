@@ -36,6 +36,7 @@ mod stage;
 mod select;
 mod slack;
 mod live;
+mod console;
 #[cfg(test)]
 pub(crate) use board::{Split, split_for_test as board_split_for_test};
 mod home;
@@ -352,6 +353,8 @@ pub struct Shell {
     pub(crate) editing_bother: bool,
     pub(crate) checkup: Option<(String, Option<Result<usize, String>>)>,
     pub(crate) account: Option<tessel_proto::Account>,
+    pub(crate) console_input: Entity<InputState>,
+    pub(crate) console_said: Option<(bool, String)>,
     pub(crate) slack_channels: Option<Result<Vec<tessel_proto::SlackChannel>, String>>,
     pub(crate) slack_channel: Option<String>,
     pub(crate) slack_asked_ms: u64,
@@ -540,6 +543,7 @@ impl Shell {
         let task_change = cx.new(|cx| InputState::new(window, cx).placeholder("What should change?"));
         let bother_input = cx.new(|cx| InputState::new(window, cx).placeholder("Anything that touches payments"));
         let slack_note = cx.new(|cx| InputState::new(window, cx).placeholder("Anything to focus on, like only checkout bugs since Monday"));
+        let console_input = cx.new(|cx| InputState::new(window, cx).placeholder("new fix the login button · drop t9b1 · slack orchard-support since mon · checkup"));
 
         // the `/` and `@` menus get their keys before the message box does:
         // here bindings (return sends, arrows move) run ahead of key listeners.
@@ -582,6 +586,11 @@ impl Shell {
             cx.subscribe_in(&task_title, window, |this, _, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, secondary } = ev {
                     this.add_task(*secondary, window, cx);
+                }
+            }),
+            cx.subscribe_in(&console_input, window, |this, _, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    this.console_run(window, cx);
                 }
             }),
             cx.subscribe_in(&bother_input, window, |this, _, ev: &InputEvent, window, cx| {
@@ -897,6 +906,8 @@ impl Shell {
             editing_bother: false,
             checkup: None,
             account: None,
+            console_input,
+            console_said: None,
             slack_channels: None,
             slack_channel: None,
             slack_asked_ms: 0,

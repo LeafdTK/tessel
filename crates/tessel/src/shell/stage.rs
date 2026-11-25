@@ -151,7 +151,7 @@ impl Shell {
         }
         let main = match self.stage_focus() {
             Focus::Task(t) => self.stage_task(t, cx),
-            Focus::All => self.all_work(cx),
+            Focus::All => self.console(cx),
             Focus::New => v_flex().w_full().max_w(theme::z(820.)).mx_auto().px(theme::z(48.)).pt(theme::z(56.)).pb(theme::z(48.)).gap(theme::z(36.)).child(self.task_composer(cx)).children(self.task_starts(cx)).into_any_element(),
             Focus::Issues => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.issues_tab(cx)).into_any_element(),
             Focus::Rules => v_flex().w_full().max_w(theme::z(880.)).mx_auto().px(theme::z(48.)).pt(theme::z(36.)).pb(theme::z(48.)).child(self.rules_tab(cx)).into_any_element(),
@@ -340,8 +340,7 @@ impl Shell {
             .size_full()
             .child(nav)
             .child(controls)
-            .child(div().id("stage-rail-list").flex_1().min_h_0().overflow_y_scroll().child(list))
-            .children(self.usage_block())
+            .when(focus_id != "all", |d| d.child(div().id("stage-rail-list").flex_1().min_h_0().overflow_y_scroll().child(list)).children(self.usage_block()))
             .test_support()
             .into_any_element()
     }
